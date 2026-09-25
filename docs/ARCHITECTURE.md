@@ -424,6 +424,7 @@ ari/
     risk-engine/      deterministic baselines + signals; optional AI explanation
     simulation/       SimulationProvider interface; MockSimulationProvider; EvmForkProvider
     signing/          SigningProvider interface; Mock; Ika adapter (isolated, documented assumptions)
+    ledger/           Postgres limit accounting: atomic reservation, release, settle (CC3)
     audit/            append-only writer, hash chain, typed redaction
     sdk/              @ari/sdk
     cli/              ari …
@@ -431,9 +432,15 @@ ari/
 ```
 
 Dependency rule, enforced by lint: `policy-engine` and `transaction-engine` import nothing from
-`intent-engine`, `risk-engine`, `simulation`, or `signing`. The kernel depends on the peripherals in name
+`intent-engine`, `risk-engine`, `simulation`, `ledger`, or `signing`. The kernel depends on the peripherals in name
 only — they are injected at the composition root in `apps/api`. That import graph *is* the statement "the LLM
 is not the security boundary", written in a language the build system checks.
+
+`ledger` is on that list for the same reason as `signing`, and it earns its own package by being the only
+place the reservation SQL lives: an evaluation that could read the counters would be an authorization
+whose answer depends on what the ledger happened to say, and the point of compiling a policy to an
+immutable form (A4) is that evaluation has no I/O to be surprised by. It imports the kernel; never the
+reverse.
 
 ---
 
@@ -446,9 +453,19 @@ interface IntentInterpreter {          // the only AI touchpoint in the request 
 }
 
 interface PolicyEvaluator {            // pure
-  evaluate(input: { policy: CompiledPolicy; request: CandidateTransaction;
-                    state: PolicyState; now: Clock }): Decision
+  evaluate(input: { policy: CompiledPolicy; candidate: CandidateTransaction;
+                    state: EvaluationState }): Decision
 }
+```
+
+`EvaluationState` carries the clock (`nowMs`), the usage counters and the behavioural history, and it
+carries **no digest**. The digest is derived inside the engine from the candidate and the compiled
+policy's own version id, because an evaluator that accepted one from its caller could be handed
+candidate B with candidate A's bytes and ALLOW the wrong transaction (T10, T25). Every `ALLOW` and
+`REQUIRE_HUMAN_APPROVAL` therefore returns the digest it evaluated; a `DENY` returns none, since a
+candidate the canonicaliser refuses still has to be deniable.
+
+```ts
 
 interface RiskEngine {                 // advisory; structurally cannot grant
   assess(input: RiskInput): Promise<RiskAssessment>

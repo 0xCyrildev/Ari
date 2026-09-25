@@ -11,6 +11,7 @@
  *      audit record, not explode in a route handler (ARCHITECTURE S2/S3).
  */
 
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,7 @@ const ID_PREFIXES = [
   'apr',
   'tkt',
   'req',
+  'rsv',
 ] as const;
 
 const UUID_V7 = '[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
@@ -62,6 +64,36 @@ export type AgentId = z.infer<typeof AgentId>;
 export type WalletId = z.infer<typeof WalletId>;
 export type PolicyId = z.infer<typeof PolicyId>;
 export type TransactionRequestId = z.infer<typeof TransactionRequestId>;
+
+/**
+ * Mint a prefixed UUIDv7.
+ *
+ * The version nibble and the variant bits are not decoration: `7` makes the id
+ * sort by creation time, which is what makes an index on `created_at` redundant
+ * and a range scan over "this agent's requests since Tuesday" a prefix scan. The
+ * variant nibble is what tells a reader the value is RFC 9562 rather than a
+ * hand-rolled string that happens to have dashes in the right places.
+ */
+export function uuidv7(nowMs: number = Date.now()): string {
+  const bytes = randomBytes(16);
+  bytes.writeUIntBE(Math.trunc(nowMs), 0, 6);
+  bytes.writeUInt8(0x70 | (bytes.readUInt8(6) & 0x0f), 6);
+  bytes.writeUInt8(0x80 | (bytes.readUInt8(8) & 0x3f), 8);
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * `newId('agt')` — the only sanctioned way to produce an externally visible
+ * identifier, so the format the schemas accept is the format the code emits
+ * rather than two conventions that have to be kept in step by hand.
+ */
+export function newId(prefix: (typeof ID_PREFIXES)[number], nowMs?: number): string {
+  return `${prefix}_${uuidv7(nowMs)}`;
+}
+
+export const ReservationId = prefixedId('rsv');
+export type ReservationId = z.infer<typeof ReservationId>;
 
 // ---------------------------------------------------------------------------
 // Chains, assets, addresses

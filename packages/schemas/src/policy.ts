@@ -40,7 +40,6 @@ const EscalationCondition = z.discriminatedUnion('op', [
   z.object({ op: z.literal('recipient_first_seen_within_days'), days: z.number().int().min(0).max(3650) }).strict(),
   z.object({ op: z.literal('asset_not_in_baseline') }).strict(),
   z.object({ op: z.literal('chain_not_in_baseline') }).strict(),
-  z.object({ op: z.literal('contract_not_in_allowlist') }).strict(),
   z.object({ op: z.literal('risk_gte'), level: z.enum(['MEDIUM', 'HIGH', 'CRITICAL']) }).strict(),
   z.object({ op: z.literal('usd_gte'), cents: z.string().regex(/^\d+$/) }).strict(),
   z.object({ op: z.literal('time_out_of_hours_window'), window: z.string().min(1).max(64) }).strict(),

@@ -21,6 +21,7 @@
 import {
   type CandidateTransaction,
   type CanonicalDigest,
+  type EscalationCondition,
   type Decision,
   type PolicyDocument,
   type ReasonCode,
@@ -272,11 +273,15 @@ export function evaluate(input: {
     if (policy.validity.notAfterMs !== null && state.nowMs > policy.validity.notAfterMs) {
       return deny(['POLICY_EXPIRED'], 'validity.notAfter');
     }
-    const deadlineMs = BigInt(Date.parse(candidate.deadline));
-    if (Number.isNaN(Number(deadlineMs))) {
+    // Parsed as a number first, because `BigInt(NaN)` throws before any check
+    // could run: written the other way round, the refusal below was unreachable
+    // and an unparseable deadline escaped the engine as an exception rather than
+    // arriving as a DENY.
+    const deadlineMs = Date.parse(candidate.deadline);
+    if (!Number.isFinite(deadlineMs)) {
       return deny(['INTERNAL_ERROR_FAIL_CLOSED'], 'candidate.deadline');
     }
-    if (deadlineMs <= state.nowMs) return deny(['DEADLINE_EXPIRED'], 'candidate.deadline');
+    if (BigInt(deadlineMs) <= state.nowMs) return deny(['DEADLINE_EXPIRED'], 'candidate.deadline');
     note('validity.window');
 
     // --- 4. scope of permission ---------------------------------------------
@@ -410,7 +415,13 @@ export function evaluate(input: {
   }
 }
 
-function escalationCodeFor(condition: { op: string }): ReasonCode {
+/**
+ * The reason code that names an escalation, for each condition that can ask for
+ * one. The parameter is the real union and the tail is an exhaustiveness check, so
+ * adding a condition to the authoring schema without a code here is a compile
+ * error rather than a `default` that quietly reports something misleading.
+ */
+function escalationCodeFor(condition: EscalationCondition): ReasonCode {
   switch (condition.op) {
     case 'amount_gt':
       return 'HUMAN_APPROVAL_REQUIRED';
@@ -422,8 +433,6 @@ function escalationCodeFor(condition: { op: string }): ReasonCode {
       return 'ASSET_NOVEL';
     case 'chain_not_in_baseline':
       return 'CHAIN_NOVEL';
-    case 'contract_not_in_allowlist':
-      return 'CONTRACT_NOT_ALLOWED';
     case 'risk_gte':
       return 'RISK_ESCALATION_REQUIRED';
     case 'usd_gte':
@@ -432,8 +441,10 @@ function escalationCodeFor(condition: { op: string }): ReasonCode {
       return 'HUMAN_APPROVAL_REQUIRED';
     case 'time_out_of_hours_window':
       return 'OUT_OF_HOURS_WINDOW';
-    default:
-      return 'HUMAN_APPROVAL_REQUIRED';
+    default: {
+      const exhaustive: never = condition;
+      return exhaustive;
+    }
   }
 }
 
@@ -442,11 +453,21 @@ function escalationCodeFor(condition: { op: string }): ReasonCode {
  * an unparseable time window escalates rather than silently skipping the rule,
  * because a broken guard that reports "not triggered" is worse than no guard.
  */
+/**
+ * What stage 8 may be asked about.
+ *
+ * `unknown` is absent because stage 2 has already refused it, and saying so in the
+ * type is what lets the chain and asset rules read `candidate.chain` without a
+ * branch that can never be taken — a guard that looks defensive and is actually
+ * unreachable is how a dead arm gets mistaken for coverage.
+ */
+type EvaluableCandidate = Exclude<CandidateTransaction, { kind: 'unknown' }>;
+
 function matchesCondition(
   condition: PolicyDocument['escalation']['humanApproval']['requiredWhen'][number],
   ctx: {
     policy: CompiledPolicy;
-    candidate: CandidateTransaction;
+    candidate: EvaluableCandidate;
     state: EvaluationState;
   },
 ): boolean | 'error' {
@@ -485,16 +506,13 @@ function matchesCondition(
       if (candidate.kind !== 'transfer') return false;
       return !state.history.baselineAssets.has(assetKey(candidate.asset));
     }
-    case 'chain_not_in_baseline': {
-      if (candidate.kind === 'unknown') return true;
+    case 'chain_not_in_baseline':
       return !state.history.baselineChains.has(candidate.chain);
-    }
-    case 'contract_not_in_allowlist': {
-      if (candidate.kind !== 'contract_call') return false;
-      return !policy.contractCalls.contracts.has(candidate.contract);
-    }
     case 'risk_gte': {
-      if (state.risk === null) return policy.fallback.onRiskUnavailable === 'deny' ? false : true;
+      // An unavailable risk engine is already a DENY by the time stage 8 runs if
+      // the policy says so, so the only way here is a policy that chose to
+      // escalate: treat the missing assessment as the escalation it asked for.
+      if (state.risk === null) return true;
       const order = ['NONE', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const;
       return order.indexOf(state.risk.level) >= order.indexOf(condition.level);
     }

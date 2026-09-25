@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AgentId,
   AuthorizationTicket,
   CandidateTransaction,
   Decision,
   Money,
   PolicyDocument,
   ReasonCode,
+  RequestId,
+  ReservationId,
   isSubstitutionCritical,
   money,
+  newId,
   type CanonicalDigest,
 } from '../src/index.js';
 
@@ -273,6 +277,29 @@ describe('substitution-critical fields', () => {
     expect(isSubstitutionCritical('recipient')).toBe(true);
     expect(isSubstitutionCritical('amount')).toBe(true);
     expect(isSubstitutionCritical('memo')).toBe(false);
+  });
+});
+
+describe('identifier minting (assumption A8)', () => {
+  it('emits ids that the schemas accept', () => {
+    // What the code produces and what the validators admit are otherwise two
+    // conventions kept in step by hand, and the first mismatch is a runtime
+    // rejection of a freshly created row.
+    expect(AgentId.safeParse(newId('agt')).success).toBe(true);
+    expect(RequestId.safeParse(newId('req')).success).toBe(true);
+    expect(ReservationId.safeParse(newId('rsv')).success).toBe(true);
+  });
+
+  it('sorts by creation time, which is the reason UUIDv7 was chosen', () => {
+    const jan = newId('agt', Date.parse('2026-01-01T00:00:00.000Z'));
+    const jun = newId('agt', Date.parse('2026-06-01T00:00:00.000Z'));
+    expect(AgentId.safeParse(jan).success).toBe(true);
+    expect(jan < jun).toBe(true);
+  });
+
+  it('does not repeat itself across a thousand calls', () => {
+    const minted = new Set(Array.from({ length: 1000 }, () => newId('req')));
+    expect(minted.size).toBe(1000);
   });
 });
 

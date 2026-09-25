@@ -1,7 +1,7 @@
 import { Decision, type Decision as EngineDecision, type ReasonCode } from '@ari/schemas';
 import { computeDigest } from '@ari/transaction-engine';
 import { describe, expect, it } from 'vitest';
-import { evaluate, type CompiledPolicy, type EvaluationState } from '../src/index.js';
+import { compilePolicy, evaluate, PolicyCompilationError, type CompiledPolicy, type EvaluationState } from '../src/index.js';
 import {
   CAP,
   DAY_CAP,
@@ -9,13 +9,16 @@ import {
   MONTH_CAP,
   NOVEL,
   NOW_MS,
+  POLICY_ID,
   PERMITTED,
   RECIPIENT,
   UNIT,
   USDC,
+  VERSION_ID,
   candidate,
   compiled,
   contractCand,
+  doc,
   policyWith,
   risk,
   state,
@@ -267,6 +270,17 @@ describe('stage 7 — risk and simulation may escalate, never grant', () => {
     });
   });
 
+  it('escalates a missing risk assessment when the policy asked for exactly that', () => {
+    // `onRiskUnavailable: 'escalate'` is a promise that an unassessed request goes
+    // to a human. A `risk_gte` condition that reported "not triggered" because the
+    // assessment is absent would be the quiet version of the same bug.
+    const decision = decide({ policy: withCondition({ op: 'risk_gte', level: 'HIGH' }) });
+    expect(decision.outcome).toBe('REQUIRE_HUMAN_APPROVAL');
+    if (decision.outcome === 'REQUIRE_HUMAN_APPROVAL') {
+      expect(decision.reasonCodes).toContain('RISK_ESCALATION_REQUIRED');
+    }
+  });
+
   it('a CRITICAL risk assessment never turns a denial into an allowance', () => {
     const cand = candidate({ amount: { raw: (CAP + 1n).toString(), unit: UNIT } });
     expect(decide({ cand }).outcome).toBe('DENY');
@@ -384,13 +398,138 @@ describe('stage 8 — escalation conditions', () => {
     );
   });
 
-  it('escalates rather than allows on a contract outside the allowlist', () => {
+  it('names the condition as the reason when new recipients are otherwise permitted', () => {
+    // The fixture policy forbids novel recipients outright, so the test above
+    // escalates at the permission stage. With new recipients allowed, the only
+    // thing left that can ask for a human is the condition — and it has to say so,
+    // because "a rule wanted a person" and "the allowlist did not contain them"
+    // are different answers for whoever reads the trace.
+    const decision = decide({
+      policy: withCondition({ op: 'recipient_not_in_allowlist' }, { newRecipients: { allowed: true, requireApproval: false } }),
+      cand: candidate({ recipient: { chain: 'ethereum', address: NOVEL } }),
+    });
+    expect(decision.outcome).toBe('REQUIRE_HUMAN_APPROVAL');
+    if (decision.outcome !== 'REQUIRE_HUMAN_APPROVAL') return;
+    expect(decision.reasonCodes).toContain('RECIPIENT_NOT_ALLOWED');
+    expect(decision.matchedRules.at(-1)?.rulePath).toContain('requiredWhen');
+  });
+
+  it('denies a contract outside the allowlist, naming the rule that refused', () => {
     const policy = policyWith({
       transfers: transfersBlock(),
       contractCalls: { enabled: true, contracts: [] },
       newRecipients: { allowed: false, requireApproval: false },
     });
     deniedWith('CONTRACT_NOT_ALLOWED', { policy, cand: contractCand() });
+  });
+});
+
+describe('stage 8 — escalation conditions against a permitted contract call', () => {
+  const contractAllowed = { contractCalls: { enabled: true, contracts: [USDC] } };
+
+  it('lets a listed contract call through, with no transfer limit applied to it', () => {
+    const decision = decide({
+      policy: withCondition(null, contractAllowed),
+      cand: contractCand({ value: (CAP * 10n).toString() }),
+    });
+    // The huge `value` is the point: an ETH amount must not be measured against a
+    // USDC ceiling, and comparing them would be the unit bug wearing a different
+    // label. Contract-call amounts belong to a limit dimension this fixture
+    // policy does not have.
+    expect(decision.outcome).toBe('ALLOW');
+  });
+
+  it('does not read an amount threshold as satisfied by a transaction with no transfer amount', () => {
+    expect(
+      decide({
+        policy: withCondition({ op: 'amount_gt', raw: '1', unit: UNIT }, contractAllowed),
+        cand: contractCand(),
+      }).outcome,
+    ).toBe('ALLOW');
+  });
+
+  it('fails closed when an amount threshold names a unit the policy does not use', () => {
+    // Not an oversight in the policy author's file: a comparison between two units
+    // has no correct answer, so the rule reports itself as broken.
+    deniedWith('INTERNAL_ERROR_FAIL_CLOSED', {
+      policy: withCondition({ op: 'amount_gt', raw: '1', unit: 'gwei' }),
+      cand: candidate({ amount: { raw: (ESCALATE_ABOVE + 1n).toString(), unit: UNIT } }),
+    });
+  });
+
+  it('treats a missing USD estimate as unmet evidence even for a contract call', () => {
+    expect(
+      decide({
+        policy: withCondition({ op: 'usd_gte', cents: '1' }, contractAllowed),
+        cand: contractCand(),
+      }).outcome,
+    ).toBe('DENY');
+  });
+
+  it('skips the recipient rules for a transaction that has no recipient', () => {
+    for (const condition of [
+      { op: 'recipient_not_in_allowlist' },
+      { op: 'recipient_first_seen_within_days', days: 30 },
+    ]) {
+      expect(
+        decide({ policy: withCondition(condition, contractAllowed), cand: contractCand() }).outcome,
+      ).toBe('ALLOW');
+    }
+  });
+
+  it('does not read a contract call as a novel asset', () => {
+    expect(
+      decide({ policy: withCondition({ op: 'asset_not_in_baseline' }, contractAllowed), cand: contractCand() }).outcome,
+    ).toBe('ALLOW');
+  });
+
+  it('compares a contract call against the chain baseline', () => {
+    expect(
+      decide({
+        policy: withCondition({ op: 'chain_not_in_baseline' }, contractAllowed),
+        cand: contractCand(),
+      }).outcome,
+    ).toBe('ALLOW');
+  });
+});
+
+describe('compilePolicy — the unit mismatches that would otherwise be silent', () => {
+  const ids = { policyId: POLICY_ID, versionId: VERSION_ID, versionNumber: 1 };
+
+  function documentWithTransfers(overrides: Record<string, unknown>) {
+    const document = doc();
+    Object.assign(document.permissions.transfers as unknown as Record<string, unknown>, overrides);
+    return document;
+  }
+
+  it('refuses a per-day limit in a different unit from the per-transaction limit', () => {
+    const document = documentWithTransfers({ perDay: { maxRaw: '25000000000', unit: 'usdc-8dp' } });
+    expect(() => compilePolicy(document, ids)).toThrow(PolicyCompilationError);
+  });
+
+  it('refuses a per-month limit whose unit disagrees', () => {
+    const document = documentWithTransfers({ perMonth: { maxRaw: '200000000000', unit: 'usdc-8dp' } });
+    expect(() => compilePolicy(document, ids)).toThrow(/per-month limit unit mismatch/);
+  });
+
+  it('compiles an absent monthly limit to nothing rather than to zero', () => {
+    const compiledWithout = compilePolicy(documentWithTransfers({ perMonth: null }), ids);
+    expect(compiledWithout.transfers.perMonthRaw).toBeNull();
+    // A null monthly ceiling means "not bounded", which is a different decision
+    // from a ceiling that has already been reached. Same request, same already-
+    // spent monthly total: the only thing that changes is whether the policy
+    // declared a monthly ceiling at all.
+    const cand = candidate({ amount: { raw: PERMITTED.toString(), unit: UNIT } });
+    const st = state({
+      usage: { reservedDayRaw: 0n, reservedMonthRaw: MONTH_CAP, transactionsLastHour: 0, ikaSpentTodayRaw: 0n },
+    });
+    expect(evaluate({ policy: compiledWithout, candidate: cand, state: st }).outcome).toBe('ALLOW');
+    expect(evaluate({ policy: compiled(), candidate: cand, state: st }).outcome).toBe('DENY');
+  });
+
+  it('refuses a policy that enables transfers on no chains at all', () => {
+    const document = documentWithTransfers({ chains: [] });
+    expect(() => compilePolicy(document, ids)).toThrow(/no permitted chains/);
   });
 });
 
@@ -453,6 +592,21 @@ describe('the decision record', () => {
     expect(decision.outcome).toBe('DENY');
     if (decision.outcome === 'DENY') expect(decision.reasonCodes).toEqual(['INTERNAL_ERROR_FAIL_CLOSED']);
     expect(Decision.safeParse(decision).success).toBe(true);
+  });
+
+  it('does not assume the thing that broke was an Error', () => {
+    // A rejection string, a thrown plain object, a panic across a native boundary:
+    // the catch has to survive all of them, and the audit line it writes has to
+    // admit it could not read a message rather than print "undefined".
+    const hostile = {
+      ...state(),
+      scopes: { includes: () => { throw 'not an error'; } },
+    } as unknown as ReturnType<typeof state>;
+    const decision = evaluate({ policy: compiled(), candidate: candidate(), state: hostile });
+    expect(decision.outcome).toBe('DENY');
+    if (decision.outcome === 'DENY') {
+      expect(decision.matchedRules.at(-1)?.detail).toBe('non-error thrown');
+    }
   });
 });
 

@@ -50,6 +50,12 @@ describe('canonicalEncode — the properties the module header claims', () => {
     expect(canonicalEncode({ a: undefined })).not.toBe(canonicalEncode({}));
   });
 
+  it('tags booleans in both directions, so false is not the same as absent', () => {
+    expect(canonicalEncode(true)).toBe('d1');
+    expect(canonicalEncode(false)).toBe('d0');
+    expect(canonicalEncode({ ok: false })).not.toBe(canonicalEncode({}));
+  });
+
   it('distinguishes an array from an object with numeric keys', () => {
     expect(canonicalEncode([1n, 2n])).not.toBe(canonicalEncode({ 0: 1n, 1: 2n }));
   });
