@@ -19,6 +19,7 @@ import { createHash } from 'node:crypto';
 import {
   CandidateTransaction,
   CanonicalDigest,
+  DIGEST_FIELD_ALLOWLIST,
   type CanonicalDigest as CanonicalDigestType,
 } from '@ari/schemas';
 import { z } from 'zod';
@@ -64,36 +65,16 @@ export function canonicalEncode(value: unknown): string {
   throw new TypeError(`canonicalize: unsupported value of type ${typeof value}`);
 }
 
-/**
- * The subset of fields that participate in the digest.
- *
- * An allowlist, deliberately: a new field added to the transaction model in six
- * months will not be in this list until someone decides whether it is
- * substitution-critical. That decision then has to be made explicitly rather
- * than by accident of serialisation.
- */
-export const DIGEST_FIELD_ALLOWLIST = [
-  'kind',
-  'chain',
-  'reportedChain',
-  'asset',
-  'amount',
-  'recipient',
-  'contract',
-  'selector',
-  'calldata',
-  'value',
-  'replayProtection',
-  'deadline',
-  'walletId',
-  'agentId',
-  'reason',
-] as const;
-
 export interface CanonicalizationContext {
   readonly policyVersionId: string;
 }
 
+/**
+ * Field selection is an allowlist owned by `@ari/schemas`. Two copies of that
+ * list is the T10 substitution bug in waiting: the day they disagree, the
+ * transaction a human approved and the transaction that gets signed may differ
+ * by exactly the field one copy forgot.
+ */
 export function canonicalize(
   candidate: CandidateTransaction,
   context: CanonicalizationContext,

@@ -125,6 +125,20 @@ export const RecipientAddress = z.discriminatedUnion('chain', [
 ]);
 export type RecipientAddress = z.infer<typeof RecipientAddress>;
 
+/**
+ * A small count that arrives as a JSON integer — token decimals today.
+ *
+ * Parsed to `bigint` for one reason: everything inside a candidate transaction
+ * reaches the canonical encoder, and that encoder refuses `number` outright
+ * because it cannot tell a float in a money field from a harmless integer.
+ * Weakening the refusal to let `decimals` through would mean a future
+ * `amount: 5000.0` encodes silently instead of throwing — so the integer is
+ * widened, and the refusal stays absolute.
+ */
+export const SmallCount = z
+  .union([z.bigint(), z.string().regex(/^\d+$/), z.number().int().nonnegative()])
+  .transform((value) => (typeof value === 'bigint' ? value : BigInt(value)));
+
 export const AssetRef = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('native'), chain: SupportedChain }).strict(),
   z
@@ -134,7 +148,7 @@ export const AssetRef = z.discriminatedUnion('kind', [
       /** The contract is part of the asset identity. Two USDCs are not one asset. */
       contract: EvmAddress,
       symbol: z.string().min(1).max(16),
-      decimals: z.number().int().min(0).max(36),
+      decimals: SmallCount.pipe(z.bigint().min(0n).max(36n)),
     })
     .strict(),
 ]);

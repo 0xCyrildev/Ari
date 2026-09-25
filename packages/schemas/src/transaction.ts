@@ -134,24 +134,41 @@ export const CanonicalDigest = z
   .brand('CanonicalDigest');
 export type CanonicalDigest = z.infer<typeof CanonicalDigest>;
 
-/** Fields that MUST be inside the digest. Anything omitted is substitutable. */
-export const DIGEST_FIELDS = [
+/**
+ * The fields that participate in the canonical digest, declared **once**, here,
+ * because `@ari/transaction-engine` consumes this list. Two copies of a digest
+ * allowlist is the T10 substitution bug in waiting: the day they disagree, the
+ * transaction a human approved and the transaction that got signed are allowed
+ * to differ by exactly the field one copy forgot.
+ */
+export const DIGEST_FIELD_ALLOWLIST = [
   'kind',
   'chain',
+  'reportedChain',
   'asset',
-  'amount.raw',
-  'amount.unit',
+  'amount',
   'recipient',
   'contract',
+  'selector',
   'calldata',
+  'value',
   'replayProtection',
   'deadline',
   'walletId',
   'agentId',
-  'policyVersionId',
+  'reason',
 ] as const;
 
-/** Recipient/amount/chain/asset are the substitution-critical subset. */
+/**
+ * Every remaining top-level field of every candidate variant, named so the
+ * omission is a decision rather than an accident. A test asserts that
+ * allowlist ∪ this list is exactly the set of keys the candidate schemas can
+ * produce, which is what fails when someone adds a field without deciding
+ * whether it is substitution-critical.
+ */
+export const DELIBERATELY_NOT_IN_DIGEST = ['requestId', 'idempotencyKey', 'usdEstimate'] as const;
+
+/** Recipient/amount/chain/asset are the subset a decision has already bound. */
 export const IMMUTABLE_AFTER_DECISION = ['recipient', 'amount', 'chain', 'asset'] as const;
 
 export function isSubstitutionCritical(field: string): boolean {

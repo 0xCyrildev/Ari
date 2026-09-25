@@ -1,0 +1,126 @@
+{
+  "algorithm": "canon/v1",
+  "vectors": [
+    {
+      "name": "erc20-transfer-account-sequence",
+      "policyVersionId": "ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+      "input": {
+        "kind": "transfer",
+        "chain": "ethereum",
+        "requestId": "req_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+        "agentId": "agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+        "walletId": "wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+        "deadline": "2026-09-25T12:00:00.000Z",
+        "idempotencyKey": "inv-1",
+        "usdEstimate": null,
+        "asset": {
+          "kind": "erc20",
+          "chain": "ethereum",
+          "contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "symbol": "USDC",
+          "decimals": 6
+        },
+        "amount": {
+          "raw": "2000000000",
+          "unit": "usdc-6dp"
+        },
+        "recipient": {
+          "chain": "ethereum",
+          "address": "0x3f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c"
+        },
+        "replayProtection": {
+          "scheme": "account_sequence",
+          "nonce": "12",
+          "chainId": "1",
+          "gasLimit": null,
+          "maxFeePerUnit": null
+        }
+      },
+      "canonical": "o{s15:__policyVersion=>s40:ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s7:agentId=>s40:agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s6:amount=>o{s3:raw=>b2000000000,s4:unit=>s8:usdc-6dp},s5:asset=>o{s5:chain=>s8:ethereum,s8:contract=>s42:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48,s8:decimals=>b6,s4:kind=>s5:erc20,s6:symbol=>s4:USDC},s5:chain=>s8:ethereum,s8:deadline=>s24:2026-09-25T12:00:00.000Z,s4:kind=>s8:transfer,s9:recipient=>o{s7:address=>s42:0x3f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c,s5:chain=>s8:ethereum},s16:replayProtection=>o{s7:chainId=>s1:1,s8:gasLimit=>n,s13:maxFeePerUnit=>n,s5:nonce=>b12,s6:scheme=>s16:account_sequence},s8:walletId=>s40:wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b}",
+      "digest": "canon/v1:c70d14c2e517b012058e4f6a270fdb138e5338cb27227b323a4e2c458f12ee4f"
+    },
+    {
+      "name": "native-transfer-max-nonce",
+      "policyVersionId": "ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+      "input": {
+        "kind": "transfer",
+        "chain": "ethereum",
+        "requestId": "req_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+        "agentId": "agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+        "walletId": "wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+        "deadline": "2026-12-31T23:59:59.000Z",
+        "idempotencyKey": "inv-9",
+        "usdEstimate": {
+          "cents": "500000",
+          "asOf": "2026-09-25T11:59:00.000Z",
+          "source": "manual"
+        },
+        "asset": {
+          "kind": "native",
+          "chain": "ethereum"
+        },
+        "amount": {
+          "raw": "18446744073709551615",
+          "unit": "wei"
+        },
+        "recipient": {
+          "chain": "ethereum",
+          "address": "0x9bc1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9"
+        },
+        "replayProtection": {
+          "scheme": "account_sequence",
+          "nonce": "18446744073709551615",
+          "chainId": "11155111",
+          "gasLimit": "21000",
+          "maxFeePerUnit": "20000000000"
+        }
+      },
+      "canonical": "o{s15:__policyVersion=>s40:ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s7:agentId=>s40:agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s6:amount=>o{s3:raw=>b18446744073709551615,s4:unit=>s3:wei},s5:asset=>o{s5:chain=>s8:ethereum,s4:kind=>s6:native},s5:chain=>s8:ethereum,s8:deadline=>s24:2026-12-31T23:59:59.000Z,s4:kind=>s8:transfer,s9:recipient=>o{s7:address=>s42:0x9bc1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9,s5:chain=>s8:ethereum},s16:replayProtection=>o{s7:chainId=>s8:11155111,s8:gasLimit=>b21000,s13:maxFeePerUnit=>b20000000000,s5:nonce=>b18446744073709551615,s6:scheme=>s16:account_sequence},s8:walletId=>s40:wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b}",
+      "digest": "canon/v1:b1574b4a856ccde31cf0c76e51d01f41ba4486c02d056eb44f3a64d2f55da896"
+    },
+    {
+      "name": "contract-call-with-calldata",
+      "policyVersionId": "ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+      "input": {
+        "kind": "contract_call",
+        "chain": "ethereum",
+        "requestId": "req_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+        "agentId": "agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+        "walletId": "wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+        "deadline": "2026-09-25T12:00:00.000Z",
+        "idempotencyKey": "inv-2",
+        "usdEstimate": null,
+        "contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "selector": "0xa9059cbb",
+        "calldata": "0xa9059cbb0000000000000000000000003f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c",
+        "value": "0",
+        "replayProtection": {
+          "scheme": "account_sequence",
+          "nonce": "7",
+          "chainId": "1",
+          "gasLimit": "21000",
+          "maxFeePerUnit": "20000000000"
+        }
+      },
+      "canonical": "o{s15:__policyVersion=>s40:ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s7:agentId=>s40:agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s8:calldata=>s74:0xa9059cbb0000000000000000000000003f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c,s5:chain=>s8:ethereum,s8:contract=>s42:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48,s8:deadline=>s24:2026-09-25T12:00:00.000Z,s4:kind=>s13:contract_call,s16:replayProtection=>o{s7:chainId=>s1:1,s8:gasLimit=>b21000,s13:maxFeePerUnit=>b20000000000,s5:nonce=>b7,s6:scheme=>s16:account_sequence},s8:selector=>s10:0xa9059cbb,s5:value=>b0,s8:walletId=>s40:wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b}",
+      "digest": "canon/v1:0f7dd41b2aaa510318b5e5a90f3243e4e3fcf04100d2373ab109006d11da5c15"
+    },
+    {
+      "name": "unknown-chain-sui",
+      "policyVersionId": "ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+      "input": {
+        "kind": "unknown",
+        "reason": "chain not supported: sui",
+        "reportedChain": "sui",
+        "requestId": "req_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+        "agentId": "agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+        "walletId": "wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b",
+        "deadline": "2026-09-25T12:00:00.000Z",
+        "idempotencyKey": "inv-3",
+        "usdEstimate": null
+      },
+      "canonical": "o{s15:__policyVersion=>s40:ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s7:agentId=>s40:agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s8:deadline=>s24:2026-09-25T12:00:00.000Z,s4:kind=>s7:unknown,s6:reason=>s24:chain not supported: sui,s13:reportedChain=>s3:sui,s8:walletId=>s40:wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b}",
+      "digest": "canon/v1:0c397641df3fff3a71c4dc836fa86ad52a1045e6881a2c70976195e27dfbd1cc"
+    }
+  ]
+}
