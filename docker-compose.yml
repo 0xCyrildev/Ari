@@ -1,0 +1,33 @@
+name: ari
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ari-postgres
+    environment:
+      POSTGRES_USER: ari
+      POSTGRES_PASSWORD: ari
+      POSTGRES_DB: ari
+    # 5432 and 5433 are already bound on this host (system postgres + kuma).
+    ports:
+      - '127.0.0.1:5435:5432'
+    volumes:
+      - ari-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ari -d ari']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: ari-redis
+    # Redis is a rate-limiting cache in the gateway and nothing else. No limit,
+    # reservation or authorization state lives here (ASSUMPTIONS A3), so an
+    # empty flush is an availability event, never a security one.
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    ports:
+      - '127.0.0.1:6381:6379'
+
+volumes:
+  ari-pgdata:

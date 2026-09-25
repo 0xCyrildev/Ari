@@ -1,0 +1,26 @@
+{
+  "name": "ari",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Ari — permission infrastructure for autonomous money",
+  "type": "module",
+  "packageManager": "pnpm@11.23.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:security": "vitest run --dir tests/security",
+    "db:up": "docker compose up -d postgres redis",
+    "db:down": "docker compose down",
+    "clean": "rm -rf packages/*/dist node_modules/.vite"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "prisma": "7.10.0",
+    "typescript": "5.9.3",
+    "vitest": "5.0.1"
+  }
+}
