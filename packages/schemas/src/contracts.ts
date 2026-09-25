@@ -48,6 +48,7 @@ export const ReasonCode = z.enum([
   'CONTRACT_NOT_ALLOWED',
   'TRANSFER_TYPE_DISABLED',
   // limits
+  'AMOUNT_ZERO',
   'AMOUNT_EXCEEDS_PER_TRANSACTION',
   'AMOUNT_EXCEEDS_DAILY_LIMIT',
   'AMOUNT_EXCEEDS_MONTHLY_LIMIT',
@@ -117,6 +118,8 @@ export const Decision = z.discriminatedUnion('outcome', [
     .object({
       outcome: z.literal('ALLOW'),
       reasonCodes: z.array(ReasonCode).max(20),
+      /** The exact bytes this ALLOW authorises — a ticket seals this and nothing else. */
+      digest: CanonicalDigest,
       authorityMode: WalletAuthorityMode,
       ...decisionBase,
     })
@@ -126,6 +129,11 @@ export const Decision = z.discriminatedUnion('outcome', [
       outcome: z.literal('DENY'),
       /** A DENY with no reason codes is a support ticket, not a decision. */
       reasonCodes: z.array(ReasonCode).min(1).max(20),
+      /**
+       * No digest, deliberately: a candidate the canonicaliser refuses still has
+       * to be deniable, and requiring the digest here would make an
+       * unencodable transaction produce no decision at all rather than a DENY.
+       */
       ...decisionBase,
     })
     .strict(),

@@ -27,6 +27,7 @@ import {
   type RiskAssessment,
   type MatchedRule,
 } from '@ari/schemas';
+import { computeDigest } from '@ari/transaction-engine';
 
 // ---------------------------------------------------------------------------
 // Compiled form
@@ -154,7 +155,6 @@ export interface EvaluationState {
   readonly agentId: string;
   readonly agentStatus: 'ACTIVE' | 'PAUSED' | 'REVOKED';
   readonly scopes: readonly string[];
-  readonly digest: CanonicalDigest;
   readonly usage: {
     readonly reservedDayRaw: bigint;
     readonly reservedMonthRaw: bigint;
@@ -191,6 +191,21 @@ export function evaluate(input: {
 }): Decision {
   const { policy, candidate, state } = input;
   const matched: MatchedRule[] = [];
+
+  /**
+   * Derived here rather than accepted from the caller.
+   *
+   * The previous contract took `state.digest` as an input, which meant the
+   * composition root could hand `evaluate()` a candidate and a digest computed
+   * over some *other* candidate: the engine would then ALLOW on the bytes it was
+   * shown, the ticket would seal the digest it was handed, and the two would
+   * disagree — an authorization for one transaction spent on another (T10, T25).
+   * Binding is now something the kernel does, not something it is told.
+   */
+  let sealed: CanonicalDigest | null = null;
+  const digestOf = (): CanonicalDigest =>
+    (sealed ??= computeDigest(candidate, { policyVersionId: policy.versionId }));
+
   const base = {
     requestId: state.requestId,
     policyId: policy.policyId,
@@ -214,7 +229,7 @@ export function evaluate(input: {
     ...base,
     outcome: 'REQUIRE_HUMAN_APPROVAL',
     reasonCodes: codes,
-    digest: state.digest,
+    digest: digestOf(),
     expiresAt: new Date(
       Number(state.nowMs + BigInt(policy.validity.ttlSeconds * 1000)),
     ).toISOString(),
@@ -300,7 +315,11 @@ export function evaluate(input: {
         );
       }
       const amount = candidate.amount.raw;
-      if (amount <= 0n) return deny(['AMOUNT_EXCEEDS_PER_TRANSACTION'], 'amount.positive', 'zero');
+      // A zero-amount transfer is refused, but not with the code that means
+      // "too big": an audit reader chasing an over-cap payment would be sent to
+      // the wrong rule, and the agent gets told the wrong thing about its own
+      // request.
+      if (amount <= 0n) return deny(['AMOUNT_ZERO'], 'amount.positive');
       if (amount > policy.transfers.perTransactionRaw) {
         return deny(
           ['AMOUNT_EXCEEDS_PER_TRANSACTION'],
@@ -378,6 +397,7 @@ export function evaluate(input: {
       ...base,
       outcome: 'ALLOW',
       reasonCodes: codes,
+      digest: digestOf(),
       authorityMode: policy.authorityMode,
       matchedRules: [...matched, { rulePath: 'decision', outcome: 'allow', detail: null }],
     };

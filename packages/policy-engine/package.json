@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@ari/schemas": "workspace:*",
+    "@ari/transaction-engine": "workspace:*",
     "zod": "4.6.5"
   },
   "devDependencies": {
