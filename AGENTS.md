@@ -27,8 +27,8 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | 9 CLI | done | `apps/cli`: the operator's and the approver's tool, 16 commands, `policy validate` against a 23-case corpus, and its own socket-level suite |
 | 4, 8, 10–11 | not started | intent, Ika (blocked on §6), dashboard, security review |
 
-`pnpm test` is **534 tests / 30 files**, in two halves that add up to it: `pnpm test:unit` is the
-**305** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **229** that
+`pnpm test` is **536 tests / 30 files**, in two halves that add up to it: `pnpm test:unit` is the
+**305** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **231** that
 need Postgres and do not skip without it. `tests/security/simulation.test.ts` needs Postgres **and**
 `anvil`; it starts its own on 127.0.0.1:8561 and refuses to run if that port is already taken. They did not always add up: `test:security` was
 `vitest run --dir tests/security`, which on vitest 5 matches **no files** at all. Positional filters are
@@ -588,13 +588,16 @@ assertions about somebody else's chain.
 8. **Cross-suite test assertions must be scoped to the tenant they own.** `api.test.ts` once counted
    `transaction_requests` globally to prove a preview wrote nothing; the suites run as parallel workers
    against one database, so the control was another file's traffic and it failed about 1 run in 8. Count
-   `WHERE org_id = …`, or count nothing. The rule is not historical: a test written months later counted
+   `WHERE org_id = …`, or count nothing. The rule is not historical: a test added to this suite today counted
    `idempotency_key = 'cost-denied'` globally and got **3**, which was three earlier runs of itself, and
    it would have passed silently forever except that the control next to it (expect exactly 1) was the
    thing that broke. Tenants are never truncated between runs, so any unscoped count is a count of
    history.
-9. `docs/ARCHITECTURE.md` §13's `IntentInterpreter` names `AMBIGUOUS` while the schema and every doc call it
-   `NEEDS_CLARIFICATION`. `ASSUMPTIONS.md` A5 has the old name too. Fix when Phase 4 starts.
+9. **Closed as of 2026-09-26, and worth the sentence.** `ARCHITECTURE.md` §13 and `ASSUMPTIONS.md` A5 named
+   the intent boundary's second outcome `AMBIGUOUS` while `contracts.ts` and every other document call it
+   `NEEDS_CLARIFICATION`. Both docs now say what the schema says. The reason it was worth carrying at all:
+   Phase 4 is the phase that would have *implemented* the name in the wrong place, and a branch written
+   against a state that does not exist is a branch that never runs.
 10. **A tenant with no history always scores MEDIUM.** `NO_BEHAVIOUR_BASELINE` is deliberately not the
     quietest answer, so the first payment an agent ever makes is "unknown", not "clean" — and a policy that
     escalates at `risk_gte: LOW` will send every one of them to a human. That is a real operational

@@ -107,7 +107,7 @@ Second column is why `ari-api` is the least interesting thing to breach.
 POST /v1/transactions/evaluate
   1  Gateway          authenticate agent credential → agent, org, scopes; rate limit; idempotency key
   2  Verifier         normalise + validate the candidate transaction; unknown type ⇒ DENY before anything else runs
-  3  Intent           (optional) resolve natural language → structured intent; AMBIGUOUS ⇒ stop, ask
+  3  Intent           (optional) resolve natural language → structured intent; NEEDS_CLARIFICATION ⇒ stop, ask
   4  Policy           evaluate compiled, immutable, versioned policy → ALLOW | DENY | REQUIRE_HUMAN_APPROVAL
   5  Risk             deterministic signals (+ optional AI explanation). Can escalate, can never grant
   6  Simulation       advisory in MVP: success, asset deltas, contract interactions, warnings
