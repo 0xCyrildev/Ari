@@ -349,15 +349,16 @@ export async function appendEvent(tx: AuditTx, input: AuditEventInput): Promise<
   return { ...input, metadata, reasonCodes, severity, id, prevHash, hash };
 }
 
-export /**
- * A row as read back, plus the columns Postgres assigned and the hash it claims.
+/**
+ * One event, as it can be read back or exported: every field that was hashed, plus the
+ * columns Postgres assigned and the hash the row claims for itself.
  *
  * `seq` and `madeAt` are deliberately outside `HashableParts` and must stay there:
  * they are not in the digest, and hashing the whole row would make every
  * recomputation disagree with the writer's. That is not a theoretical concern — it
  * is the first thing this module got wrong.
  */
-interface StoredEvent extends HashableParts {
+export interface EventLogEntry extends HashableParts {
   readonly seq: string;
   readonly madeAt: string;
   /** What the row claims. Compared against the recomputed value, never used as it. */
@@ -365,12 +366,12 @@ interface StoredEvent extends HashableParts {
 }
 
 /** The projection that was hashed, and nothing else. */
-function hashableOf(event: StoredEvent): HashableParts {
+function hashableOf(event: EventLogEntry): HashableParts {
   const { seq: _seq, madeAt: _madeAt, storedHash: _storedHash, ...parts } = event;
   return parts;
 }
 
-async function readEvents(executor: AuditReader, orgId: string): Promise<StoredEvent[]> {
+async function readEvents(executor: AuditReader, orgId: string): Promise<EventLogEntry[]> {
   const rows = await executor.query<{
     id: string;
     org_id: string;
@@ -425,6 +426,38 @@ export interface ChainReport {
   readonly events: number;
   /** `seq` values whose recomputed hash or chain link does not hold. */
   readonly breaks: readonly { readonly seq: string; readonly kind: 'HASH' | 'LINK' }[];
+  /**
+   * The hash the chain recomputes *to*, which is the value worth comparing against a
+   * second source — an operator's notebook, a screenshot, the API's own head — because a
+   * file that verifies internally is only a self-consistent file. Empty chains report
+   * `genesis`, so "no events" and "no head" cannot be confused.
+   */
+  readonly head: string;
+}
+
+/**
+ * Walk a chain that is already in memory, and recompute every link.
+ *
+ * Separate from `verifyChain` because the thing worth proving is that the walk needs no
+ * database at all: an export handed to an auditor, a lawyer or a counterparty has to be
+ * checkable by someone who cannot query the tenant's tables, and if the verifier reached
+ * for a connection anywhere in the loop it would be trusting a copy of the evidence about
+ * the evidence. `verifyChain` is now this function plus a `SELECT`.
+ */
+export function verifyEventLog(entries: readonly EventLogEntry[]): ChainReport {
+  const breaks: { seq: string; kind: 'HASH' | 'LINK' }[] = [];
+  let expectedPrev = GENESIS;
+
+  for (const event of entries) {
+    if (event.prev !== expectedPrev) breaks.push({ seq: event.seq, kind: 'LINK' });
+    // Recomputed from the row's own content. Anything that read the stored hash instead
+    // would be examining the evidence with the evidence's own answer key.
+    const recomputed = eventHash(hashableOf(event));
+    if (recomputed !== event.storedHash) breaks.push({ seq: event.seq, kind: 'HASH' });
+    expectedPrev = recomputed;
+  }
+
+  return { ok: breaks.length === 0, events: entries.length, breaks, head: expectedPrev };
 }
 
 /**
@@ -439,18 +472,12 @@ export async function verifyChain(
   executor: AuditReader,
   orgId: string,
 ): Promise<ChainReport> {
-  const stored = await readEvents(executor, orgId);
-  const breaks: { seq: string; kind: 'HASH' | 'LINK' }[] = [];
-  let expectedPrev = GENESIS;
+  // One query reads all the rows; the walk is the pure function above, shared with whoever
+  // holds nothing but an exported file.
+  return verifyEventLog(await readEvents(executor, orgId));
+}
 
-  for (const event of stored) {
-    if (event.prev !== expectedPrev) breaks.push({ seq: event.seq, kind: 'LINK' });
-    // One query read all the rows; this recomputes from them. Anything that still
-    // touched the database here would be trusting the thing under examination.
-    const recomputed = eventHash(hashableOf(event));
-    if (recomputed !== event.storedHash) breaks.push({ seq: event.seq, kind: 'HASH' });
-    expectedPrev = recomputed;
-  }
-
-  return { ok: breaks.length === 0, events: stored.length, breaks };
+/** The events themselves, for an export: the same projection `verifyChain` reads. */
+export async function readEventLog(executor: AuditReader, orgId: string): Promise<EventLogEntry[]> {
+  return readEvents(executor, orgId);
 }

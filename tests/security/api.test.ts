@@ -719,6 +719,31 @@ describe('what the API process itself is allowed to hold', () => {
     });
     expect(clash.statusCode).toBe(500);
     expect(clash.json()).toEqual({ code: 'INTERNAL' });
+    // Silence outward is the decision. Silence *inward* was a bug: `logger: false` made
+    // `app.log` a no-op, so a 500 left no trace anywhere and whoever was holding the failing
+    // request had to reproduce it to learn which constraint broke. The error now goes to the
+    // process's stderr, where the operator's log is, and never into the response.
+    const written: string[] = [];
+    const original = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await api.app.inject({
+        method: 'POST',
+        url: '/v1/transactions/authorize',
+        headers: bearer(t.presented),
+        payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(700n)), idempotencyKey: 'clash' },
+      });
+    } finally {
+      process.stderr.write = original;
+    }
+    const trace = written.join('');
+    expect(trace).toMatch(/ari-api: unhandled 500/);
+    expect(trace).toMatch(/idempotency|conflict|duplicate key/i);
+    // And the response that the caller sees is still the one-word answer it was before.
+    expect(trace).not.toMatch(/candidate|digest/);
   });
 });
 

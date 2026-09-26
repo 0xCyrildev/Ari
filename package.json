@@ -18,12 +18,14 @@
     "db:down": "docker compose down",
     "clean": "rm -rf packages/*/dist node_modules/.vite",
     "test:coverage": "vitest run --coverage.enabled --coverage.include='packages/*/src/**' --coverage.reporters=text",
-    "seed": "node --import tsx --env-file-if-exists=.env scripts/seed-tenant.mts"
+    "seed": "node --import tsx --env-file-if-exists=.env scripts/seed-tenant.mts",
+    "ari": "node --import tsx --env-file-if-exists=.env apps/cli/src/main.ts"
   },
   "devDependencies": {
     "@ari/api": "workspace:*",
     "@ari/approvals": "workspace:*",
     "@ari/audit": "workspace:*",
+    "@ari/cli": "workspace:*",
     "@ari/client": "workspace:*",
     "@ari/identity": "workspace:*",
     "@ari/ledger": "workspace:*",

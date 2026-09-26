@@ -18,18 +18,24 @@
  * fill out a route table is a security decision taken as a side effect.
  */
 
-import { CandidateTransaction, type Decision } from '@ari/schemas';
+import { CandidateTransaction, PolicyDocument, type Decision } from '@ari/schemas';
 import {
   activeUserScopes,
   asTenant,
+  createAgent,
   createOrganization,
   createUser,
+  createWallet,
+  grantWalletToAgent,
+  issueCredential,
   issueUserCredential,
   isScope,
   requestStateOf,
   type Scope,
   type TenantTx,
 } from '@ari/identity';
+import { readEventLog, verifyEventLog } from '@ari/audit';
+import { activateVersion, createPolicy } from '@ari/policies';
 import {
   approvalDetail,
   listApprovals,
@@ -105,6 +111,16 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     const status = error.statusCode ?? 500;
     if (status < 500) {
       return reply.code(status).send({ code: 'INVALID_REQUEST', detail: error.message.slice(0, 200) });
+    }
+    // The response says nothing, and that is the decision (S16's cousin: an idempotency
+    // conflict names two digests, a constraint error quotes a fragment of SQL, and a client
+    // that sees either has learned the shape of the interior). Silence *outward* was never
+    // meant to mean silence inward — but until now it did, because `logger: false` makes
+    // `app.log` a no-op and a 500 left no trace anywhere at all. Whoever is holding the
+    // failing request had to reproduce it to learn what broke.
+    process.stderr.write(`ari-api: unhandled ${status} ${error.name}: ${error.message}\n`);
+    if (error.stack !== undefined) {
+      process.stderr.write(`${error.stack.split('\n').slice(1, 5).join('\n')}\n`);
     }
     return reply.code(500).send({ code: 'INTERNAL' });
   });
@@ -254,7 +270,16 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
    * to be reflected in what this request is allowed to do, and a principal holding a
    * scope list from authentication is a second source of truth that looks authoritative.
    */
-  const asApprover = async (
+  /**
+   * Run `fn` as an authenticated human, with the scope this route needs.
+   *
+   * The scope is named per route rather than once for the group, because the group is not
+   * one authority: deciding an approval, managing agents and reading the audit trail are
+   * three different things a credential can be refused. All of them read the live list from
+   * `user_credentials` inside the tenant transaction — never from what authentication
+   * returned, which is a value from before the revocation that may have happened since.
+   */
+  const asUser = (requiredScope: string) => async (
     request: { headers: Record<string, string | string[] | undefined> },
     reply: FastifyReply,
     fn: (tx: TenantTx, principal: ApproverPrincipal) => Promise<GateReply>,
@@ -267,13 +292,15 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     const principal = auth.principal;
     const outcome = await asTenant<GateReply>(deps.pipeline.pool, principal.orgId, async (tx) => {
       const scopes = await activeUserScopes(tx, principal.credentialId);
-      if (!scopes.includes('approval:decide')) {
-        return { status: 403, body: { code: 'SCOPE_REFUSED', detail: 'this credential cannot decide approvals' } };
+      if (!scopes.includes(requiredScope)) {
+        return { status: 403, body: { code: 'SCOPE_REFUSED', detail: `this route requires ${requiredScope}` } };
       }
       return fn(tx, principal);
     });
     await reply.code(outcome.status).send(outcome.body);
   };
+
+  const asApprover = asUser('approval:decide');
 
   app.get('/v1/approvals', async (request, reply) =>
     asApprover(request, reply, async (tx, principal) => {
@@ -430,4 +457,192 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
       expiresAt: issued.expiresAt,
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // The operator's half, over a human credential rather than the deployment's bootstrap
+  // token: create an agent, give it a secret, point it at a wallet, put a policy live, read
+  // the trail.
+  //
+  // Each of these existed only as a package call a test or `pnpm seed` made directly, which
+  // is the gap an operator actually has — and the reason the scopes below are `agent:manage`,
+  // `wallet:manage`, `policy:activate` and `audit:read` is that `013` already permits a human
+  // credential to hold them. `SCOPES` declared that vocabulary long before any route could
+  // ask for it, which is exactly how a scope list quietly becomes decoration.
+  // ---------------------------------------------------------------------------
+
+  const idParam = (request: { params: unknown }, name: string): string =>
+    (request.params as Record<string, string>)[name] ?? '';
+
+  const unusable = (value: string, max: number): boolean => value.length === 0 || value.length > max;
+
+  const asOperator = asUser;
+
+  app.post('/v1/agents', async (request, reply) =>
+    asOperator('agent:manage')(request, reply, async (tx, principal) => {
+      const body = request.body as { name?: unknown };
+      if (typeof body.name !== 'string' || unusable(body.name.trim(), 120)) {
+        return { status: 400, body: { code: 'INVALID_REQUEST', detail: 'name is required, at most 120 characters' } };
+      }
+      const agentId = await createAgent(tx, { name: body.name.trim(), createdBy: principal.userId });
+      return { status: 201, body: { agentId } };
+    }),
+  );
+
+  app.get('/v1/agents', async (request, reply) =>
+    asOperator('agent:manage')(request, reply, async (tx) => {
+      const rows = await tx.client.query<{ id: string; name: string; status: string }>(
+        `SELECT id, name, status FROM ari.agents ORDER BY id`,
+      );
+      return { status: 200, body: { agents: rows.rows } };
+    }),
+  );
+
+  app.post('/v1/agents/:agentId/credentials', async (request, reply) =>
+    asOperator('agent:manage')(request, reply, async (tx, principal) => {
+      const agentId = idParam(request, 'agentId');
+      const body = request.body as { scopes?: unknown; ttlMs?: unknown };
+      if (
+        unusable(agentId, 200) ||
+        !Array.isArray(body.scopes) ||
+        body.scopes.length === 0 ||
+        body.scopes.length > 8 ||
+        !body.scopes.every((s) => typeof s === 'string' && isScope(s)) ||
+        typeof body.ttlMs !== 'string' ||
+        !/^\d{1,20}$/.test(body.ttlMs)
+      ) {
+        return {
+          status: 400,
+          body: { code: 'INVALID_REQUEST', detail: 'agentId, scopes[] from the vocabulary, and a decimal-string ttlMs' },
+        };
+      }
+      const scopes = body.scopes as Scope[];
+      if (scopes.includes('approval:decide')) {
+        // Refused in words before `013`'s CHECK refuses it in fact: an agent that could
+        // approve is one secret sitting on both sides of the boundary.
+        return { status: 400, body: { code: 'INVALID_REQUEST', detail: 'an agent credential cannot carry approval:decide' } };
+      }
+      const ttlMs = BigInt(body.ttlMs);
+      if (ttlMs < 60_000n || ttlMs > 30n * 24n * 60n * 60n * 1_000n) {
+        return { status: 400, body: { code: 'INVALID_REQUEST', detail: 'ttlMs must be between one minute and thirty days' } };
+      }
+      const issued = await issueCredential(tx, {
+        agentId,
+        scopes,
+        ttlMs,
+        masterPepper: deps.pipeline.masterPepper,
+        actor: principal.userId,
+      });
+      return {
+        status: 201,
+        body: { credentialId: issued.credentialId, bearer: issued.presented, scopes: issued.scopes, expiresAt: issued.expiresAt },
+      };
+    }),
+  );
+
+  app.post('/v1/wallets', async (request, reply) =>
+    asOperator('wallet:manage')(request, reply, async (tx, principal) => {
+      const body = request.body as { displayName?: unknown; mode?: unknown; signatureTriple?: unknown; provider?: unknown };
+      if (
+        typeof body.displayName !== 'string' ||
+        unusable(body.displayName.trim(), 200) ||
+        (body.mode !== 'delegated' && body.mode !== 'user_gated') ||
+        typeof body.signatureTriple !== 'string' ||
+        unusable(body.signatureTriple, 200) ||
+        typeof body.provider !== 'string' ||
+        unusable(body.provider, 80)
+      ) {
+        return {
+          status: 400,
+          body: { code: 'INVALID_REQUEST', detail: 'displayName, mode (delegated|user_gated), signatureTriple, provider' },
+        };
+      }
+      // The mode is the guarantee, and it is immutable after this row exists: `delegated`
+      // is what software can move on its own, `user_gated` is what needs a person. Refusing
+      // a typo here is refusing a wrong answer to "could the agent have done that alone".
+      const walletId = await createWallet(tx, {
+        displayName: body.displayName.trim(),
+        mode: body.mode,
+        signatureTriple: body.signatureTriple,
+        provider: body.provider,
+        actor: principal.userId,
+      });
+      return { status: 201, body: { walletId, mode: body.mode } };
+    }),
+  );
+
+  app.post('/v1/agents/:agentId/wallets/:walletId', async (request, reply) =>
+    asOperator('wallet:manage')(request, reply, async (tx, principal) => {
+      const agentId = idParam(request, 'agentId');
+      const walletId = idParam(request, 'walletId');
+      const body = request.body as { policyVersionId?: unknown };
+      if (
+        unusable(agentId, 200) ||
+        unusable(walletId, 200) ||
+        typeof body.policyVersionId !== 'string' ||
+        unusable(body.policyVersionId, 200)
+      ) {
+        return { status: 400, body: { code: 'INVALID_REQUEST', detail: 'policyVersionId is required' } };
+      }
+      await grantWalletToAgent(tx, { agentId, walletId, policyVersionId: body.policyVersionId, actor: principal.userId });
+      return { status: 201, body: { agentId, walletId, policyVersionId: body.policyVersionId } };
+    }),
+  );
+
+  app.post('/v1/policies', async (request, reply) =>
+    asOperator('policy:activate')(request, reply, async (tx, principal) => {
+      const body = request.body as { name?: unknown; document?: unknown; activate?: unknown; justification?: unknown };
+      if (typeof body.name !== 'string' || unusable(body.name.trim(), 120)) {
+        return { status: 400, body: { code: 'INVALID_REQUEST', detail: 'name is required, at most 120 characters' } };
+      }
+      const parsed = PolicyDocument.safeParse(body.document);
+      if (!parsed.success) {
+        return { status: 400, body: { code: 'INVALID_REQUEST', detail: parsed.error.message } };
+      }
+      const created = await createPolicy(tx, { name: body.name.trim(), document: parsed.data, actor: principal.userId });
+      if (body.activate !== true) {
+        return { status: 201, body: { policyId: created.policyId, versionId: created.versionId, status: 'DRAFT' } };
+      }
+      // Activation is where a human's authority is checked against a document, and both
+      // checks live in the package rather than being re-implemented here: the compiler
+      // refuses limits that disagree about units, and `activateVersion` refuses a broadening
+      // the caller does not own — plus the justification `014` now demands for a reactivation.
+      const activated = await activateVersion(tx, {
+        policyId: created.policyId,
+        versionId: created.versionId,
+        actor: principal.userId,
+        ...(typeof body.justification === 'string' && body.justification.length <= 2_000
+          ? { justification: body.justification }
+          : {}),
+      });
+      return {
+        status: 201,
+        body: {
+          policyId: created.policyId,
+          versionId: activated.versionId,
+          versionNumber: activated.versionNumber,
+          status: 'ACTIVE',
+          widened: activated.widened,
+        },
+      };
+    }),
+  );
+
+  app.get('/v1/audit/events', async (request, reply) =>
+    asOperator('audit:read')(request, reply, async (tx) => {
+      const log = await readEventLog(tx.client, tx.orgId);
+      // `head` is the point of the file, not `events`. An export that verifies only against
+      // itself proves nothing about where it came from: the recomputed head is what an
+      // auditor compares against the value this API reports today, or one written down when
+      // the payment happened.
+      return {
+        status: 200,
+        body: {
+          organizationId: tx.orgId,
+          exportedAt: new Date().toISOString(),
+          events: log,
+          head: verifyEventLog(log).head,
+        },
+      };
+    }),
+  );
 }
