@@ -236,7 +236,15 @@ describe('property: risk escalates and never grants', () => {
           candidate: cand,
           state: toState(input, { risk: risk(level) }),
         });
-        if (loose.outcome === 'ALLOW' && strict.outcome !== 'DENY') expect(strict.outcome).not.toBe('ALLOW');
+        // "Never looser" is a subset relation, so it reads as an implication: anything
+        // the stricter threshold admits, the looser one admits too.
+        if (strict.outcome === 'ALLOW') expect(loose.outcome).toBe('ALLOW');
+        // The single level where the two thresholds disagree is the one the stricter
+        // name has to bite at. Demanding that it bite everywhere is not monotonicity —
+        // a policy that asks for a human at CRITICAL has no opinion about NONE, and an
+        // earlier draft of this assertion asked for exactly that, which a randomised
+        // input at a low level duly contradicted.
+        if (level === 'HIGH' && loose.outcome === 'ALLOW') expect(strict.outcome).not.toBe('ALLOW');
       }),
       RUNS,
     );
