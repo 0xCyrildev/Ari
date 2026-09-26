@@ -1,10 +1,20 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 
-const MIGRATIONS = ['001_accounting.sql', '002_decisions_and_tickets.sql'].map((name) =>
-  fileURLToPath(new URL(`../../packages/ledger/sql/${name}`, import.meta.url)),
-);
+/**
+ * One numbered series for the whole database, applied in order.
+ *
+ * Deliberately not per-package: a migration that has to know another package's
+ * table names (the audit chain and the reservation counters share the `ari`
+ * schema, and identity will share both) cannot live in two places at once.
+ * Filename order is the dependency order.
+ */
+const MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations', import.meta.url));
+const MIGRATIONS = readdirSync(MIGRATIONS_DIR)
+  .filter((name) => name.endsWith('.sql'))
+  .sort()
+  .map((name) => `${MIGRATIONS_DIR}/${name}`);
 
 export const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://ari:ari@127.0.0.1:5435/ari';
 

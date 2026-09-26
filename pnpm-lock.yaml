@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@ari/audit':
+        specifier: workspace:*
+        version: link:packages/audit
       '@ari/ledger':
         specifier: workspace:*
         version: link:packages/ledger
@@ -56,6 +59,31 @@ importers:
       '@ari/signing':
         specifier: workspace:*
         version: link:../../packages/signing
+      pg:
+        specifier: 8.23.0
+        version: 8.23.0
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.1
+        version: 5.0.1(@types/node@24.10.1)(@vitest/coverage-v8@5.0.1)(vite@8.3.1(@types/node@24.10.1)(jiti@2.7.0))
+
+  packages/audit:
+    dependencies:
+      '@ari/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+      '@ari/transaction-engine':
+        specifier: workspace:*
+        version: link:../transaction-engine
       pg:
         specifier: 8.23.0
         version: 8.23.0
