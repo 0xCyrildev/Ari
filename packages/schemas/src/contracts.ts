@@ -170,9 +170,11 @@ export const RiskSignal = z.enum([
   'POLICY_BOUNDARY_PROXIMITY',
   'BEHAVIOUR_PROFILE_DRIFT',
   'DORMANT_AGENT_RESUMED',
+  'NO_BEHAVIOUR_BASELINE',
   'SIMULATION_WARNING',
   'MODEL_OUTPUT_INCONSISTENCY',
 ]);
+export type RiskSignalName = z.infer<typeof RiskSignal>;
 
 export const RiskAssessment = z
   .object({

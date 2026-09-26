@@ -32,8 +32,9 @@ import {
 import { claimTicket, mintTicket, readCounter, recordDecision, reserve } from '@ari/ledger';
 import { evaluate, type CompiledPolicy, type EvaluationState } from '@ari/policy-engine';
 import { loadVersion, type StoredVersion } from '@ari/policies';
-import { type AuthorizationTicket, type CandidateTransaction, type Decision, type ReasonCode } from '@ari/schemas';
+import { Decision, type AuthorizationTicket, type CandidateTransaction, type ReasonCode } from '@ari/schemas';
 import { TicketKey, claimsFor, sealTicket } from '@ari/signing';
+import type { RiskProvider } from '@ari/risk-engine';
 import { canonicalize, computeDigest } from '@ari/transaction-engine';
 
 export interface PipelineDeps {
@@ -49,6 +50,15 @@ export interface PipelineDeps {
   /** Out of the pipeline's hands entirely — the gateway verifies, this evaluates. */
   readonly masterPepper: string;
   readonly nowMs: () => bigint;
+  /**
+   * Required, not optional. `evaluate` treats a missing assessment as the fallback the
+   * policy named, and every shipped policy names `escalate` — so a composition root
+   * that "forgot" an optional risk provider would send every payment to a human, and
+   * the field being mandatory is what makes the decision plane say which engine it
+   * consulted rather than defaulting into silence. `apps/api` wires the behavioural
+   * provider, which needs no external service: it aggregates Ari's own history.
+   */
+  readonly risk: RiskProvider;
 }
 
 export interface AuthorizeInput {
@@ -228,18 +238,41 @@ async function evaluateAndIssue(
   const usage = await usageOf(tx, orgId, policy, input.agentId, nowMs);
   const history = await historyOf(tx, input.candidate.walletId, policy);
 
-  // One evaluation, whichever path takes it. The dry run reads the same compiled
-  // policy and the same counters and returns the same decision record — the only
-  // thing it withholds is the write.
-  const assessment = (auditRequestId: string): EvaluationState => ({
+  /**
+   * The subject the risk plane reads, and the request id the kernel echoes.
+   *
+   * Both are the *caller's* `req_` id, not the row's `txr_` id. An assessment and a
+   * decision describe a submitted request — that is what an approver is looking at and
+   * what a replayed attempt keeps constant — while everything Ari persists (the request
+   * row, the decision row, the audit event, the ticket) is keyed by the row. The two
+   * ids look alike, are minted by different code, and only one of them satisfies
+   * `Decision.requestId`; the preview path has always used the caller's, which is why
+   * the divergence was invisible until the risk plane started parsing its own output.
+   */
+  const subjectFor = () => ({
+    requestId: input.candidate.requestId,
+    idempotencyKey: input.idempotencyKey,
+    agentId: input.agentId,
+    walletId: input.candidate.walletId,
     nowMs,
-    requestId: auditRequestId,
+    amountRaw,
+    currencyUnit: policy.transfers.amountUnit,
+    recipientAddress: input.candidate.kind === 'transfer' ? input.candidate.recipient.address : null,
+    perTransactionCapRaw: policy.transfers.perTransactionRaw,
+  });
+
+  // One evaluation, whichever path takes it. The dry run reads the same compiled
+  // policy, the same counters and the same baselines, and returns the same decision
+  // record — the only thing it withholds is the write.
+  const assessment = (risk: EvaluationState['risk']): EvaluationState => ({
+    nowMs,
+    requestId: input.candidate.requestId,
     agentId: input.agentId,
     agentStatus: 'ACTIVE',
     scopes: [...scopes],
     usage,
     history,
-    risk: null,
+    risk,
     simulation: null,
   });
 
@@ -247,10 +280,15 @@ async function evaluateAndIssue(
     // No request row, no reservation, no ticket, and no audit event either: §3
     // calls this a preview, and a preview that leaves a trace behind becomes a
     // second source of truth about what was asked.
+    const previewRisk = await deps.risk.assess(tx, subjectFor());
     return {
       status: 'DECIDED',
       requestId: input.candidate.requestId,
-      decision: evaluate({ policy, candidate: input.candidate, state: assessment(input.candidate.requestId) }),
+      decision: evaluate({
+        policy,
+        candidate: input.candidate,
+        state: assessment(previewRisk.ok ? previewRisk.assessment : null),
+      }),
     };
   }
 
@@ -292,11 +330,46 @@ async function evaluateAndIssue(
     from = 'EVALUATING';
   }
 
+  // The risk plane is consulted before the kernel, never inside it: the kernel stays
+  // pure (§7.2), so an assessment arrives as one more input in `state`, and the
+  // fallback for its absence is the policy's own decision rather than this file's.
+  const riskOutcome = await deps.risk.assess(tx, subjectFor());
+  await appendEvent(tx, {
+    orgId,
+    actor: 'system',
+    actorType: 'system',
+    eventType: riskOutcome.ok ? 'risk.assessed' : 'risk.unavailable',
+    resource: 'transaction_request',
+    resourceId: requestId,
+    policyVersionId: version.id,
+    ...(riskOutcome.ok
+      ? {
+          metadata: {
+            riskScore: String(riskOutcome.assessment.score),
+            riskLevel: riskOutcome.assessment.level,
+            riskSignals: [...riskOutcome.assessment.signals],
+            riskModel: riskOutcome.assessment.modelVersion,
+          },
+        }
+      : { severity: 'warning' as const, reasonCodes: ['RISK_ENGINE_UNAVAILABLE'], metadata: { code: riskOutcome.code, detail: riskOutcome.detail } }),
+  });
+
   const decision = evaluate({
     policy,
     candidate: input.candidate,
-    state: assessment(requestId),
+    state: assessment(riskOutcome.ok ? riskOutcome.assessment : null),
   });
+  // The spine reads its own kernel's output back through the published contract before
+  // acting on it. `evaluate` returns a structurally-typed object and TypeScript stops
+  // there; the first time a field disagreed with `Decision` — a `txr_` id where the
+  // contract says `req_` — nothing downstream would have noticed, because the decision's
+  // request id is only ever read by whoever audits it afterwards. A throw rolls the
+  // transaction back, which is the only acceptable reading of "the decision is not a
+  // decision".
+  const shaped = Decision.safeParse(decision);
+  if (!shaped.success) {
+    throw new Error(`the kernel returned something that is not a Decision: ${shaped.error.message.slice(0, 300)}`);
+  }
 
   await appendEvent(tx, {
     orgId,

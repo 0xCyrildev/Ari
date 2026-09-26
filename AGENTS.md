@@ -19,13 +19,14 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | 3 signing boundary | done | `packages/signing`, `apps/signer`, `002` ALLOW-before-ticket trigger |
 | 3.5 policy lifecycle | done | `@ari/policies`: draft→activate, breadth comparison, owner-only widening, justification on rollback |
 | 6 approvals | done | `@ari/approvals` + `006`/`009`; 21 DB tests on the bound token, quorum, replay and T19 |
+| 5 risk engine | done | `packages/risk-engine`: deterministic baselines over `transaction_requests`, nine signals, 10 property/unit tests + 17 DB tests including both halves of the Phase 5 gate |
 | spine | done | `apps/api/src/authorize.ts` + `tests/security/pipeline.test.ts`: evaluate→reserve→decide→ticket→sign, 11 tests walking the brief's own scenarios |
 | HTTP edge | done | `apps/api/src/{gateway,routes,signer-client,server}.ts` + `tests/security/api.test.ts`: 18 tests through `inject`, and both processes run for real (see "Ran for real" below) |
 | agent SDK | started | `packages/client`: the outbound half of the decimal-string rule, three methods, 19 tests, and 2 contract tests that run the client's transport against the real routes |
 | 4–5, 7–11 | not started | intent, risk, simulation, the CLI, Ika, dashboard |
 
-`pnpm test` is **339 tests / 21 files**; `pnpm test:unit` is the 203 that need no
-database; `pnpm test:security` is the 136 that need Postgres and do not skip without it.
+`pnpm test` is **367 tests / 23 files**; `pnpm test:unit` is the 214 that need no
+database; `pnpm test:security` is the 153 that need Postgres and do not skip without it.
 
 `pnpm typecheck && pnpm test` — needs no database for the unit half. `test:security` needs
 `pnpm db:up` (Postgres on **127.0.0.1:5435**, Redis 6381; 5432/5433/6380 belong to other projects on this
@@ -122,6 +123,37 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   `@ts-expect-error` lines that fail the build the day someone adds one. A gate that says "the SDK
   has no bypass method" is worth as much as the mechanism checking it.
 
+- **A missing risk assessment is a decision, not a pass.** Stage 7 used to act on
+  `fallback.onRiskUnavailable` only when it said `deny`, so a policy that chose `escalate` — which every
+  fixture and every shipped policy does — fell straight through to ALLOW unless it also happened to write a
+  `risk_gte` condition. The fallback a human picked was silently permissive for the common policy shape.
+  Both arms now decide. Consequence for later sessions: the kernel's `state()` fixture supplies
+  `risk: risk('NONE')` by default, and a test that means "nothing assessed this" has to say
+  `{ risk: null }`. Do not restore the fall-through; it is the bug the Phase 5 gate names.
+- **The spine parses its own kernel's output.** `evaluate` returns a structurally-typed object, and the
+  first disagreement was invisible for exactly as long as nothing read it: `Decision.requestId` is the
+  *caller's* `req_` id while the pipeline was handing it the row's `txr_` id. Both look like ids, only one
+  satisfies the contract, and the field is read by whoever audits afterwards rather than by anything on the
+  happy path. `authorize` now `safeParse`s the decision before acting on it, so a malformed decision rolls
+  the transaction back instead of being paid for.
+- **Decisions and risk assessments carry the caller's `req_` id; rows, tickets, reservations and audit
+  events carry the `txr_` row id.** Same rule the ticket's `requestId` already follows; the two ids are
+  minted by different code and only one of them is what a decision joins on.
+- **Risk is consulted inside the same tenant transaction, before the kernel, and the provider is mandatory
+  in `PipelineDeps`.** It needs no external service — the baselines are aggregates over Ari's own
+  `transaction_requests` — so "we have no risk engine configured" is not available as an excuse, and an
+  optional field would let a composition root default into escalating everything. The kernel still does not
+  touch the database (A4): the assessment arrives as one more input in `state`.
+- **`ComputedSignal` is the list of what the risk plane can actually support.** `NEW_ASSET`, `NEW_CHAIN`,
+  `NEW_CONTRACT` and `UNUSUAL_APPROVAL_PATTERN` have no weight and no column to be computed from, so they
+  cannot be named by the module at all — which is the enforcement; a policy option that silently evaluates
+  to `false` is the shape §7.2 refuses. Adding one means adding the data it reads, in that order.
+- **Two unit traps in that one query, both silent.** `to_timestamp` takes *seconds*: passing an epoch in
+  milliseconds is not an error, it is a timestamp in the fifty-seventh millennium, and every real row is
+  quietly outside the window — the first version reported "no history" for an agent with a page of payments.
+  And `count(*)` is `bigint`, which the driver returns as a **string**, so `row.x === 0` never matched:
+  every count in that SELECT is cast `::int` on purpose, and `query<T>` is an assertion, not a check.
+
 ## Ran for real (2026-09-26)
 
 `pnpm --filter @ari/api start` and `pnpm --filter @ari/signer start`, both against Postgres on 5435, seeded
@@ -175,3 +207,15 @@ version of it worth keeping.
    `WHERE org_id = …`, or count nothing.
 9. `docs/ARCHITECTURE.md` §13's `IntentInterpreter` names `AMBIGUOUS` while the schema and every doc call it
    `NEEDS_CLARIFICATION`. `ASSUMPTIONS.md` A5 has the old name too. Fix when Phase 4 starts.
+10. **A tenant with no history always scores MEDIUM.** `NO_BEHAVIOUR_BASELINE` is deliberately not the
+    quietest answer, so the first payment an agent ever makes is "unknown", not "clean" — and a policy that
+    escalates at `risk_gte: LOW` will send every one of them to a human. That is a real operational
+    consequence of the design, not a bug, but it is untested against reality: the weights and the bands are
+    ASSUMED numbers with no corpus behind them. Revisit when there is traffic to look at, and change the
+    weights in `scoring.ts` only with the monotonicity properties still passing.
+11. **Simulation (Phase 7) is the next phase with a hole already cut for it.** `state.simulation` is still
+    `null` in every path, the kernel's simulation arms (`SIMULATION_MISMATCH`, `SIMULATION_UNAVAILABLE`,
+    `fallback.onSimulationUnavailable`) are written and tested against hand-built states, and
+    `ASSUMPTIONS.md` §1 says anvil is already running on this box — so `EvmForkProvider` is the cheapest real
+    thing left. `packages/simulation` does not exist yet; the `@ari/simulation` entry in the root `tsconfig`
+    paths is a placeholder for it and currently points at nothing.

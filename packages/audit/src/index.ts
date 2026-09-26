@@ -118,6 +118,16 @@ export interface SafeLogFields {
   readonly toState?: string;
   readonly versionFrom?: string;
   readonly versionTo?: string;
+  /**
+   * The risk assessment, as the numbers it was computed from. `riskSignals` is the
+   * list an approver reads before deciding, and it is bounded by the schema at 50 —
+   * never the explanation, which is prose an engine generates rather than a field Ari
+   * controls, and has no place in a typed log line.
+   */
+  readonly riskScore?: string;
+  readonly riskLevel?: string;
+  readonly riskSignals?: readonly string[];
+  readonly riskModel?: string;
 }
 
 const ALLOWED_FIELDS: readonly string[] = Object.keys({
@@ -144,6 +154,10 @@ const ALLOWED_FIELDS: readonly string[] = Object.keys({
   toState: 0,
   versionFrom: 0,
   versionTo: 0,
+  riskScore: 0,
+  riskLevel: 0,
+  riskSignals: 0,
+  riskModel: 0,
 } satisfies Record<keyof SafeLogFields, 0>);
 
 export type AuditSeverity = 'info' | 'notice' | 'warning' | 'critical';

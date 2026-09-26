@@ -9,6 +9,7 @@
  */
 
 import { ApprovalKey } from '@ari/approvals';
+import { behaviouralProvider } from '@ari/risk-engine';
 import { TicketKey } from '@ari/signing';
 import fastify from 'fastify';
 import { Pool } from 'pg';
@@ -126,6 +127,12 @@ export async function startApi(config: ApiConfig, signer?: SignerClient): Promis
     // does so against a time it supplies, so a disagreement between planes is a
     // visible refusal rather than a silent pass.
     nowMs: () => BigInt(Date.now()),
+    // On by default, because it needs no external service: the baselines are
+    // aggregates over Ari's own `transaction_requests`, read in the same tenant
+    // transaction as the decision. A deployment that would rather not consult risk has
+    // to say so with a provider, not by leaving the field out — the kernel escalates
+    // when nothing assessed, so the absent provider is the loudest configuration.
+    risk: behaviouralProvider(),
   };
 
   const app = fastify({ logger: false, bodyLimit: 64 * 1024 });

@@ -36,6 +36,9 @@ importers:
       '@ari/policy-engine':
         specifier: workspace:*
         version: link:packages/policy-engine
+      '@ari/risk-engine':
+        specifier: workspace:*
+        version: link:packages/risk-engine
       '@ari/schemas':
         specifier: workspace:*
         version: link:packages/schemas
@@ -90,6 +93,9 @@ importers:
       '@ari/policy-engine':
         specifier: workspace:*
         version: link:../../packages/policy-engine
+      '@ari/risk-engine':
+        specifier: workspace:*
+        version: link:../../packages/risk-engine
       '@ari/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
@@ -321,6 +327,25 @@ importers:
       fast-check:
         specifier: ^4.10.2
         version: 4.10.2
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.1
+        version: 5.0.1(@types/node@24.10.1)(@vitest/coverage-v8@5.0.1)(vite@8.3.1(@types/node@24.10.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
+
+  packages/risk-engine:
+    dependencies:
+      '@ari/identity':
+        specifier: workspace:*
+        version: link:../identity
+      '@ari/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
       typescript:
         specifier: 5.9.3
         version: 5.9.3

@@ -23,6 +23,7 @@ import {
   type Scope,
 } from '@ari/identity';
 import { InMemoryTicketStore, MockSigningProvider, TicketKey, redeemAndSign, type SignerDeps } from '@ari/signing';
+import { behaviouralProvider } from '@ari/risk-engine';
 import { CandidateTransaction, PolicyDocument, newId, type CanonicalDigest } from '@ari/schemas';
 import { activateVersion, createPolicy } from '@ari/policies';
 import { verifyChain } from '@ari/audit';
@@ -56,6 +57,10 @@ const deps: PipelineDeps = {
   approvalKey: APPROVAL_KEY,
   masterPepper: PEPPER,
   nowMs: () => NOW,
+  // The real provider, not a stub: these suites are the only place the behavioural
+  // baselines meet a database that has rows in them, and a fake here would test the
+  // pipeline's plumbing while leaving the arithmetic unexercised.
+  risk: behaviouralProvider(),
 };
 
 beforeAll(async () => {

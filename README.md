@@ -43,10 +43,12 @@ key, its own clock and its own record of what has already been spent.
 
 Built and tested: the policy engine, canonicalisation, the ledger's atomic
 limit reservations, the ticket and the signer, policy versioning with the
-broadening guard, human approvals, the pipeline that joins them, the HTTP edge in
-front of it — organisation bootstrap behind a deployment token, bearer credential
-authentication, `authorize`, an `evaluate` preview that writes nothing, and
-request status — and the agent-side client that calls it.
+broadening guard, human approvals, the risk plane (deterministic behavioural
+baselines over Ari's own history — statistics, not a model), the pipeline that
+joins them, the HTTP edge in front of it — organisation bootstrap behind a
+deployment token, bearer credential authentication, `authorize`, an `evaluate`
+preview that writes nothing, and request status — and the agent-side client that
+calls it.
 
 ```ts
 import { CandidateTransaction, createClient } from '@ari/client';
@@ -62,7 +64,8 @@ if (preview.ok && preview.value.decision.outcome === 'ALLOW') {
 }
 ```
 
-Not built: the CLI, the intent and risk engines, simulation, the dashboard, and
+Not built: the CLI, simulation, the dashboard, the AI-assisted *explanation* of a
+risk score (the score is computed; nothing here asks a model to justify it), and
 any real chain integration. The endpoints a *human* needs — create an agent,
 issue its credential, decide an approval, activate a policy — are not there
 either, because Ari has no user-session model yet and inventing one inside a
@@ -127,7 +130,8 @@ apps/
   signer/     the authority plane: verifies tickets independently
 packages/
   schemas/  policy-engine/  transaction-engine/  ledger/
-  signing/  audit/  identity/  policies/  approvals/  client/
+  signing/  audit/  identity/  policies/  approvals/
+  client/   risk-engine/
 migrations/ numbered SQL, applied in order
 tests/
   security/   suites that require real Postgres and do not skip without it

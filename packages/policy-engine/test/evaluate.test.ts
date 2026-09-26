@@ -241,6 +241,7 @@ describe('stage 7 — risk and simulation may escalate, never grant', () => {
           onSimulationUnavailable: 'allow_advisory',
         },
       }),
+      st: state({ risk: null }),
     });
   });
 
@@ -274,11 +275,37 @@ describe('stage 7 — risk and simulation may escalate, never grant', () => {
     // `onRiskUnavailable: 'escalate'` is a promise that an unassessed request goes
     // to a human. A `risk_gte` condition that reported "not triggered" because the
     // assessment is absent would be the quiet version of the same bug.
-    const decision = decide({ policy: withCondition({ op: 'risk_gte', level: 'HIGH' }) });
+    const decision = decide({
+      policy: withCondition({ op: 'risk_gte', level: 'HIGH' }),
+      st: state({ risk: null }),
+    });
     expect(decision.outcome).toBe('REQUIRE_HUMAN_APPROVAL');
     if (decision.outcome === 'REQUIRE_HUMAN_APPROVAL') {
-      expect(decision.reasonCodes).toContain('RISK_ESCALATION_REQUIRED');
+      // The fallback's own code, not the condition's: what stopped the payment was
+      // that nothing assessed it, and an operator reading `RISK_ESCALATION_REQUIRED`
+      // would go looking for a threshold the policy never crossed.
+      expect(decision.reasonCodes).toContain('RISK_ENGINE_UNAVAILABLE');
     }
+  });
+
+  it('escalates an unassessed request even when the policy names no risk condition', () => {
+    // The hole this closes: stage 7 used to act on `onRiskUnavailable` only when it
+    // said `deny`, so a policy that chose `escalate` and wrote no `risk_gte` condition
+    // — the common shape, since escalation is configured by amount — read a missing
+    // assessment as a pass and allowed the payment. `deny` was safe by accident and
+    // `escalate` was silently permissive.
+    const unassessed = state({ risk: null });
+    const decision = decide({ policy: NEVER_ESCALATE, st: unassessed });
+    expect(decision.outcome).toBe('REQUIRE_HUMAN_APPROVAL');
+    if (decision.outcome === 'REQUIRE_HUMAN_APPROVAL') {
+      expect(decision.reasonCodes).toContain('RISK_ENGINE_UNAVAILABLE');
+      expect(decision.matchedRules.map((r) => r.rulePath)).toContain('fallback.onRiskUnavailable');
+    }
+    // And a denial earlier in the walk still outranks it: risk may escalate, never
+    // grant, so an over-cap payment is refused whether or not anything assessed it.
+    expect(
+      decide({ policy: NEVER_ESCALATE, cand: candidate({ amount: { raw: (CAP + 1n).toString(), unit: UNIT } }), st: unassessed }).outcome,
+    ).toBe('DENY');
   });
 
   it('a CRITICAL risk assessment never turns a denial into an allowance', () => {
@@ -342,7 +369,7 @@ describe('stage 8 — escalation conditions', () => {
 
   it('treats a missing USD estimate as insufficient evidence, not as a passed threshold', () => {
     const policy = withCondition({ op: 'usd_gte', cents: '100000' });
-    expect(decide({ policy }).outcome).toBe('DENY');
+    expect(decide({ policy }).outcome).toBe('REQUIRE_HUMAN_APPROVAL');
     expect(decide({ policy, st: state({ risk: risk('LOW') }) }).outcome).toBe('REQUIRE_HUMAN_APPROVAL');
   });
 
@@ -458,12 +485,15 @@ describe('stage 8 — escalation conditions against a permitted contract call', 
   });
 
   it('treats a missing USD estimate as unmet evidence even for a contract call', () => {
+    // Escalate rather than pass, and escalate rather than refuse outright: the
+    // estimate is missing, not the transaction wrong, and a human with a price feed
+    // is the answer to a missing number.
     expect(
       decide({
         policy: withCondition({ op: 'usd_gte', cents: '1' }, contractAllowed),
         cand: contractCand(),
       }).outcome,
-    ).toBe('DENY');
+    ).toBe('REQUIRE_HUMAN_APPROVAL');
   });
 
   it('skips the recipient rules for a transaction that has no recipient', () => {

@@ -374,8 +374,20 @@ export function evaluate(input: {
     }
 
     // --- 7. risk: may escalate, may never grant ------------------------------
-    if (state.risk === null && policy.fallback.onRiskUnavailable === 'deny') {
-      return deny(['RISK_ENGINE_UNAVAILABLE'], 'fallback.onRiskUnavailable');
+    // Both arms of the fallback are decisions, and neither is "carry on as though an
+    // assessment had arrived". Before this, a `null` risk with `onRiskUnavailable:
+    // 'escalate'` fell straight through stage 7 unless the policy also happened to
+    // write a `risk_gte` condition — so the fallback a human chose for the case where
+    // the risk engine is down was silently permissive for every policy that did not.
+    if (state.risk === null) {
+      if (policy.fallback.onRiskUnavailable === 'deny') {
+        return deny(['RISK_ENGINE_UNAVAILABLE'], 'fallback.onRiskUnavailable');
+      }
+      return escalate(
+        ['RISK_ENGINE_UNAVAILABLE'],
+        'fallback.onRiskUnavailable',
+        'no assessment was available, and this policy sends that to a human',
+      );
     }
     if (state.simulation !== null && state.simulation.mismatch) {
       return deny(['SIMULATION_MISMATCH'], 'simulation.mismatch');
@@ -496,8 +508,13 @@ function matchesCondition(
     case 'usd_gte': {
       if (candidate.usdEstimate === null) {
         // Missing evidence is not good evidence: a required escalation cannot be
-        // skipped because the FX estimate is absent.
-        return state.risk === null ? 'error' : true;
+        // skipped because the FX estimate is absent. This used to read
+        // `state.risk === null ? 'error' : true`, which reached for the risk engine's
+        // absence as a reason to fail closed — a case stage 7 now answers before
+        // control can ever get here, for either value of the fallback. A condition
+        // arm that cannot be reached is an arm that cannot be tested, so it is gone
+        // rather than kept and commented.
+        return true;
       }
       const ageSeconds = (state.nowMs - BigInt(Date.parse(candidate.usdEstimate.asOf))) / 1000n;
       // A future-stamped estimate is as unusable as a stale one, and either one

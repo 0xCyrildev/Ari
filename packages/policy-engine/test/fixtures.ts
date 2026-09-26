@@ -238,7 +238,11 @@ export function state(overrides: Partial<EvaluationState> = {}): EvaluationState
       baselineChains: new Set(['ethereum']),
       firstSeenWithinDays: () => false,
     },
-    risk: null,
+    // An assessment is the ordinary case now, not an extra: the engine treats a
+    // missing one as the fallback the policy named, and the fixture's policy named
+    // `escalate`. A test that means "the risk engine did not answer" has to say so
+    // with `{ risk: null }`, which is the only way that path gets exercised at all.
+    risk: risk('NONE'),
     simulation: null,
     ...overrides,
   };
