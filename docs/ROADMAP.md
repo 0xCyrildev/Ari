@@ -25,7 +25,7 @@ Phase 2  Policy engine + security suite          5 units   the security kernel
 Phase 3  Signing boundary + ticket               2 units   ordering made structural
 Phase 6→ Human approval (MOVED UP)               3 units   completes the decision set
 Phase 4  Intent engine (AI enters)               3 units   first non-deterministic code
-Phase 5  Risk engine                             3 units   advisory, never granting
+Phase 5  Risk engine                             ✅ built   advisory, never granting
 Phase 7  Simulation abstraction                  2 units   advisory in MVP
 Phase 9→ SDK + CLI (MOVED UP)                    2 units   needed to test the E2E path at all
 Phase 8  Ika adapter                             4 units   BLOCKED on §6 items, see below
@@ -140,6 +140,18 @@ one (S12-adjacent: the code cannot overclaim what it does not decide).
 
 **Gate:** `risk_gte:HIGH` escalation test · a risk-engine failure follows `fallback.onRiskUnavailable` and is
 never silently permissive · property test: for any risk output, DENY never becomes ALLOW.
+
+**Built (2026-09-26).** `packages/risk-engine` computes deterministic baselines from `transaction_requests`
+inside the same tenant transaction as the decision — no external service, no model, and an explanation
+generated from the same numbers that produced the signals. Each gate item is a named test:
+`tests/security/risk.test.ts` *"sends a HIGH assessment to a human when the policy asks for that"*,
+*"escalates when the policy said escalate"* and *"denies when the policy said deny"* (the second is the one
+the pre-Phase-5 kernel got wrong: `onRiskUnavailable: 'escalate'` fell through stage 7 unless the policy also
+wrote a `risk_gte` condition, so a missing assessment was silently permissive), and
+*"keeps a refusal a refusal whatever the assessment says"*;
+`packages/risk-engine/test/scoring.test.ts` holds the monotonicity properties and the A6 compile-time guard.
+The signals the phase could not support — `NEW_ASSET`, `NEW_CHAIN`, `NEW_CONTRACT`,
+`UNUSUAL_APPROVAL_PATTERN` — are not emitted, and the reason is in the type rather than in a comment.
 
 ---
 
