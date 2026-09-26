@@ -54,6 +54,7 @@ const deps: PipelineDeps = {
   pool: app,
   ticketKey: TICKET_KEY,
   approvalKey: APPROVAL_KEY,
+  masterPepper: PEPPER,
   nowMs: () => NOW,
 };
 
@@ -360,7 +361,7 @@ describe('the negative paths the brief closes on', () => {
     });
     expect(before.status).toBe('TICKET_ISSUED');
 
-    await revokeCredential(app, w.orgId, w.credential.credentialId, NOW);
+    await revokeCredential(app, w.orgId, w.credential.credentialId);
     const after = await authorize(deps, w.orgId, {
       ...request(w, { address: RECIPIENT, amount: usd(500n), idempotencyKey: 'live-2' }),
     });

@@ -1,0 +1,577 @@
+/**
+ * The HTTP surface, tested through the router rather than through a socket.
+ *
+ * `inject` covers everything the routes actually decide — authentication, status
+ * codes, what is in a response — without a listening port. What it does *not* cover
+ * is `listen`, the body limit and the signal handlers in `server.ts`. Those were
+ * checked by hand instead — both processes up against Postgres, a tenant seeded
+ * through the packages, every state observed over a real socket — and the comment says
+ * so rather than implying the suite covers them.
+ *
+ * The most important assertions here are about absence: that a response carries no
+ * ticket, and that a preview leaves no row behind.
+ */
+
+import { readConfig, startApi, type DeliveryResult, type RunningApi, type SignerClient } from '@ari/api';
+import {
+  asTenant,
+  createAgent,
+  createOrganization,
+  createUser,
+  createWallet,
+  grantWalletToAgent,
+  issueCredential,
+  revokeCredential,
+  type Connector,
+  type Scope,
+} from '@ari/identity';
+import { activateVersion, createPolicy } from '@ari/policies';
+import { recordDecision, sealApproval } from '@ari/approvals';
+import { CandidateTransaction, PolicyDocument, newId, type CanonicalDigest } from '@ari/schemas';
+import { Pool } from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { connect } from './database.js';
+
+let pool: Pool;
+let appPool: Pool;
+const app: Connector = {
+  async connect() {
+    const client = await appPool.connect();
+    await client.query(`SET ROLE ari_app`);
+    return client;
+  },
+};
+
+const API = readConfig({
+  DATABASE_URL: 'postgresql://ari:ari@127.0.0.1:5435/ari',
+  DATABASE_ROLE: 'ari_app',
+  CREDENTIAL_PEPPER: 'api-test-pepper-0123456789abcdef',
+  TICKET_KEY: 't'.repeat(48),
+  APPROVAL_KEY: 'a'.repeat(48),
+  ORG_BOOTSTRAP_TOKEN: 'bootstrap-token-for-tests',
+});
+
+const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+const RECIPIENT = '0x3f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c';
+const NOVEL = '0x9bc1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9';
+const UNIT = 'usdc-6dp';
+const usd = (whole: bigint) => whole * 1_000_000n;
+
+/** Records what the signer was handed, so "the response hid it" can be proved. */
+const delivered: { ticket: string; canonical: string }[] = [];
+const signer: SignerClient = {
+  async deliver(request): Promise<DeliveryResult> {
+    delivered.push(request);
+    return { accepted: true, state: 'SIGNING_PENDING' };
+  },
+};
+
+let api: RunningApi;
+
+beforeAll(async () => {
+  pool = await connect();
+  appPool = await connect(4);
+  api = await startApi(API, signer);
+});
+
+afterAll(async () => {
+  await api?.close();
+  await appPool?.end();
+  await pool?.end();
+});
+
+/**
+ * The wire form of a candidate, not the parsed one.
+ *
+ * `CandidateTransaction.parse` produces an object holding `bigint`s — money as
+ * `bigint` is the rule the whole repository runs on — and `JSON.stringify` throws on
+ * a BigInt. So a client sends decimal *strings* and the server turns them into
+ * bigints, which is exactly what this fixture reproduces: an object that can be put
+ * on the wire, and the parser on the other side of it deciding what it means.
+ */
+function candidate(walletId: string, agentId: string, address: string, amount: bigint) {
+  const body = {
+    kind: 'transfer',
+    chain: 'ethereum',
+    requestId: newId('req'),
+    agentId,
+    walletId,
+    deadline: new Date(Date.now() + 600_000).toISOString(),
+    idempotencyKey: newId('req'),
+    usdEstimate: null,
+    asset: { kind: 'erc20', chain: 'ethereum', contract: USDC, symbol: 'USDC', decimals: 6 },
+    amount: { raw: amount.toString(), unit: UNIT },
+    recipient: { chain: 'ethereum', address },
+    replayProtection: { scheme: 'account_sequence', nonce: '1', chainId: '1', gasLimit: null, maxFeePerUnit: null },
+  };
+  // Checked here rather than discovered later as an unexplained 400: a fixture the
+  // parser refuses is a broken test, not a tested behaviour.
+  const parsed = CandidateTransaction.safeParse(body);
+  if (!parsed.success) throw new Error(`candidate fixture rejected: ${parsed.error.message}`);
+  return body;
+}
+
+interface Tenant {
+  readonly orgId: string;
+  readonly owner: string;
+  readonly agentId: string;
+  readonly walletId: string;
+  readonly presented: string;
+  readonly credentialId: string;
+}
+
+async function tenant(cap = usd(5_000n)): Promise<Tenant> {
+  const orgId = await createOrganization(app, { name: 'HTTP', bootstrapActor: 'bootstrap' });
+  const owner = await asTenant(app, orgId, (tx) =>
+    createUser(tx, { email: `o${orgId.slice(4, 10)}@x.test`, displayName: 'O', role: 'owner', grantedBy: 'bootstrap' }),
+  );
+  const built = await asTenant(app, orgId, async (tx) => {
+    const agentId = await createAgent(tx, { name: 'pay', createdBy: owner });
+    const walletId = await createWallet(tx, {
+      displayName: 'ops',
+      mode: 'delegated',
+      signatureTriple: 'SECP256K1/ECDSASecp256k1/KECCAK256',
+      provider: 'mock',
+      actor: owner,
+    });
+    const document: PolicyDocument = {
+      meta: { name: 'http', description: null },
+      target: { walletId, authorityMode: 'delegated', signatureTriple: 'SECP256K1/ECDSASecp256k1/KECCAK256' },
+      permissions: {
+        transfers: {
+          enabled: true,
+          chains: ['ethereum'],
+          assets: [{ kind: 'erc20', chain: 'ethereum', contract: USDC, symbol: 'USDC', decimals: 6n }],
+          recipients: { mode: 'allowlist', addresses: [RECIPIENT] },
+          perTransaction: { maxRaw: cap.toString(), unit: UNIT },
+          perDay: { maxRaw: cap.toString(), unit: UNIT },
+          perMonth: null,
+          maxTransactionsPerHour: 20,
+        },
+        contractCalls: { enabled: false, contracts: [] },
+        newRecipients: { allowed: false, requireApproval: false },
+      },
+      escalation: {
+        humanApproval: {
+          requiredWhen: [{ op: 'amount_gt', raw: usd(1_000n).toString(), unit: UNIT }],
+          approverRoles: ['owner'],
+          quorumEnforcement: 'application',
+          quorum: 1,
+        },
+      },
+      validity: {
+        transactionTtlSeconds: 900,
+        notBefore: null,
+        notAfter: null,
+        signingBudget: { maxIkaRawPerDay: '5000000', alertAtIkaRawPerDay: '2500000' },
+      },
+      fallback: {
+        onUnknownTransaction: 'deny',
+        onEvaluationError: 'deny',
+        onRiskUnavailable: 'escalate',
+        onSimulationUnavailable: 'allow_advisory',
+      },
+      limits: { maxUsdEstimateAgeSeconds: 300, maxDeadlineSkewSeconds: 60 },
+    };
+    const created = await createPolicy(tx, { name: 'http', document, actor: owner });
+    await activateVersion(tx, { policyId: created.policyId, versionId: created.versionId, actor: owner });
+    await grantWalletToAgent(tx, { agentId, walletId, policyVersionId: created.versionId, actor: owner });
+    const issued = await issueCredential(tx, {
+      agentId,
+      scopes: ['transaction:request'] as Scope[],
+      ttlMs: 3_600_000n,
+      masterPepper: API.masterPepper,
+      actor: owner,
+    });
+    return { agentId, walletId, issued };
+  });
+  return {
+    orgId,
+    owner,
+    agentId: built.agentId,
+    walletId: built.walletId,
+    presented: built.issued.presented,
+    credentialId: built.issued.credentialId,
+  };
+}
+
+const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
+
+/**
+ * Requests in this organisation.
+ *
+ * Scoped on purpose: the suites run as parallel workers against one database, so a
+ * global `count(*)` over `transaction_requests` is a number other files are changing
+ * underneath it, and "the preview wrote nothing" would then fail for reasons that have
+ * nothing to do with the preview. No other suite holds this org's credential.
+ */
+async function requestCount(orgId: string): Promise<number> {
+  const rows = await pool.query<{ count: number }>(
+    `SELECT count(*)::int AS count FROM ari.transaction_requests WHERE org_id = $1`,
+    [orgId],
+  );
+  return rows.rows[0]?.count ?? -1;
+}
+
+describe('the edge refuses before it reasons', () => {
+  it('answers a health check without credentials', async () => {
+    const response = await api.app.inject({ method: 'GET', url: '/healthz' });
+    expect(response.statusCode).toBe(200);
+  });
+
+  it('will not create an organisation without the bootstrap token', async () => {
+    const closed = await api.app.inject({ method: 'POST', url: '/v1/organizations', payload: { name: 'x' } });
+    expect(closed.statusCode).toBe(403);
+    expect(closed.json()).toEqual({ code: 'BOOTSTRAP_REQUIRED' });
+
+    const wrong = await api.app.inject({
+      method: 'POST',
+      url: '/v1/organizations',
+      headers: bearer('not-the-token-at-all-really'),
+      payload: { name: 'x', ownerEmail: 'a@b.test', ownerDisplayName: 'A' },
+    });
+    expect(wrong.statusCode).toBe(403);
+  });
+
+  it('creates an organisation and its owner with it', async () => {
+    const response = await api.app.inject({
+      method: 'POST',
+      url: '/v1/organizations',
+      headers: bearer('bootstrap-token-for-tests'),
+      payload: { name: 'FreshCo', ownerEmail: 'founder@freshco.test', ownerDisplayName: 'Founder' },
+    });
+    expect(response.statusCode).toBe(201);
+    const body = response.json() as { organizationId: string; ownerId: string };
+    expect(body.organizationId).toMatch(/^org_/);
+    expect(body.ownerId).toMatch(/^usr_/);
+    // No credential, no session, no token: those need a decision that has not been
+    // made, and an endpoint that improvised one would be worse than one missing.
+    expect(JSON.stringify(body)).not.toMatch(/secret|token|password|credential/i);
+  });
+
+  it('answers an unknown key and a wrong secret identically (T8)', async () => {
+    const t = await tenant();
+    const unknownKey = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(`${t.orgId}.${newId('crd')}.${'x'.repeat(43)}`),
+      payload: { candidate: {}, idempotencyKey: 'k' },
+    });
+    const wrongSecret = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(`${t.orgId}.${t.credentialId}.${'x'.repeat(43)}`),
+      payload: { candidate: {}, idempotencyKey: 'k' },
+    });
+    expect(unknownKey.statusCode).toBe(401);
+    expect(unknownKey.json()).toEqual(wrongSecret.json());
+  });
+
+  it('stops working the moment the agent is retired (S14)', async () => {
+    const t = await tenant();
+    const before = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/evaluate',
+      headers: bearer(t.presented),
+      payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(500n)) },
+    });
+    expect(before.statusCode).toBe(200);
+
+    await asTenant(app, t.orgId, (tx) =>
+      tx.client.query(`UPDATE ari.agents SET status = 'REVOKED', revoked_at = now() WHERE id = $1`, [t.agentId]),
+    );
+    const revoked = await revokeCredential(app, t.orgId, t.credentialId);
+    expect(revoked.revoked).toBe(true);
+    const after = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/evaluate',
+      headers: bearer(t.presented),
+      payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(500n)) },
+    });
+    expect(after.statusCode).toBe(401);
+  });
+});
+
+describe('authorize over HTTP', () => {
+  it('hands the ticket to the signer and never to the caller (T2, S16)', async () => {
+    const t = await tenant();
+    const started = delivered.length;
+    const response = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: {
+        candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(500n)),
+        idempotencyKey: 'http-500',
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { state: string; requestId: string };
+    expect(body.state).toBe('SIGNING_PENDING');
+
+    // The proof is the comparison, not the shape: the ticket exists, was sent
+    // somewhere else, and does not appear in the bytes this caller received.
+    expect(delivered.length).toBe(started + 1);
+    const held = delivered[started];
+    expect(held?.ticket.length).toBeGreaterThan(60);
+    expect(response.body).not.toContain(held?.ticket ?? 'absent');
+    expect(response.body).not.toContain(held?.canonical ?? 'absent');
+  });
+
+  it('reports a denial as a denial', async () => {
+    const t = await tenant();
+    const started = delivered.length;
+    const response = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: {
+        candidate: candidate(t.walletId, t.agentId, NOVEL, usd(50_000n)),
+        idempotencyKey: 'http-denied',
+      },
+    });
+    const body = response.json() as { state: string; reasonCodes: string[] };
+    expect(body.state).toBe('DENIED');
+    expect(body.reasonCodes).toContain('RECIPIENT_NOT_IN_ALLOWLIST');
+    // A refusal that reaches the signer is the one failure this surface must never
+    // have; counting the deliveries is how "never" is checked rather than asserted.
+    expect(delivered).toHaveLength(started);
+  });
+
+  it('asks a human, and completes once one has answered', async () => {
+    const t = await tenant();
+    // One candidate object, presented twice. It is not a stylistic choice: the
+    // idempotency key is a promise that the second call is the same transaction, and
+    // `recordRequest` throws when a different digest arrives under it. Regenerating
+    // the candidate here would change its request id, and with it the canonical bytes
+    // the approval is bound to — so this test would be checking a mismatch rather than
+    // an approval.
+    const held = candidate(t.walletId, t.agentId, RECIPIENT, usd(2_000n));
+    const first = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: held, idempotencyKey: 'http-2000' },
+    });
+    const pending = first.json() as { state: string; approvalId: string; requestId: string };
+    expect(pending.state).toBe('APPROVAL_PENDING');
+    expect(pending.approvalId).toMatch(/^apr_/);
+
+    await asTenant(app, t.orgId, (tx) =>
+      recordDecision(tx, { approvalId: pending.approvalId, approver: t.owner, decision: 'APPROVED' }),
+    );
+    const token = await approvalToken(pending.approvalId);
+    const second = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: held, idempotencyKey: 'http-2000', approvalToken: token },
+    });
+    const granted = second.json() as { state: string; requestId: string };
+    expect(granted.state).toBe('SIGNING_PENDING');
+    expect(granted.requestId).toBe(pending.requestId);
+  });
+
+  it('says what it could not deliver rather than calling it a refusal', async () => {
+    const t = await tenant();
+    const offline = await startApi(API, {
+      async deliver() {
+        return { accepted: false, code: 'SIGNING_PROVIDER_ERROR', detail: 'unreachable' };
+      },
+    });
+    const response = await offline.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(500n)), idempotencyKey: 'http-offline' },
+    });
+    const body = response.json() as { state: string; code: string };
+    expect(body.state).toBe('TICKET_ISSUED_NOT_DELIVERED');
+    expect(body.code).toBe('SIGNING_PROVIDER_ERROR');
+    await offline.close();
+  });
+});
+
+describe('evaluate is a preview', () => {
+  it('answers with the decision and reserves nothing', async () => {
+    const t = await tenant();
+    const before = await requestCount(t.orgId);
+    const response = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/evaluate',
+      headers: bearer(t.presented),
+      payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(50_000n)) },
+    });
+    const body = response.json() as { state: string; reserves: boolean; decision: { outcome: string; reasonCodes: string[] } };
+    expect(body.state).toBe('DECIDED');
+    expect(body.reserves).toBe(false);
+    expect(body.decision.outcome).toBe('DENY');
+    expect(await requestCount(t.orgId)).toBe(before);
+  });
+
+  it('tells the truth about how provisional it is', async () => {
+    // A preview at exactly the limit is the case where `evaluate` and `authorize`
+    // disagree, and §3 says the response must say so rather than look equivalent.
+    const t = await tenant(usd(1_000n));
+    const preview = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/evaluate',
+      headers: bearer(t.presented),
+      payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(500n)) },
+    });
+    expect((preview.json() as { decision: { outcome: string } }).decision.outcome).toBe('ALLOW');
+
+    const held = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(1_000n)), idempotencyKey: 'took-it' },
+    });
+    expect((held.json() as { state: string }).state).toBe('SIGNING_PENDING');
+
+    const later = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/evaluate',
+      headers: bearer(t.presented),
+      payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(500n)) },
+    });
+    expect((later.json() as { decision: { outcome: string } }).decision.outcome).toBe('DENY');
+  });
+});
+
+describe('status', () => {
+  it('returns the state of a request and nothing else', async () => {
+    const t = await tenant();
+    const issued = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(500n)), idempotencyKey: 'status-1' },
+    });
+    const requestId = (issued.json() as { requestId: string }).requestId;
+    const response = await api.app.inject({
+      method: 'GET',
+      url: `/v1/transactions/${requestId}`,
+      headers: bearer(t.presented),
+    });
+    const body = response.json() as { requestId: string; state: string };
+    expect(body.state).toBe('TICKET_MINTED');
+    expect(JSON.stringify(body)).not.toContain('canonical');
+  });
+
+  it('answers 404 for another tenant’s request, exactly as it would for none', async () => {
+    const mine = await tenant();
+    const theirs = await tenant();
+    const issued = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(theirs.presented),
+      payload: { candidate: candidate(theirs.walletId, theirs.agentId, RECIPIENT, usd(500n)), idempotencyKey: 'status-2' },
+    });
+    const requestId = (issued.json() as { requestId: string }).requestId;
+
+    const probe = await api.app.inject({
+      method: 'GET',
+      url: `/v1/transactions/${requestId}`,
+      headers: bearer(mine.presented),
+    });
+    const missing = await api.app.inject({
+      method: 'GET',
+      url: '/v1/transactions/txr_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b',
+      headers: bearer(mine.presented),
+    });
+    expect(probe.statusCode).toBe(404);
+    expect(probe.json()).toEqual(missing.json());
+  });
+
+  it('rejects a body the parser cannot read, and says so', async () => {
+    const t = await tenant();
+    const response = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: { kind: 'transfer' }, idempotencyKey: 'x' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect((response.json() as { code: string }).code).toBe('INVALID_REQUEST');
+  });
+});
+
+describe('what the API process itself is allowed to hold', () => {
+  it('connects as the unprivileged role, so the tenant filters are not the only line (008)', async () => {
+    const client = await api.deps.pool.connect();
+    try {
+      const who = await client.query<{ role: string }>(`SELECT current_user AS role`);
+      expect(who.rows[0]?.role).toBe('ari_app');
+
+      // `ari` owns these tables, so a connection made as it bypasses row security and
+      // could delete the audit trail. This one can do neither — which is the
+      // difference between the `org_id` filters in the routes being a second line of
+      // defence and being the only one.
+      await expect(client.query(`DELETE FROM ari.audit_events`)).rejects.toThrow(/permission denied/i);
+      const unscoped = await client.query<{ count: number }>(`SELECT count(*)::int AS count FROM ari.users`);
+      expect(unscoped.rows[0]?.count).toBe(0);
+    } finally {
+      client.release();
+    }
+  });
+
+  it('answers an internal failure with a code, not with the reason', async () => {
+    const t = await tenant();
+    const first = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(500n)), idempotencyKey: 'clash' },
+    });
+    expect(first.statusCode).toBe(200);
+    // The same key under a different transaction: `recordRequest` throws rather than
+    // guess, and the throw is this process's bug to describe, not the caller's to read.
+    const clash = await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(900n)), idempotencyKey: 'clash' },
+    });
+    expect(clash.statusCode).toBe(500);
+    expect(clash.json()).toEqual({ code: 'INTERNAL' });
+  });
+});
+
+/** The token a human's client would present, read back from the row that was approved. */
+async function approvalToken(approvalId: string): Promise<string> {
+  const rows = await pool.query<{
+    request_id: string;
+    digest: string;
+    policy_version_id: string;
+    agent_id: string;
+    wallet_id: string;
+    amount_raw: string;
+    currency_unit: string;
+    expires_at: Date;
+  }>(
+    `SELECT request_id, digest, policy_version_id, agent_id, wallet_id, amount_raw, currency_unit, expires_at
+       FROM ari.approval_requests WHERE id = $1`,
+    [approvalId],
+  );
+  const row = rows.rows[0];
+  if (row === undefined) throw new Error('approval row not found');
+  // Sealed with the key the running API was configured with — the same one
+  // `requestApproval` sealed its own answer with. A test that used a second key would
+  // prove nothing about what a real approver's client has to produce.
+  return sealApproval(
+    {
+      approvalId,
+      requestId: row.request_id,
+      digest: row.digest as CanonicalDigest,
+      policyVersionId: row.policy_version_id,
+      agentId: row.agent_id,
+      walletId: row.wallet_id,
+      amountRaw: BigInt(row.amount_raw),
+      currencyUnit: row.currency_unit,
+      expiresAtMs: BigInt(row.expires_at.getTime()),
+      nonce: 'test-nonce-for-approval-token-000000000000000000',
+    },
+    API.approvalKey,
+  );
+}

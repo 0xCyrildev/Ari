@@ -9,7 +9,7 @@ Permission infrastructure for autonomous money: an AI agent asks to pay, a compi
 process. Ika dWallets are the eventual signer. Read `docs/ASSUMPTIONS.md` first, then `ARCHITECTURE.md`,
 then `ROADMAP.md`, then `THREAT_MODEL.md`.
 
-## State — 2026-09-26 (second pass)
+## State — 2026-09-26 (third pass)
 
 | Phase | Status | Evidence |
 |---|---|---|
@@ -20,10 +20,11 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | 3.5 policy lifecycle | done | `@ari/policies`: draft→activate, breadth comparison, owner-only widening, justification on rollback |
 | 6 approvals | done | `@ari/approvals` + `006`/`009`; 21 DB tests on the bound token, quorum, replay and T19 |
 | spine | done | `apps/api/src/authorize.ts` + `tests/security/pipeline.test.ts`: evaluate→reserve→decide→ticket→sign, 11 tests walking the brief's own scenarios |
-| 4–5, 7–11 | not started | intent, risk, simulation, HTTP routes + SDK/CLI, Ika, dashboard |
+| HTTP edge | done | `apps/api/src/{gateway,routes,signer-client,server}.ts` + `tests/security/api.test.ts`: 16 tests through `inject`, and both processes run for real (see "Ran for real" below) |
+| 4–5, 7–11 | not started | intent, risk, simulation, SDK/CLI, Ika, dashboard |
 
-`pnpm test` is **302 tests / 18 files**; `pnpm test:unit` runs the no-database half;
-`pnpm test:security` is the 108 tests that need Postgres and do not skip without it.
+`pnpm test` is **318 tests / 19 files**; `pnpm test:unit` is the 184 that need no
+database; `pnpm test:security` is the 134 that need Postgres and do not skip without it.
 
 `pnpm typecheck && pnpm test` — needs no database for the unit half. `test:security` needs
 `pnpm db:up` (Postgres on **127.0.0.1:5435**, Redis 6381; 5432/5433/6380 belong to other projects on this
@@ -65,28 +66,86 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
 - `contract_not_in_allowlist` was removed from the escalation vocabulary: stage 2 already denies any
   contract outside the same list, so the condition could never fire. An option a human can write that does
   nothing is a policy that reads as protection.
+- **Both processes open their database pools as `ari_app`** (`DATABASE_ROLE`, which defaults to it) and
+  refuse to start if the connection does not come up as that role. `ari` owns the tables, and an owner sits
+  outside row security — a pool connected as the owner makes every `WHERE org_id = …` in the codebase the
+  *only* thing between tenants, and the service still starts, which is the silence that matters. Set at
+  connect time with `options: '-c role=…'`, not by a `SET ROLE` on each checkout (pg deprecates querying a
+  client that is already running one, and there is a window between checkout and statement). Session-wide,
+  so neither pool goes behind a transaction-mode pooler. Requires `GRANT ari_app TO <login role>`.
+- **Revocation is dated by the database, not the caller.** `revokeCredential` used to take a `nowMs` and
+  write it into `revoked_at`, whose constraint `revoked_at > created_at` is stated in the *database's*
+  clock: a service half a second behind could not revoke a credential it had just minted, and got a
+  constraint error that named neither clock. `pipeline.test.ts` carried that as a time bomb — its fixed
+  `NOW` was a wall-clock instant the real clock eventually passed, and the suite broke on schedule with no
+  code change. Both revoke paths now write `now()`; `revokeCredential` has no time argument.
+- **A route that hits an unexpected failure answers `{code:'INTERNAL'}` at 500.** Fastify's default
+  serializer puts `message` in the body, and the messages here are real ones — an idempotency conflict
+  naming two digests, a constraint, a fragment of SQL. `setErrorHandler` is why the test asserts the shape.
+- **The lifecycle stops at `TICKET_MINTED`, and `GET /v1/transactions/:id` says exactly that.** The signer
+  answers `COMPLETE` and the API does not settle the request on it, because today's `COMPLETE` came from a
+  mock and a mock's word is not a chain fact (S12). Settling belongs to a provider-confirmed callback or a
+  reconciliation pass, both of which are Phase 8/9 work. Do not "fix" the stale-looking state by wiring the
+  two together.
+- **A parsed `CandidateTransaction` cannot be `JSON.stringify`ed** — money is `bigint` by decision, and
+  `light-my-request` threw on exactly that. HTTP bodies carry decimal strings; the server's parser turns
+  them into bigints. Phase 9's SDK needs a serialiser for the parsed form, and it should not discover this
+  by hand.
+- **No dependency runs code at install time, including `tsx`'s `esbuild`** — `allowBuilds: {esbuild: false}`
+  in `pnpm-workspace.yaml` records the decision rather than leaving it to whoever clears the warning. The
+  TS entry points run under `node --import tsx` because this box's Node 24.18 has no type stripping at all
+  (`--experimental-strip-types` → `ERR_NO_TYPESCRIPT`); `--env-file-if-exists` means a missing `.env` is a
+  `readConfig` refusal rather than a crash about a file.
+
+## Ran for real (2026-09-26)
+
+`pnpm --filter @ari/api start` and `pnpm --filter @ari/signer start`, both against Postgres on 5435, seeded
+a tenant through the packages (there is no HTTP route for it yet), and every state was observed over a real
+socket: `DECIDED` preview, `COMPLETE` end to end with the ticket crossing the process boundary and never
+appearing in the caller's response, `DENIED [RECIPIENT_NOT_IN_ALLOWLIST]`, `APPROVAL_PENDING` with an expiry
+15 minutes out, `TICKET_ISSUED_NOT_DELIVERED` with the signer stopped, and a retry of a spent request
+returning the same `requestId` with the signer's own `TICKET_ALREADY_USED` — single use held across two
+processes. Un-scope a `requestId` to a non-uuidv7 string and the parser refuses it with a 400. The seeding
+script was deleted afterwards on purpose: it duplicates what the test fixtures do, and Phase 9's CLI is the
+version of it worth keeping.
 
 ## Open threads
 
-1. **No HTTP surface yet.** `apps/api` holds the authorization pipeline and nothing else: no Fastify
-   routes, no gateway auth middleware, no `POST /v1/organizations` behind the bootstrap token (§5.6), no
-   SDK. The pipeline is reachable only as a function today, and it is fully tested as one.
-2. **Prisma is gone, by ADR-10.** The schema is hand-written SQL in `migrations/` and the three doc lines
+1. **The agent-facing surface exists; the human-facing one does not.** `POST /v1/organizations` (bootstrap
+   token) and the four agent routes are built and tested. Creating an agent, issuing its credential, deciding
+   an approval, activating a policy — all of those need a *user session*, Ari has no session model, and
+   inventing one inside a route handler is a security decision taken as a side effect. Until it is taken
+   deliberately, operators work through `@ari/identity` and `@ari/policies` directly, which is what the test
+   suites do. Consequence worth knowing: there is currently no way to seed a working tenant without writing a
+   script against the packages. `approvalId` is returned by `APPROVAL_PENDING` but nothing can consume it over
+   HTTP.
+2. **A randomised test that has never failed is not evidence.** `properties.test.ts`'s "a HIGH threshold is
+   never looser than a CRITICAL one" asserted that the stricter policy escalates on *every* input where the
+   looser one allowed — false at once for any input below the threshold, and it had passed every run so far on
+   seed luck (it failed 1 run in ~8). The claim is now the subset implication `strict ALLOW ⇒ loose ALLOW`,
+   plus the bite at exactly `HIGH`. When touching a property: run its file ~15 times before believing it, and
+   read a passing property as untested until it has been seen to fail on a real counterexample.
+3. **Prisma is gone, by ADR-10.** The schema is hand-written SQL in `migrations/` and the three doc lines
    that named Prisma now say so with the reason. Do not reintroduce an ORM schema without settling that ADR:
    the gates here are row-security policies, refusal triggers and role grants, none of which a generated
    client expresses.
-3. **Phase 6 human approvals** — the bound-token flow (`§8`: HMAC over digest ‖ policy version ‖ agent ‖
+4. **Phase 6 human approvals** — the bound-token flow (`§8`: HMAC over digest ‖ policy version ‖ agent ‖
    wallet ‖ amount ‖ expiry ‖ nonce), quorum enforced by Ari's database, `approval_reuse_attempted` as a
    first-class event, and an actor who cannot second-approve a change to their own authority (T19). It
    completes the decision set; Phase 4/5 escalate into it.
-4. `ASSUMPTIONS.md` §6 U-IKA-1/2/3/5/7 gate any real Ika work; each has a named experiment, none is
+5. `ASSUMPTIONS.md` §6 U-IKA-1/2/3/5/7 gate any real Ika work; each has a named experiment, none is
    answerable by reading harder. `~/ika` has the SDK source at a pinned version — guessing when the source is
    present is not acceptable here.
-5. `tests/security/` applies all migrations **once**, in `global-setup.ts`, before any worker starts. DDL
+6. `tests/security/` applies all migrations **once**, in `global-setup.ts`, before any worker starts. DDL
    inside a suite deadlocked against another suite's in-flight INSERT (access-exclusive vs row-exclusive on
    the same table) — advisory locks do not help with that. Keep DDL out of the test files.
-6. **A `SET ROLE` connection must never share a pool with privileged ones.** `packages/policies`'s suite and
+7. **A `SET ROLE` connection must never share a pool with privileged ones.** `packages/policies`'s suite and
    `tests/security/identity.test.ts` each keep a dedicated pool for the `ari_app` half; a released client
-   comes back still holding the role and the next owner query quietly returns zero rows.
-7. `docs/ARCHITECTURE.md` §13's `IntentInterpreter` names `AMBIGUOUS` while the schema and every doc call it
+   comes back still holding the role and the next owner query quietly returns zero rows. Same reason the two
+   services get their own pools and their own role.
+8. **Cross-suite test assertions must be scoped to the tenant they own.** `api.test.ts` once counted
+   `transaction_requests` globally to prove a preview wrote nothing; the suites run as parallel workers
+   against one database, so the control was another file's traffic and it failed about 1 run in 8. Count
+   `WHERE org_id = …`, or count nothing.
+9. `docs/ARCHITECTURE.md` §13's `IntentInterpreter` names `AMBIGUOUS` while the schema and every doc call it
    `NEEDS_CLARIFICATION`. `ASSUMPTIONS.md` A5 has the old name too. Fix when Phase 4 starts.

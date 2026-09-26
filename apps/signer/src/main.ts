@@ -25,6 +25,13 @@ import { createSignHandler } from './handler.js';
 export interface SignerConfig {
   readonly ticketKey: TicketKey;
   readonly databaseUrl: string;
+  /**
+   * Same rule as the decision plane, same reason: this process is the one holding the
+   * sealing key, so it is the one whose database access most wants to be unable to
+   * write anything it was not given a grant for. `ari` owns the tables and is outside
+   * row security; `ari_app` is what `008` wrote the grants for.
+   */
+  readonly databaseRole: string;
   readonly wallets: ReadonlySet<string>;
   readonly port: number;
 }
@@ -32,6 +39,7 @@ export interface SignerConfig {
 export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
   const secrets = env.TICKET_KEY ?? '';
   const databaseUrl = env.DATABASE_URL ?? '';
+  const databaseRole = env.DATABASE_ROLE ?? 'ari_app';
   const wallets = (env.SIGNER_WALLETS ?? '')
     .split(',')
     .map((entry) => entry.trim())
@@ -41,6 +49,7 @@ export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
   const problems: string[] = [];
   if (secrets.length < 32) problems.push('TICKET_KEY must be at least 32 characters (openssl rand -base64 48)');
   if (databaseUrl.length === 0) problems.push('DATABASE_URL is required: single use is a database fact, not a memory');
+  if (!/^[a-z_][a-z0-9_]{0,62}$/.test(databaseRole)) problems.push('DATABASE_ROLE must be a plain Postgres role name');
   if (wallets.length === 0) problems.push('SIGNER_WALLETS must name at least one wallet this signer holds capacity for');
   if (provider !== 'mock') {
     // Phase 8 owns the Ika adapter, and `ASSUMPTIONS.md` §6 is still open. An
@@ -54,6 +63,7 @@ export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
   return {
     ticketKey: new TicketKey(secrets),
     databaseUrl,
+    databaseRole,
     wallets: new Set(wallets),
     port: Number(env.SIGNER_PORT ?? '4100'),
   };
@@ -67,7 +77,20 @@ export interface RunningSigner {
 }
 
 export async function startSigner(config: SignerConfig): Promise<RunningSigner> {
-  const pool = new Pool({ connectionString: config.databaseUrl, max: 8 });
+  const pool = new Pool({
+    connectionString: config.databaseUrl,
+    max: 8,
+    // Applied by the backend before it answers the first query, so no pooled
+    // connection is ever live under the wrong identity. Session-wide: this pool must
+    // not sit behind a transaction-mode pooler.
+    options: `-c role=${config.databaseRole}`,
+  });
+  pool.on('error', () => undefined);
+  const probe = await pool.query<{ role: string }>(`SELECT current_user AS role`);
+  if (probe.rows[0]?.role !== config.databaseRole) {
+    await pool.end();
+    throw new Error(`ari-signer cannot start:\n  - the connection reads as "${probe.rows[0]?.role ?? 'unknown'}", not "${config.databaseRole}"`);
+  }
   const store: TicketStore = {
     redeem: (ticketId, digest) => withTransaction(pool, (tx) => claimTicket(tx, ticketId, digest)),
   };

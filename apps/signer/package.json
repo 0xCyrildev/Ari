@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --env-file=../../.env src/main.ts"
+    "start": "node --import tsx --env-file-if-exists=../../.env src/main.ts"
   },
   "dependencies": {
     "@ari/ledger": "workspace:*",

@@ -168,7 +168,7 @@ describe('credentials', () => {
     });
 
     const { issued: live } = await setup(orgId);
-    const revoked = await revokeCredential(app, orgId, live.credentialId, NOW());
+    const revoked = await revokeCredential(app, orgId, live.credentialId);
     expect(revoked).toMatchObject({ revoked: true });
     expect(await verifyCredential(app, live.presented, PEPPER, NOW)).toEqual({
       ok: false,

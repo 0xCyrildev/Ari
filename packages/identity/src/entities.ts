@@ -461,3 +461,24 @@ export async function recipientHistory(
     },
   };
 }
+
+/**
+ * Where a request stands, for the status endpoint and the reconciliation worker.
+ *
+ * Deliberately not the canonical blob or the digest: a caller that already holds
+ * those submitted the request, and a caller that does not should not be able to read
+ * them back.
+ */
+export async function requestStateOf(
+  tx: TenantTx,
+  requestId: string,
+): Promise<{ readonly id: string; readonly lifecycleState: string; readonly createdAt: string } | null> {
+  const rows = await tx.client.query<{ id: string; lifecycle_state: string; created_at: Date }>(
+    `SELECT id, lifecycle_state, created_at FROM ari.transaction_requests WHERE id = $1 AND org_id = $2`,
+    [requestId, tx.orgId],
+  );
+  const row = rows.rows[0];
+  return row === undefined
+    ? null
+    : { id: row.id, lifecycleState: row.lifecycle_state, createdAt: row.created_at.toISOString() };
+}

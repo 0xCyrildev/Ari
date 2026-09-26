@@ -225,19 +225,28 @@ export async function verifyCredential(
   };
 }
 
+/**
+ * Revoke, and report what is still live for that agent.
+ *
+ * The database dates the revocation (`revoked_at = now()`), not the caller.
+ * `004_identity.sql` enforces `revoked_at > created_at`, and `created_at` is the
+ * database's clock — so a caller-supplied time is a second clock standing in the way
+ * of an ordinary, correct operation: a service whose clock runs half a second behind
+ * cannot revoke a credential it minted half a second ago, and gets a constraint error
+ * that describes none of that. Same reason the count below already reads `now()`.
+ */
 export async function revokeCredential(
   pool: Connector,
   orgId: string,
   credentialId: string,
-  nowMs: bigint,
 ): Promise<{ readonly revoked: boolean; readonly remainingActive: number }> {
   return asTenant(pool, orgId, async (tx) => {
     const updated = await tx.client.query(
       `UPDATE ari.agent_credentials
-          SET revoked_at = $2
+          SET revoked_at = now()
         WHERE id = $1 AND revoked_at IS NULL
         RETURNING id`,
-      [credentialId, new Date(Number(nowMs)).toISOString()],
+      [credentialId],
     );
     const remaining = await tx.client.query<{ count: string; agent_id: string }>(
       `SELECT count(*) AS count FROM ari.agent_credentials
@@ -292,10 +301,13 @@ export async function rotateCredential(
     rotationOf: input.supersedeId,
   });
   const superseded = await tx.client.query(
-    `UPDATE ari.agent_credentials SET revoked_at = $2
+    // Dated by the database for the same reason `revokeCredential` is: the constraint
+    // this row is checked against is written in the database's clock, and
+    // `tx.startedAtMs` is the process's.
+    `UPDATE ari.agent_credentials SET revoked_at = now()
       WHERE id = $1 AND revoked_at IS NULL
       RETURNING id`,
-    [input.supersedeId, new Date(Number(tx.startedAtMs)).toISOString()],
+    [input.supersedeId],
   );
   if ((superseded.rowCount ?? 0) === 0) {
     // Not already revoked, not missing: the transaction has to undo the mint,

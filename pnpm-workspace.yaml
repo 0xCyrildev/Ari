@@ -2,7 +2,17 @@ packages:
   - 'packages/*'
   - 'apps/*'
 
-# No dependency is permitted to run code at install time. Nothing currently needs
-# to: the schema is applied by `migrations/`, and if a future package needs a build
-# step it gets named here deliberately, with the reason.
-allowBuilds: {}
+# No dependency is permitted to run code at install time. A package that needs a
+# build step gets named here deliberately, with the reason, rather than approved by
+# whoever noticed the warning last.
+#
+# `esbuild` arrives as `tsx`'s dependency, and `tsx` is how the two processes are
+# started on a Node built without TypeScript support (Debian's 24.x: `--experimental-
+# strip-types` raises ERR_NO_TYPESCRIPT there). Its postinstall only re-checks a
+# binary that the platform-specific package already shipped and that works untouched —
+# verified here by running `node --import tsx` with the script ignored. So the answer
+# is an explicit no, which is also the default: this keeps install-time code at zero
+# and records that someone checked.
+
+allowBuilds:
+  esbuild: false

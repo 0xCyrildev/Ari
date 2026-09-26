@@ -46,6 +46,8 @@ export interface PipelineDeps {
    */
   readonly ticketKey: TicketKey;
   readonly approvalKey: ApprovalKey;
+  /** Out of the pipeline's hands entirely — the gateway verifies, this evaluates. */
+  readonly masterPepper: string;
   readonly nowMs: () => bigint;
 }
 
@@ -56,6 +58,13 @@ export interface AuthorizeInput {
   readonly idempotencyKey: string;
   /** Present on the second pass, after a human has approved. */
   readonly approvalToken?: string;
+  /**
+   * Evaluation only. `§3` is explicit that `evaluate` is a *preview* — it reserves
+   * nothing and mints no ticket, so a limit shown as available here may be gone by
+   * the time `authorize` asks. Saying so in the response beats pretending the two
+   * calls are the same thing.
+   */
+  readonly dryRun?: boolean;
 }
 
 export type AuthorizeOutcome =
@@ -65,7 +74,10 @@ export type AuthorizeOutcome =
       readonly ticket: AuthorizationTicket;
       readonly ticketId: string;
       readonly digest: string;
+      /** Not a secret and not a capability: the bytes the digest commits to. */
+      readonly canonical: string;
     }
+  | { readonly status: 'DECIDED'; readonly requestId: string; readonly decision: Decision }
   | {
       readonly status: 'AWAITING_APPROVAL';
       readonly requestId: string;
@@ -212,6 +224,35 @@ async function evaluateAndIssue(
   const digest = computeDigest(input.candidate, context);
   const isTransfer = input.candidate.kind === 'transfer';
   const amountRaw = isTransfer && input.candidate.kind === 'transfer' ? input.candidate.amount.raw : 0n;
+  const scopes = await activeScopes(tx, input.credentialId);
+  const usage = await usageOf(tx, orgId, policy, input.agentId, nowMs);
+  const history = await historyOf(tx, input.candidate.walletId, policy);
+
+  // One evaluation, whichever path takes it. The dry run reads the same compiled
+  // policy and the same counters and returns the same decision record — the only
+  // thing it withholds is the write.
+  const assessment = (auditRequestId: string): EvaluationState => ({
+    nowMs,
+    requestId: auditRequestId,
+    agentId: input.agentId,
+    agentStatus: 'ACTIVE',
+    scopes: [...scopes],
+    usage,
+    history,
+    risk: null,
+    simulation: null,
+  });
+
+  if (input.dryRun === true) {
+    // No request row, no reservation, no ticket, and no audit event either: §3
+    // calls this a preview, and a preview that leaves a trace behind becomes a
+    // second source of truth about what was asked.
+    return {
+      status: 'DECIDED',
+      requestId: input.candidate.requestId,
+      decision: evaluate({ policy, candidate: input.candidate, state: assessment(input.candidate.requestId) }),
+    };
+  }
 
   const stored = await recordRequest(tx, {
     agentId: input.agentId,
@@ -254,17 +295,7 @@ async function evaluateAndIssue(
   const decision = evaluate({
     policy,
     candidate: input.candidate,
-    state: {
-      nowMs,
-      requestId,
-      agentId: input.agentId,
-      agentStatus: 'ACTIVE',
-      scopes: await activeScopes(tx, input.credentialId),
-      usage: await usageOf(tx, orgId, policy, input.agentId, nowMs),
-      history: await historyOf(tx, input.candidate.walletId, policy),
-      risk: null,
-      simulation: null,
-    },
+    state: assessment(requestId),
   });
 
   await appendEvent(tx, {
@@ -468,6 +499,7 @@ async function issue(
     ticket: sealed.ticket,
     ticketId: ticket.id,
     digest: args.digest,
+    canonical: args.canonical,
   };
 }
 
@@ -516,8 +548,8 @@ async function replay(
     // capabilities are not persisted. Same id, same digest, same single-use row in
     // `signing_tickets`, so the second presentation of either string still spends
     // the one authorisation rather than getting a second one.
-    const amount = await tx.client.query<{ amount_raw: string | null; currency_unit: string | null }>(
-      `SELECT amount_raw, currency_unit FROM ari.transaction_requests WHERE id = $1`,
+    const amount = await tx.client.query<{ amount_raw: string | null; canonical: string }>(
+      `SELECT amount_raw, canonical FROM ari.transaction_requests WHERE id = $1`,
       [requestId],
     );
     const sealed = sealTicket(
@@ -545,6 +577,7 @@ async function replay(
         ticket: sealed.ticket,
         ticketId: stored.ticket_id,
         digest: stored.digest,
+        canonical: amount.rows[0]?.canonical ?? '',
       };
     }
   }

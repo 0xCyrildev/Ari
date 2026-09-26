@@ -7,6 +7,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "start": "node --import tsx --env-file-if-exists=../../.env src/server.ts",
     "test": "vitest run"
   },
   "dependencies": {
@@ -19,7 +20,8 @@
     "@ari/schemas": "workspace:*",
     "@ari/signing": "workspace:*",
     "@ari/transaction-engine": "workspace:*",
-    "pg": "8.23.0"
+    "pg": "8.23.0",
+    "fastify": "5.7.4"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
