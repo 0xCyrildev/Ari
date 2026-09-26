@@ -171,7 +171,7 @@ export async function createAgent(
 export async function setAgentStatus(
   tx: TenantTx,
   input: { readonly agentId: string; readonly status: AgentStatus; readonly actor: string },
-): Promise<void> {
+): Promise<{ readonly credentialsRevoked: number }> {
   const current = await tx.client.query<{ status: string }>(
     `SELECT status FROM ari.agents WHERE id = $1 AND org_id = $2`,
     [input.agentId, tx.orgId],
@@ -188,21 +188,31 @@ export async function setAgentStatus(
   // Revoking an agent also takes its credentials with it, or the status check in
   // `verifyCredential` becomes the only thing standing between a leaked secret and
   // a payment — and single checks break.
+  let credentialsRevoked = 0;
   if (input.status === 'REVOKED') {
-    await tx.client.query(
+    const taken = await tx.client.query(
       `UPDATE ari.agent_credentials SET revoked_at = now()
         WHERE agent_id = $1 AND org_id = $2 AND revoked_at IS NULL`,
       [input.agentId, tx.orgId],
     );
+    credentialsRevoked = taken.rowCount ?? 0;
   }
   await audit(tx, {
-    eventType: input.status === 'REVOKED' ? 'agent.revoked' : 'agent.paused',
+    // One label per transition, and `RESUMED` is a transition. This used to be
+    // `status === 'REVOKED' ? revoked : paused`, which wrote an `agent.paused` event every
+    // time a paused agent came *back* — a trail that says the opposite of what happened is
+    // worse than no trail, because an auditor reads it as evidence. Nothing caught it: the
+    // column is plain `text` with no CHECK in `003`, and `agent.resumed` did not exist in
+    // `AuditEventType`, so the lie was the only sentence the type could form.
+    eventType:
+      input.status === 'REVOKED' ? 'agent.revoked' : input.status === 'PAUSED' ? 'agent.paused' : 'agent.resumed',
     actor: input.actor,
     resource: 'agent',
     resourceId: input.agentId,
     severity: input.status === 'REVOKED' ? 'warning' : 'info',
     metadata: { fromState: before, toState: input.status },
   });
+  return { credentialsRevoked };
 }
 
 export async function createWallet(

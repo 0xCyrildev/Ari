@@ -48,6 +48,11 @@ export const AuditEventType = [
   'user.role_changed',
   'agent.created',
   'agent.paused',
+  // The word was missing, and its absence was the bug: `setAgentStatus` labelled every
+  // non-revoke transition `agent.paused`, because that was the only one the vocabulary had,
+  // so resuming an agent wrote an event saying it had been paused. A trail with no way to say
+  // something happened does not go quiet — it says something else happened.
+  'agent.resumed',
   'agent.revoked',
   'credential.issued',
   'credential.rotated',
@@ -371,7 +376,19 @@ function hashableOf(event: EventLogEntry): HashableParts {
   return parts;
 }
 
-async function readEvents(executor: AuditReader, orgId: string): Promise<EventLogEntry[]> {
+/**
+ * Where a read starts, and how far it goes.
+ *
+ * `afterSeq` is a cursor, not an offset: `seq` is a `bigint` identity, monotonic per
+ * organisation, and never reused, so "everything after the row I last verified" is the one
+ * paging question that cannot be answered wrongly by a concurrent insert. An `OFFSET` would.
+ */
+export interface LogWindow {
+  readonly afterSeq?: string;
+  readonly limit?: number;
+}
+
+async function readEvents(executor: AuditReader, orgId: string, window?: LogWindow): Promise<EventLogEntry[]> {
   const rows = await executor.query<{
     id: string;
     org_id: string;
@@ -395,8 +412,12 @@ async function readEvents(executor: AuditReader, orgId: string): Promise<EventLo
     `SELECT id, org_id, prev_hash, hash, actor, actor_type, event_type, resource, resource_id,
             request_id, correlation_id, policy_version_id, decision, reason_codes, metadata,
             severity, seq, made_at
-       FROM ari.audit_events WHERE org_id = $1 ORDER BY seq ASC`,
-    [orgId],
+       FROM ari.audit_events
+      WHERE org_id = $1
+        AND ($2::text IS NULL OR seq > $2::text::bigint)
+      ORDER BY seq ASC
+        LIMIT $3`,
+    [orgId, window?.afterSeq ?? null, window?.limit ?? null],
   );
 
   return rows.rows.map((row) => ({
@@ -443,10 +464,19 @@ export interface ChainReport {
  * checkable by someone who cannot query the tenant's tables, and if the verifier reached
  * for a connection anywhere in the loop it would be trusting a copy of the evidence about
  * the evidence. `verifyChain` is now this function plus a `SELECT`.
+ *
+ * `startAt` is what makes the same walk usable for a *window* of a chain — a tail that has
+ * already verified up to here, or an auditor holding a head hash written down elsewhere. It
+ * is not a convenience: a window whose start is invented verifies just as happily as one
+ * whose start is held, which is why `verifyEventLog` defaults to `genesis` and a caller that
+ * passes an anchor is the caller that has to say where it came from.
  */
-export function verifyEventLog(entries: readonly EventLogEntry[]): ChainReport {
+export function verifyEventLog(
+  entries: readonly EventLogEntry[],
+  startAt: string = GENESIS,
+): ChainReport {
   const breaks: { seq: string; kind: 'HASH' | 'LINK' }[] = [];
-  let expectedPrev = GENESIS;
+  let expectedPrev = startAt;
 
   for (const event of entries) {
     if (event.prev !== expectedPrev) breaks.push({ seq: event.seq, kind: 'LINK' });
@@ -477,7 +507,11 @@ export async function verifyChain(
   return verifyEventLog(await readEvents(executor, orgId));
 }
 
-/** The events themselves, for an export: the same projection `verifyChain` reads. */
-export async function readEventLog(executor: AuditReader, orgId: string): Promise<EventLogEntry[]> {
-  return readEvents(executor, orgId);
+/** The events themselves, for an export or a tail: the same projection `verifyChain` reads. */
+export async function readEventLog(
+  executor: AuditReader,
+  orgId: string,
+  window?: LogWindow,
+): Promise<EventLogEntry[]> {
+  return readEvents(executor, orgId, window);
 }

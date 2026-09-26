@@ -316,4 +316,146 @@ describe('ari, end to end', () => {
     expect(refused.exit).toBe(1);
     expect(refused.err.join(' ')).toMatch(/CHAIN_BREAK/);
   });
+
+  it('tails the same chain it exported, page by page, to the same head', async () => {
+    // The paging test that matters is not "did it fetch twice" but "did the second page
+    // verify against the first page's answer". `--limit 2` forces several windows over a
+    // chain the export command read in one, and both must end on the same hash — which is
+    // the only thing in this suite that says the cursor and the export are looking at one
+    // chain rather than two views that happen to agree today.
+    const exported = await ari('--token', state.token, 'audit', 'export');
+    expect(exported.exit, exported.err.join(' ')).toBe(0);
+    const total = (exported.body.events as unknown[]).length;
+    expect(total).toBeGreaterThan(8);
+
+    const lines: string[] = [];
+    const tailed = await run(
+      ['--url', url, '--token', state.token, 'audit', 'tail', '--limit', '5', '--interval-ms', '1'],
+      (line) => lines.push(line),
+      (line) => errors.push(line),
+    );
+    expect(tailed.exit, errors.join(' ')).toBe(0);
+    const pages = lines.map((line) => JSON.parse(line) as { ok: boolean; verified: number; head: string; events: unknown[] });
+    // No `--once`: the run ends because the cursor caught up with the chain, which is the
+    // only way this suite can tell a working `after=` from a page that was refetched.
+    expect(pages.length).toBeGreaterThan(2);
+    expect(pages.every((page) => page.ok)).toBe(true);
+    expect(pages.reduce((sum, page) => sum + page.events.length, 0)).toBe(total);
+    expect(pages.at(-1)?.verified).toBe(total);
+    expect(pages.at(-1)?.head).toBe(String(exported.body.head));
+  });
+
+  it('previews a decision it is not allowed to act on', async () => {
+    const payload = {
+      candidate: {
+        kind: 'transfer',
+        chain: 'ethereum',
+        requestId: newId('req'),
+        agentId: state.agentId,
+        walletId: state.walletId,
+        deadline: new Date(Date.now() + 300_000).toISOString(),
+        idempotencyKey: 'cli-preview',
+        usdEstimate: null,
+        asset: { kind: 'erc20', chain: 'ethereum', contract: USDC, symbol: 'USDC', decimals: 6 },
+        amount: { raw: '2000000000', unit: 'usdc-6dp' },
+        recipient: { chain: 'ethereum', address: RECIPIENT },
+        replayProtection: { scheme: 'account_sequence', nonce: '9', chainId: '1', gasLimit: null, maxFeePerUnit: null },
+      },
+      idempotencyKey: 'cli-preview',
+    };
+    const path = join(dir, 'preview.json');
+    writeFileSync(path, JSON.stringify(payload, null, 2), 'utf8');
+
+    const before = await ari('--token', state.token, 'audit', 'export');
+    const previewed = await ari('--token', state.token, 'tx', 'evaluate', '--file', path, '--agent-token', state.agentToken);
+    expect(previewed.exit, previewed.err.join(' ')).toBe(0);
+    expect(previewed.body.state).toBe('DECIDED');
+    expect(previewed.err.join(' ')).toMatch(/was a preview/);
+    const after = await ari('--token', state.token, 'audit', 'export');
+    // The count, not the shape: a preview that left one more row anywhere in the trail is a
+    // preview that was an authorization wearing a shorter name.
+    expect((after.body.events as unknown[]).length).toBe((before.body.events as unknown[]).length);
+  });
+
+  it('revokes an agent, and the secret stops working at the boundary', async () => {
+    const agent = await ari('--token', state.token, 'agent', 'create', '--name', 'doomed');
+    expect(agent.exit, agent.err.join(' ')).toBe(0);
+    const agentId = String(agent.body.agentId);
+    const credential = await ari(
+      '--token', state.token,
+      'agent', 'credential',
+      '--agent', agentId,
+      '--scopes', 'transaction:request',
+    );
+    expect(credential.exit, credential.err.join(' ')).toBe(0);
+    const doomedToken = String(credential.body.bearer);
+
+    // It works first. Without this line the test below only proves the secret was rejected,
+    // which a typo, an expired ttl and a broken revoke all do equally well. Its own agent id
+    // on the candidate, so nothing about *this* ask could fail for another reason: the point
+    // is only that the boundary let it in.
+    const payload = JSON.parse(readFileSync(join(dir, 'preview.json'), 'utf8')) as {
+      candidate: Record<string, unknown>;
+      idempotencyKey: string;
+    };
+    const own = join(dir, 'preview-doomed.json');
+    writeFileSync(
+      own,
+      JSON.stringify({ ...payload, candidate: { ...payload.candidate, agentId, requestId: newId('req') } }, null, 2),
+      'utf8',
+    );
+    expect((await ari('tx', 'evaluate', '--file', own, '--agent-token', doomedToken)).exit).toBe(0);
+
+    const revoked = await ari('--token', state.token, 'agent', 'revoke', '--agent', agentId);
+    expect(revoked.exit, revoked.err.join(' ')).toBe(0);
+    expect(revoked.body.status).toBe('REVOKED');
+    expect(revoked.body.credentialsRevoked).toBe(1);
+    expect(revoked.err.join(' ')).toMatch(/1 credential\(s\) revoked with it/);
+
+    const refused = await ari('tx', 'evaluate', '--file', own, '--agent-token', doomedToken);
+    expect(refused.exit).toBe(1);
+    // A revoked secret refuses exactly like a wrong one. The alternative — "that agent is
+    // revoked" — tells whoever holds the secret that the id was real and which door to keep
+    // pushing on, which is the same reason `crd_` and `ucrd_` refusals are interchangeable.
+    expect(refused.err.join(' ')).toMatch(/401 UNAUTHENTICATED/);
+
+    const again = await ari('--token', state.token, 'agent', 'revoke', '--agent', agentId);
+    expect(again.exit, again.err.join(' ')).toBe(0);
+    expect(again.body.alreadyRevoked).toBe(true);
+    // The second call is not a second act, so it must not read as one in the trail.
+    const trail = await ari('--token', state.token, 'audit', 'export');
+    const revocations = (trail.body.events as { eventType: string; resourceId: string; actorType: string }[]).filter(
+      (event) => event.eventType === 'agent.revoked' && event.resourceId === agentId,
+    );
+    expect(revocations).toHaveLength(1);
+    expect(revocations[0]?.actorType).toBe('human');
+  });
+
+  it('reads another tenant’s agent as no agent at all', async () => {
+    const other = await ari('--bootstrap', BOOTSTRAP, 'init', '--name', 'Rival Corp');
+    expect(other.exit, other.err.join(' ')).toBe(0);
+    const refused = await ari('--token', String(other.body.bearer), 'agent', 'revoke', '--agent', state.agentId);
+    expect(refused.exit).toBe(1);
+    expect(refused.err.join(' ')).toMatch(/404 NOT_FOUND/);
+    // And the real agent is still standing: the refusal is a not-found, not a side effect.
+    expect((await ari('--token', state.token, 'agent', 'list')).body.agents).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: state.agentId })]),
+    );
+  });
+
+  it('does not let an agent secret open the operator’s gate', async () => {
+    const approverOnly = await ari(
+      '--token', state.token,
+      'agent', 'credential',
+      '--agent', state.agentId,
+      '--scopes', 'transaction:request',
+    );
+    expect(approverOnly.exit).toBe(0);
+    const refused = await ari('agent', 'revoke', '--agent', state.agentId, '--token', String(approverOnly.body.bearer));
+    expect(refused.exit).toBe(1);
+    // An agent secret does not parse at a human route, so this refusal is indistinguishable
+    // from a wrong secret — which is `013`'s CHECK doing its job rather than a message that
+    // explains which of the two the caller almost had.
+    expect(refused.err.join(' ')).toMatch(/401 UNAUTHENTICATED/);
+  });
 });

@@ -1,0 +1,398 @@
+{
+  "_comment": [
+    "The policy corpus: one baseline document and the mutations that make it refuse.",
+    "",
+    "One baseline rather than twenty near-identical files, because a corpus of copies rots the",
+    "day the shape moves — someone 'fixes' it by deleting the cases that broke, and what is left",
+    "reads like coverage. Each case is one field set to the wrong thing, so the reason it refuses",
+    "is the reason named here and nothing else.",
+    "",
+    "`expect: refuse` cases name the field, and the test demands it. `reason` is asserted only",
+    "where this repository wrote the sentence; where the wording belongs to zod the case says",
+    "`reasonAlone` and pins the field instead, because a test that asserts a library's phrasing",
+    "breaks on a library upgrade and stops testing the rule.",
+    "",
+    "This file is a plain artifact, not CLI-private: a later test may POST every case to",
+    "`/v1/policies` and demand that the server refuse exactly the ones the CLI refuses. Two",
+    "surfaces, one grammar, and if they ever disagree the corpus is the witness."
+  ],
+  "baseline": {
+    "meta": {
+      "name": "baseline",
+      "description": "the smallest policy that means something"
+    },
+    "target": {
+      "walletId": "wal_00000000-0000-4000-8000-000000000001",
+      "authorityMode": "delegated",
+      "signatureTriple": "SECP256K1/ECDSASecp256k1/KECCAK256"
+    },
+    "permissions": {
+      "transfers": {
+        "enabled": true,
+        "chains": [
+          "ethereum"
+        ],
+        "assets": [
+          {
+            "kind": "erc20",
+            "chain": "ethereum",
+            "contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "symbol": "USDC",
+            "decimals": "6"
+          }
+        ],
+        "recipients": {
+          "mode": "allowlist",
+          "addresses": [
+            "0x1111111111111111111111111111111111111111"
+          ]
+        },
+        "perTransaction": {
+          "maxRaw": "1000000000",
+          "unit": "usdc-6dp"
+        },
+        "perDay": {
+          "maxRaw": "5000000000",
+          "unit": "usdc-6dp"
+        },
+        "perMonth": null,
+        "maxTransactionsPerHour": 20
+      },
+      "contractCalls": {
+        "enabled": false,
+        "contracts": []
+      },
+      "newRecipients": {
+        "allowed": false,
+        "requireApproval": false
+      }
+    },
+    "escalation": {
+      "humanApproval": {
+        "requiredWhen": [
+          {
+            "op": "amount_gt",
+            "raw": "1000000000",
+            "unit": "usdc-6dp"
+          }
+        ],
+        "approverRoles": [
+          "owner"
+        ],
+        "quorumEnforcement": "application",
+        "quorum": 1
+      }
+    },
+    "validity": {
+      "transactionTtlSeconds": 900,
+      "notBefore": null,
+      "notAfter": null,
+      "signingBudget": {
+        "maxIkaRawPerDay": "5000000",
+        "alertAtIkaRawPerDay": "2500000"
+      }
+    },
+    "fallback": {
+      "onUnknownTransaction": "deny",
+      "onEvaluationError": "deny",
+      "onRiskUnavailable": "escalate",
+      "onSimulationUnavailable": "allow_advisory"
+    },
+    "limits": {
+      "maxUsdEstimateAgeSeconds": 300,
+      "maxDeadlineSkewSeconds": 60
+    }
+  },
+  "cases": [
+    {
+      "name": "baseline",
+      "expect": "accept",
+      "expectPermits": {
+        "transfers": true,
+        "unit": "usdc-6dp",
+        "perDayRaw": "5000000000",
+        "perMonthRaw": null,
+        "recipients": 1,
+        "contractCalls": false
+      },
+      "expectEscalates": [
+        "amount_gt raw=1000000000 unit=usdc-6dp"
+      ]
+    },
+    {
+      "name": "monthly-cap-in-the-same-unit",
+      "expect": "accept",
+      "comment": "the shape `reservedMonthRaw` used to check against nothing",
+      "set": {
+        "permissions.transfers.perMonth": {
+          "maxRaw": "20000000000",
+          "unit": "usdc-6dp"
+        }
+      },
+      "expectPermits": {
+        "perMonthRaw": "20000000000"
+      }
+    },
+    {
+      "name": "contract-calls-allowlisted",
+      "expect": "accept",
+      "set": {
+        "permissions.contractCalls.enabled": true,
+        "permissions.contractCalls.contracts": [
+          "0x7a250d5630b4cf539739df2c5dacb4c659f2488d"
+        ]
+      },
+      "expectPermits": {
+        "contractCalls": true,
+        "contracts": 1
+      }
+    },
+    {
+      "name": "never-escalate-is-said-not-implied",
+      "expect": "accept",
+      "comment": "an empty requiredWhen is legal and loud; it is not an omission",
+      "set": {
+        "escalation.humanApproval.requiredWhen": []
+      },
+      "expectPermits": {
+        "transfers": true
+      },
+      "expectEscalates": []
+    },
+    {
+      "name": "wrapper-form-file",
+      "expect": "accept",
+      "comment": "`{ name, document }` is the shape `policy apply` sends, so validate must read it too",
+      "wrap": true,
+      "expectName": "baseline"
+    },
+    {
+      "name": "asset-count-as-a-json-number",
+      "expect": "accept",
+      "comment": "NOT an oversight, and this case is what keeps it honest: `decimals` is a `count` (SmallCount, 0-36) while every *amount* is a decimal string. A count cannot be rounded into lying about money; 10^30 wei can. If someone widens SmallCount to cover amounts, or narrows it and breaks this, the case is the witness.",
+      "set": {
+        "permissions.transfers.assets": [
+          {
+            "kind": "native",
+            "chain": "ethereum"
+          }
+        ]
+      },
+      "expectPermits": {
+        "assets": [
+          "native:ethereum"
+        ]
+      }
+    },
+    {
+      "name": "limit-unit-mismatch",
+      "expect": "refuse",
+      "stage": "COMPILE",
+      "field": "permissions.transfers.perDay.unit",
+      "reason": "must share a unit",
+      "comment": "the accident the compiler exists to refuse: a cap read in one unit against a limit in another",
+      "set": {
+        "permissions.transfers.perDay.unit": "eth-18dp"
+      }
+    },
+    {
+      "name": "month-limit-unit-mismatch",
+      "expect": "refuse",
+      "stage": "COMPILE",
+      "field": "permissions.transfers.perMonth.unit",
+      "reason": "per-month limit unit mismatch",
+      "set": {
+        "permissions.transfers.perMonth": {
+          "maxRaw": "2000000",
+          "unit": "eth-18dp"
+        }
+      }
+    },
+    {
+      "name": "transfers-enabled-no-chains",
+      "expect": "refuse",
+      "stage": "COMPILE",
+      "field": "permissions.transfers.chains",
+      "reason": "this is a deny, not a policy",
+      "set": {
+        "permissions.transfers.chains": []
+      }
+    },
+    {
+      "name": "checksummed-allowlist-entry",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "permissions.transfers.recipients.addresses.0",
+      "reason": "lowercase 0x + 40 hex",
+      "comment": "the permanent-deny-with-a-friendly-editor case: it compares unequal to every payment",
+      "set": {
+        "permissions.transfers.recipients.addresses": [
+          "0xAbC1234567890AbC1234567890AbC1234567890Ab"
+        ]
+      }
+    },
+    {
+      "name": "not-an-address-at-all",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "permissions.transfers.recipients.addresses.0",
+      "reason": "lowercase 0x + 40 hex",
+      "set": {
+        "permissions.transfers.recipients.addresses": [
+          "bob@example.com"
+        ]
+      }
+    },
+    {
+      "name": "wildcard-recipients",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "permissions.transfers.recipients.mode",
+      "reasonAlone": true,
+      "comment": "S1: the unsafe option is absent from the vocabulary, not deprecated inside it",
+      "set": {
+        "permissions.transfers.recipients": {
+          "mode": "any",
+          "addresses": [
+            "0x1111111111111111111111111111111111111111"
+          ]
+        }
+      }
+    },
+    {
+      "name": "empty-recipient-allowlist",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "permissions.transfers.recipients.addresses",
+      "reason": "an allowlist with no entries is a deny",
+      "set": {
+        "permissions.transfers.recipients.addresses": []
+      }
+    },
+    {
+      "name": "money-as-a-json-number",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "permissions.transfers.perTransaction.maxRaw",
+      "reason": "expected string",
+      "comment": "the decimal-string rule, and the reason a wei amount cannot be rounded on its way in",
+      "set": {
+        "permissions.transfers.perTransaction.maxRaw": 1000000000
+      }
+    },
+    {
+      "name": "unknown-field-in-transfers",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "permissions.transfers",
+      "reasonAlone": true,
+      "comment": "the field is `perWeek` — a limit the engine will never read, written by someone who believes they added one",
+      "set": {
+        "permissions.transfers.perWeek": {
+          "maxRaw": "1",
+          "unit": "usdc-6dp"
+        }
+      }
+    },
+    {
+      "name": "no-fallback",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "fallback",
+      "reasonAlone": true,
+      "comment": "S15: a policy that does not say what happens when the risk engine is down improvises at the worst moment",
+      "remove": [
+        "fallback"
+      ]
+    },
+    {
+      "name": "risk-unavailable-means-allow",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "fallback.onRiskUnavailable",
+      "reasonAlone": true,
+      "comment": "the third arm does not exist: deny or escalate, and the bug this repo already fixed was a silent fall-through to allow",
+      "set": {
+        "fallback.onRiskUnavailable": "allow"
+      }
+    },
+    {
+      "name": "removed-escalation-condition",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "escalation.humanApproval.requiredWhen.0.op",
+      "reasonAlone": true,
+      "comment": "`contract_not_in_allowlist` was taken out of the vocabulary because stage 2 already denies it — an option a human can write that does nothing",
+      "set": {
+        "escalation.humanApproval.requiredWhen": [
+          {
+            "op": "contract_not_in_allowlist"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quorum-zero",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "escalation.humanApproval.quorum",
+      "reasonAlone": true,
+      "set": {
+        "escalation.humanApproval.quorum": 0
+      }
+    },
+    {
+      "name": "no-approver-roles",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "escalation.humanApproval.approverRoles",
+      "reasonAlone": true,
+      "comment": "an escalation nobody can answer is a payment that stops, and the role list is what makes it answerable",
+      "set": {
+        "escalation.humanApproval.approverRoles": []
+      }
+    },
+    {
+      "name": "ttl-below-the-floor",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "validity.transactionTtlSeconds",
+      "reasonAlone": true,
+      "set": {
+        "validity.transactionTtlSeconds": 5
+      }
+    },
+    {
+      "name": "chain-not-supported",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "permissions.transfers.chains.0",
+      "reasonAlone": true,
+      "comment": "solana is not in `SupportedChain` at all, so naming it here would be a permission against nothing",
+      "set": {
+        "permissions.transfers.chains": [
+          "solana"
+        ]
+      }
+    },
+    {
+      "name": "asset-on-the-wrong-chain",
+      "expect": "refuse",
+      "stage": "SCHEMA",
+      "field": "permissions.transfers.assets.0.chain",
+      "reasonAlone": true,
+      "comment": "an erc20 on bitcoin: the discriminated union is what refuses it, not a validation callback",
+      "set": {
+        "permissions.transfers.assets": [
+          {
+            "kind": "erc20",
+            "chain": "bitcoin",
+            "contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "symbol": "USDC",
+            "decimals": "6"
+          }
+        ]
+      }
+    }
+  ]
+}

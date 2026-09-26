@@ -1,10 +1,12 @@
 /**
  * Argument parsing, with the two failure modes this kind of tool usually gets wrong.
  *
- * First, an unknown flag is an error rather than something to ignore: `ari approvals decide
- * --desicion APPROVED` that quietly does nothing is a person who believes they approved
- * something. Second, a missing value is not a default. Every value below is required by the
- * command that asks for it, and the refusal names the flag.
+ * First, an unknown flag is an error rather than something to ignore — which is a claim
+ * about `unknownFlags` below being *called*, and `index.ts` calls it for every command,
+ * against that command's own declared list. Second, a value a command cannot proceed
+ * without is not defaulted: `text()` refuses and names the flag. What *is* defaulted here
+ * is bounded counts (`--interval-ms`), where an omitted value has one obvious meaning and a
+ * mistyped one has none.
  */
 
 export class UsageError extends Error {}
@@ -72,4 +74,38 @@ export function commaList(flags: Flags, name: string): string[] {
 
 export function isBooleanFlag(flags: Flags, name: string): boolean {
   return flags[name] === true;
+}
+
+/**
+ * A bounded integer with a default, and no silent coercion.
+ *
+ * `--interval-ms fast` and `--limit -1` are refusals rather than `NaN` and `-1` reaching
+ * the poll loop, because a loop that sleeps for `NaN` milliseconds spins, and a spin loop
+ * pointed at a production API is a self-inflicted denial of service with a friendly flag
+ * name on it.
+ */
+export function count(flags: Flags, name: string, fallback: number, max: number): number {
+  const value = optional(flags, name);
+  if (value === undefined) return fallback;
+  if (!/^\d{1,9}$/.test(value)) {
+    throw new UsageError(`--${name} must be a whole number between 1 and ${max}`);
+  }
+  const parsed = Number(value);
+  if (parsed < 1 || parsed > max) {
+    throw new UsageError(`--${name} must be between 1 and ${max}, got ${value}`);
+  }
+  return parsed;
+}
+
+/**
+ * The flags a caller passed that this command never reads.
+ *
+ * `args.ts` has claimed since its first draft that "an unknown flag is an error rather than
+ * something to ignore", and until this function existed the claim was false: every flag
+ * went into one bag, and a command read the keys it wanted. `--desicion APPROVED` was
+ * therefore *absent* rather than *wrong*, and the operator saw a refusal about a missing
+ * `--decision` while the typo stayed in their history for next time.
+ */
+export function unknownFlags(flags: Flags, allowed: readonly string[]): string[] {
+  return Object.keys(flags).filter((name) => !allowed.includes(name));
 }

@@ -8,13 +8,17 @@
  */
 
 import { Api, Refusal } from './http.js';
-import { UsageError, parseArgs, type Flags } from './args.js';
-import { commands, usage } from './commands.js';
+import { UsageError, unknownFlags, parseArgs, type Flags } from './args.js';
+import { Invalid } from './errors.js';
+import { commands, usage, type Base } from './commands.js';
 
 export interface RunResult {
   readonly exit: number;
   readonly printed: readonly string[];
 }
+
+/** Read by every command, so they are never listed as `takes` and never refused. */
+const GLOBAL_FLAGS = ['url', 'token', 'help'];
 
 function flag(flags: Flags, name: string, fromEnv: string): string | undefined {
   const value = flags[name];
@@ -55,8 +59,10 @@ export async function run(
       usage.join('\n'),
       '',
       '--url (default ARI_URL) and --token (default ARI_TOKEN) select the deployment and',
-      'the credential. ARI_TOKEN is the bearer secret of a human credential; the one',
-      'command that does not use it is `init`, which takes --bootstrap instead.',
+      'the credential. ARI_TOKEN is the bearer secret of a human credential; `init` is the',
+      'route that takes --bootstrap instead, and the two commands marked [no server] take',
+      'neither — they are given no client at all, so they cannot reach a deployment by',
+      'accident and cannot be pointed at one by a stale ARI_URL in the environment.',
     ].join('\n');
     say(help);
     return { exit: command.length === 0 ? 2 : 0, printed: [] };
@@ -68,18 +74,26 @@ export async function run(
     return { exit: 2, printed: [] };
   }
 
-  const base = flag(flags, 'url', 'ARI_URL');
-  if (base === undefined) {
-    say('ari: --url is required (or set ARI_URL). This tool never guesses a deployment: a wrong one means a real payment asked of the wrong place.');
+  // A flag this command never reads is refused before anything runs. `args.ts` has claimed
+  // this since its first draft and nothing enforced it: the practical failure was that
+  // `--desicion APPROVED` produced a refusal about a *missing* `--decision`, which is a true
+  // statement about the wrong problem, and the typo went back into the shell history.
+  const unexpected = unknownFlags(flags, [...GLOBAL_FLAGS, ...found.takes]);
+  if (unexpected.length > 0) {
+    say(
+      `ari: ${unexpected.map((flagName) => `--${flagName}`).join(', ')} ${unexpected.length === 1 ? 'is' : 'are'} not a ` +
+        `flag of \`ari ${name}\`. It takes: ${found.takes.length === 0 ? 'none' : found.takes.map((f) => `--${f}`).join(' ')}.`,
+    );
     return { exit: 2, printed: [] };
   }
-  const token = flag(flags, 'token', 'ARI_TOKEN');
+
   const printed: string[] = [];
   const out = (value: unknown): void => {
     const line = JSON.stringify(value, null, 2);
     printed.push(line);
     write(line);
   };
+  const context: Base = { flags, out, err: errorWrite };
 
   try {
     // A command's return value *is* its output. Several of them used to answer by returning
@@ -87,13 +101,33 @@ export async function run(
     // with no agent id to use for the next command — a tool that cannot be read is a tool that
     // cannot be scripted, and a command that already printed for itself returns undefined
     // rather than being printed twice.
-    const result = await found.run({ api: new Api(base, token), flags, out, err: errorWrite });
+    let result: unknown;
+    if (found.local === true) {
+      // A local command gets no `Api` at all, which is the enforcement rather than the
+      // convention: it cannot be handed the deployment URL, and it cannot be handed the
+      // bearer secret either. `verify chain` runs in a directory with no `.env` and no
+      // network, and that is a property of the tool worth having in the type.
+      result = await found.run(context);
+    } else {
+      const base = flag(flags, 'url', 'ARI_URL');
+      if (base === undefined) {
+        say('ari: --url is required (or set ARI_URL). This tool never guesses a deployment: a wrong one means a real payment asked of the wrong place.');
+        return { exit: 2, printed };
+      }
+      result = await found.run({ ...context, api: new Api(base, flag(flags, 'token', 'ARI_TOKEN')) });
+    }
     if (result !== undefined) out(result);
     return { exit: 0, printed };
   } catch (error) {
     if (error instanceof UsageError) {
       say(`ari: ${error.message}`);
       return { exit: 2, printed };
+    }
+    if (error instanceof Invalid) {
+      // The verdict has already been printed by the command that made it. This line is the
+      // human-sized summary, and the exit code is the machine-sized one.
+      say(`ari: refused (${error.code}): ${error.message}`);
+      return { exit: 1, printed };
     }
     if (error instanceof Refusal) {
       // The server's own code, and its own sentence. A refusal is a decision Ari made, and

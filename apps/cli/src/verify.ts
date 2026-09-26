@@ -78,6 +78,32 @@ export function parseExport(raw: unknown): AuditExport {
   return parsed.data;
 }
 
+/**
+ * Rows as they come back over HTTP, checked against the same schema the file is checked
+ * against, and refused otherwise.
+ *
+ * This is not ceremony. An empty array verifies — every chain walk over no events returns
+ * `ok: true` and the genesis head, because there is nothing to contradict. So a server that
+ * renamed one column would, without this, turn `ari audit tail` into a tool that reported
+ * "verified, no breaks" about rows it had silently dropped. The same rule `@ari/client`
+ * applies to every response it parses: strict, and a field the contract does not describe is
+ * a refusal rather than something to ignore.
+ */
+export function parseEventList(raw: unknown): EventLogEntry[] {
+  if (!Array.isArray(raw)) {
+    throw new Error('expected an array of audit events');
+  }
+  return raw.map((entry, index) => {
+    const parsed = EventEntry.safeParse(entry);
+    if (!parsed.success) {
+      throw new Error(
+        `audit event ${index} is not a row this tool knows: ${parsed.error.issues[0]?.message ?? 'unrecognised shape'}`,
+      );
+    }
+    return parsed.data satisfies EventLogEntry;
+  });
+}
+
 export function verifyExport(file: AuditExport, expectedHead?: string): Verdict {
   const entries = file.events as unknown as readonly EventLogEntry[];
   const report = verifyEventLog(entries);

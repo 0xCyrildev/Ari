@@ -48,7 +48,14 @@ export class Api {
     const response = await fetch(`${this.base}${call.path}`, {
       method: call.method,
       headers: {
-        'content-type': 'application/json',
+        // Only with a body. `ari agent revoke` is the first body-less POST this tool makes,
+        // and declaring `content-type: application/json` while sending no bytes is not
+        // cosmetic: Fastify refuses the request at the body parser with a 400 — "Body cannot
+        // be empty when content-type is set to 'application/json'" — before it has read a
+        // credential, checked a scope or looked at the agent. Every test that exercised the
+        // route through `app.inject()` passed, because inject does not reproduce a framework
+        // default; this is the difference between driving the app and driving the wire.
+        ...(call.body === undefined ? {} : { 'content-type': 'application/json' }),
         ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
       },
       ...(call.body === undefined ? {} : { body: JSON.stringify(call.body) }),

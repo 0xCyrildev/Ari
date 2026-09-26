@@ -133,6 +133,9 @@ importers:
       '@ari/audit':
         specifier: workspace:*
         version: link:../../packages/audit
+      '@ari/policy-engine':
+        specifier: workspace:*
+        version: link:../../packages/policy-engine
       '@ari/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas

@@ -31,6 +31,7 @@ import {
   issueUserCredential,
   isScope,
   requestStateOf,
+  setAgentStatus,
   type Scope,
   type TenantTx,
 } from '@ari/identity';
@@ -497,6 +498,41 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     }),
   );
 
+  app.post('/v1/agents/:agentId/revoke', async (request, reply) =>
+    asOperator('agent:manage')(request, reply, async (tx, principal) => {
+      const agentId = idParam(request, 'agentId');
+      if (unusable(agentId, 200)) {
+        return { status: 400, body: { code: 'INVALID_REQUEST', detail: 'agentId is required' } };
+      }
+      const found = await tx.client.query<{ status: string }>(
+        `SELECT status FROM ari.agents WHERE id = $1 AND org_id = $2`,
+        [agentId, tx.orgId],
+      );
+      const status = found.rows[0]?.status;
+      if (status === undefined) {
+        // Another tenant's agent reads exactly as no agent at all, which is the same rule
+        // `GET /v1/transactions/:id` follows and the reason the lookup is scoped rather than
+        // the error message being careful.
+        return { status: 404, body: { code: 'NOT_FOUND', detail: 'no such agent in this organisation' } };
+      }
+      if (status === 'REVOKED') {
+        // A second revoke is not a second act, and refusing it would push an operator into
+        // scripting around the refusal. `REVOKED` is terminal and absorbs, so "already" is a
+        // complete and honest answer — and the trail still shows who revoked it when.
+        return { status: 200, body: { agentId, status: 'REVOKED', credentialsRevoked: 0, alreadyRevoked: true } };
+      }
+      // The credentials go with the agent, inside the same transaction — `setAgentStatus`
+      // does both or neither, because a status check that stands alone between a leaked
+      // secret and a payment is a single control, and single controls break.
+      const { credentialsRevoked } = await setAgentStatus(tx, {
+        agentId,
+        status: 'REVOKED',
+        actor: principal.userId,
+      });
+      return { status: 200, body: { agentId, status: 'REVOKED', credentialsRevoked, alreadyRevoked: false } };
+    }),
+  );
+
   app.post('/v1/agents/:agentId/credentials', async (request, reply) =>
     asOperator('agent:manage')(request, reply, async (tx, principal) => {
       const agentId = idParam(request, 'agentId');
@@ -629,11 +665,41 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
 
   app.get('/v1/audit/events', async (request, reply) =>
     asOperator('audit:read')(request, reply, async (tx) => {
-      const log = await readEventLog(tx.client, tx.orgId);
-      // `head` is the point of the file, not `events`. An export that verifies only against
-      // itself proves nothing about where it came from: the recomputed head is what an
-      // auditor compares against the value this API reports today, or one written down when
-      // the payment happened.
+      const query = (request.query ?? {}) as Record<string, unknown>;
+      const after = typeof query.after === 'string' ? query.after : undefined;
+      const limit = typeof query.limit === 'string' ? query.limit : undefined;
+      if (after !== undefined && !/^\d{1,20}$/.test(after)) {
+        return { status: 400, body: { code: 'INVALID_REQUEST', detail: 'after must be a decimal seq' } };
+      }
+      if (limit !== undefined && (!/^\d{1,6}$/.test(limit) || Number(limit) < 1)) {
+        return { status: 400, body: { code: 'INVALID_REQUEST', detail: 'limit must be between 1 and 999999' } };
+      }
+      const log = await readEventLog(tx.client, tx.orgId, {
+        ...(after === undefined ? {} : { afterSeq: after }),
+        ...(limit === undefined ? {} : { limit: Number(limit) }),
+      });
+      // `head` is the point of a full export, and it is a claim about the *whole* chain: an
+      // export that verifies only against itself proves nothing about where it came from, so
+      // the recomputed head is what an auditor compares against the value this API reported
+      // at the time, or one written down when the payment happened.
+      //
+      // A window makes no head claim at all. `head` below is the hash the *whole* chain
+      // recomputes to, which is the value an auditor compares against one written down
+      // elsewhere; a prefix of rows cannot honestly carry that name, so the paged answer
+      // reports only where to resume and leaves the walking to the reader — a tail that
+      // verifies each page as it arrives is holding its own anchor, and one that reads a
+      // server's word for it would not be verifying anything.
+      if (after !== undefined || limit !== undefined) {
+        return {
+          status: 200,
+          body: {
+            organizationId: tx.orgId,
+            readAt: new Date().toISOString(),
+            events: log,
+            nextCursor: log.at(-1)?.seq ?? after ?? '0',
+          },
+        };
+      }
       return {
         status: 200,
         body: {

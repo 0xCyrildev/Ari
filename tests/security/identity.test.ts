@@ -10,7 +10,7 @@
  */
 
 import { newId } from '@ari/schemas';
-import { verifyChain } from '@ari/audit';
+import { readEventLog, verifyChain } from '@ari/audit';
 import {
   asTenant,
   changeUserRole,
@@ -201,6 +201,22 @@ describe('credentials', () => {
     const listed = await asTenant(app, orgId, (tx) => listCredentials(tx, agentId));
     expect(listed.length).toBeGreaterThan(0);
     expect(new Set(listed.map((entry) => entry.status))).toEqual(new Set(['REVOKED']));
+  });
+
+  it('says which way the agent moved, when it moved', async () => {
+    const orgId = await tenant();
+    const { agentId } = await setup(orgId);
+    await asTenant(app, orgId, (tx) => setAgentStatus(tx, { agentId, status: 'PAUSED', actor: 'tester' }));
+    await asTenant(app, orgId, (tx) => setAgentStatus(tx, { agentId, status: 'ACTIVE', actor: 'tester' }));
+
+    const labels = (await asTenant(app, orgId, (tx) => readEventLog(tx.client, orgId)))
+      .filter((event) => event.resourceId === agentId && event.eventType.startsWith('agent.'))
+      .map((event) => event.eventType);
+    // Two events, two different words. `setAgentStatus` used to write `agent.paused` for any
+    // transition that was not a revoke, so a resumed agent left a trail saying it had been
+    // paused *again* — and the auditor following "who advanced this" would have been shown a
+    // pause where the reality was a person handing the agent back.
+    expect(labels).toEqual(['agent.created', 'agent.paused', 'agent.resumed']);
   });
 
   it('reads a revocation as revoked even when its timestamp is ahead of this process', async () => {

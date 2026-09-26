@@ -30,14 +30,22 @@ const Limit = z
 const RecipientAllowlist = z
   .object({
     mode: z.literal('allowlist'),
-    // The same grammar the candidate is parsed with, and that is the whole point: an
-    // allowlist entry that is not an address compares unequal to every address forever,
-    // so a policy that looked restrictive was a permanent deny with a friendly editor.
     // One grammar per chain that can be paid: the comparison the kernel makes is an
     // exact string match against `candidate.recipient.address`, so an entry that is not
     // a valid address of either kind compares unequal forever — a policy that looked
     // restrictive was a permanent deny with a friendly editor.
-    addresses: z.array(z.union([EvmAddress, BitcoinAddress])).min(1, 'an allowlist with no entries is a deny'),
+    //
+    // The message is written out because a union discards its branches' own reasons: an
+    // entry that is merely checksummed was refusing with the words "Invalid input", which
+    // tells an author that something is wrong and not what to type instead. That is the
+    // whole difference between a parse error and a dead end.
+    addresses: z
+      .array(
+        z.union([EvmAddress, BitcoinAddress], {
+          error: 'expected a lowercase 0x + 40 hex EVM address, or a bitcoin address',
+        }),
+      )
+      .min(1, 'an allowlist with no entries is a deny'),
   })
   .strict();
 
