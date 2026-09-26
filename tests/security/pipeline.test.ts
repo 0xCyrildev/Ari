@@ -28,6 +28,8 @@ import { CandidateTransaction, PolicyDocument, newId, type CanonicalDigest } fro
 import { activateVersion, createPolicy } from '@ari/policies';
 import { readCounter } from '@ari/ledger';
 import { verifyChain } from '@ari/audit';
+import { MockSimulationProvider } from '@ari/simulation';
+import { computeDigest } from '@ari/transaction-engine';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { connect } from './database.js';
@@ -573,6 +575,92 @@ describe('what one authorised request costs', () => {
     console.info();
     expect(tally.statements).toBeLessThanOrEqual(45);
     expect(tally.statements).toBeGreaterThan(20);
+  });
+
+  it('costs less to refuse a request than to pay one, and least to preview one', async () => {
+    // The other two numbers the memory file quotes. They were written down as if measured,
+    // and only the ALLOW was: a refusal that costs as much as a payment is an open door for
+    // anyone who can afford to ask, and a preview that writes a row is a second source of
+    // truth about what was requested. Both bounds are relative to the measured ALLOW above
+    // rather than absolute, because the absolute number moves with the audit chain.
+    const refusedTally = { statements: 0 };
+    const previewTally = { statements: 0 };
+    const metered = (tally: { statements: number }): PipelineDeps => ({ ...deps, pool: countingConnector(app, tally) });
+
+    const overCap = await world();
+    const refusal = await authorize(metered(refusedTally), overCap.orgId,
+      request(overCap, { address: RECIPIENT, amount: usd(6_000n), idempotencyKey: 'cost-denied' }));
+    expect(refusal.status).toBe('DENIED');
+
+    const preview = await authorize(metered(previewTally), overCap.orgId, {
+      ...request(overCap, { address: RECIPIENT, amount: usd(500n), idempotencyKey: 'cost-preview' }),
+      dryRun: true,
+    });
+    expect(preview.status).toBe('DECIDED');
+
+    console.info(`statements: denied=${String(refusedTally.statements)} preview=${String(previewTally.statements)} against allow=30`);
+    // A denial still writes the request row, the decision and its audit events; what it
+    // skips is the reservation, the ticket and the delivery — so it must be cheaper, not
+    // dramatically cheaper, and the bound says which part of that is load-bearing.
+    expect(refusedTally.statements).toBeLessThan(30);
+    expect(previewTally.statements).toBeLessThanOrEqual(refusedTally.statements);
+
+    // And the preview's claim, asserted on the row rather than inferred from a return value.
+    // Keyed on the exact idempotency key this call used, because the first draft of this line
+    // asked for `LIKE 'preview:%'` — which is the *route's* convention, not something this
+    // request wrote, so it could not have failed for any reason and proved nothing.
+    // Scoped to the tenant this test created, which is the rule `AGENTS.md` open thread 8
+    // states and which this line broke on its first run: keyed globally, the count was 3 —
+    // three earlier runs of the same test, in three earlier tenants, in a database that is
+    // never truncated between runs. A global count here is not a weak assertion, it is an
+    // assertion about other people's traffic.
+    const rowCountFor = async (key: string): Promise<number> => {
+      const rows = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM ari.transaction_requests WHERE idempotency_key = $1 AND org_id = $2`,
+        [key, overCap.orgId],
+      );
+      return Number(rows.rows[0]?.n ?? '-1');
+    };
+    // The control, in the same test and on the same column: the denied request *did* leave a
+    // row under its key. Without that, the preview's zero is a zero no behaviour could have
+    // turned nonzero.
+    expect(await rowCountFor('cost-denied')).toBe(1);
+    expect(await rowCountFor('cost-preview')).toBe(0);
+  });
+
+  it('is measurable, and the simulated path is priced', async () => {
+    // The other half of the claim above. `authorize` asks the chain *outside* the tenant
+    // transaction, deliberately — holding the organisation's advisory lock across an
+    // `eth_call` would make a slow node serialise every other payment that tenant asks for.
+    // The price of that choice is a whole second transaction per simulated request, and it
+    // was asserted by nothing: this measures the delta and bounds it, so the next person who
+    // reaches for "just run the RPC inside `within`" finds a failing test instead of a
+    // comment. The provider is a mock on purpose: the network is not what is being costed.
+    const unmetered = { statements: 0 };
+    const simulated = { statements: 0 };
+    const plain: PipelineDeps = { ...deps, pool: countingConnector(app, unmetered) };
+    const withSimulation: PipelineDeps = {
+      ...deps,
+      pool: countingConnector(app, simulated),
+      simulation: new MockSimulationProvider((subject) =>
+        computeDigest(subject.candidate, { policyVersionId: subject.policyVersionId }),
+      ),
+    };
+
+    const a = await world();
+    expect((await authorize(plain, a.orgId, request(a, { address: RECIPIENT, amount: usd(500n), idempotencyKey: 'cost-plain' }))).status).toBe('TICKET_ISSUED');
+    const b = await world();
+    expect((await authorize(withSimulation, b.orgId, request(b, { address: RECIPIENT, amount: usd(500n), idempotencyKey: 'cost-sim' }))).status).toBe('TICKET_ISSUED');
+
+    // REPORTED, so the number in AGENTS.md is one a person saw rather than one inferred.
+    console.info(`statements: unmediated=${String(unmetered.statements)} simulated=${String(simulated.statements)}`);
+    expect(unmetered.statements).toBeLessThanOrEqual(45);
+    const delta = simulated.statements - unmetered.statements;
+    // The pre-read is BEGIN, the org lock, the tenant scope, one grant SELECT and COMMIT.
+    // Anything looser means the simulation started reading the database from inside the
+    // decision transaction as well, which is the cost this split exists to avoid.
+    expect(delta, `the simulated path costs ${String(delta)} more statements than the plain one`).toBeLessThanOrEqual(6);
+    expect(delta).toBeGreaterThanOrEqual(4);
   });
 
   it('asks the risk plane exactly once, and never per rule', async () => {

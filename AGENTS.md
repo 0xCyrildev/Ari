@@ -218,11 +218,16 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   org's advisory lock no other transaction can append to that chain. Keyed by org, so a caller writing for
   two tenants cannot carry a head from one into the other. A bare client with no cursor gets the old
   behaviour, which is what `createOrganization` still is.
-- **The cost of a request is a test.** `tests/security/pipeline.test.ts` counts statements through a
-  proxy client: 29 for a payment that mints a ticket, 20 for a refusal, bounded at 34, with the preview
-  strictly cheaper and leaving no row. Every optimisation in the two bullets above is invisible to a
-  correctness test and obvious to that one; it is the ratchet that stops the next feature adding a query
-  per rule.
+- **The cost of a request is a test, and the numbers in this file are read off it.**
+  `tests/security/pipeline.test.ts` counts statements through a proxy client: **30** for a payment that
+  mints a ticket (bounded at ≤45 and >20 so a legitimate change is not a chore), **21** for a refusal,
+  **10** for a preview that writes no row — the refusal and preview counts are asserted, not recalled, and
+  the preview's "writes no row" is checked beside the control that the denial in the same tenant *did*.
+  The simulated path is **36**, and the delta is bounded at ≤6: `authorize` asks the chain in its own short
+  transaction rather than holding the organisation's advisory lock across an `eth_call`, so the price of
+  not stalling a tenant behind a slow node is one extra BEGIN/lock/scope/grant/COMMIT. Every optimisation
+  in the two bullets above is invisible to a correctness test and obvious to this one; it is the ratchet
+  that stops the next feature adding a query per rule.
 - **`scripts/seed-tenant.mts` is the operator's path, and it runs as `ari_app`.** Org, owner, agent,
   wallet, policy, activation, grant, credential — printed once, because the bearer secret cannot be read
   back afterwards. It exists because there is no human-facing API yet; Phase 9's CLI replaces it, and the
@@ -583,7 +588,11 @@ assertions about somebody else's chain.
 8. **Cross-suite test assertions must be scoped to the tenant they own.** `api.test.ts` once counted
    `transaction_requests` globally to prove a preview wrote nothing; the suites run as parallel workers
    against one database, so the control was another file's traffic and it failed about 1 run in 8. Count
-   `WHERE org_id = …`, or count nothing.
+   `WHERE org_id = …`, or count nothing. The rule is not historical: a test written months later counted
+   `idempotency_key = 'cost-denied'` globally and got **3**, which was three earlier runs of itself, and
+   it would have passed silently forever except that the control next to it (expect exactly 1) was the
+   thing that broke. Tenants are never truncated between runs, so any unscoped count is a count of
+   history.
 9. `docs/ARCHITECTURE.md` §13's `IntentInterpreter` names `AMBIGUOUS` while the schema and every doc call it
    `NEEDS_CLARIFICATION`. `ASSUMPTIONS.md` A5 has the old name too. Fix when Phase 4 starts.
 10. **A tenant with no history always scores MEDIUM.** `NO_BEHAVIOUR_BASELINE` is deliberately not the
@@ -621,12 +630,12 @@ assertions about somebody else's chain.
    denial. Say so if a later session changes that ordering: it is the reason two clocks are
    tolerable here at all.
 
-11. **Simulation exists; three things about it are still open, and none is a provider.**
-   (a) *The simulated path is unbudgeted.* `pipeline.test.ts` counts 29 statements for a payment that mints a
-   ticket, and that number is unchanged because `simulation: null` there — with a provider configured and a
-   candidate it can encode, `simulateFirst` adds a whole extra `asTenant` (advisory lock, grant read, commit)
-   outside the counted transaction. That is the price of not holding a network call inside the lock, and it is
-   asserted by nothing. Measure it before a tenant with real traffic finds it.
+11. **Simulation exists; two things about it are still open, and neither is a provider.**
+   (a) *The bound is on the DB cost, not the latency.* The simulated path is now measured and priced — 36
+   statements against 30, delta ≤6 — but what that number cannot see is wall clock: a configured provider's
+   `timeoutMs` default of 3 000 is time an agent waits before it is told anything, and nothing asserts the
+   end-to-end p50/p95 of a simulated request. If that ever matters, it is a benchmark, like the throughput
+   claim in 10a, not a test.
    (b) *It answers about whatever chain it is pointed at.* This box cannot reach a remote RPC at all (Node's
    fetch, not the network — see `ASSUMPTIONS.md` §1), so `EvmForkProvider` has never seen a chain with real
    counterparty state on it. The gate that makes that safe is the recorded `chainId`/`blockNumber`/`timestamp`
