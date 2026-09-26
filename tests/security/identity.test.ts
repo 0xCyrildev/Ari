@@ -19,6 +19,7 @@ import {
   createUser,
   createWallet,
   grantWalletToAgent,
+  activeScopes,
   issueCredential,
   listCredentials,
   parsePresented,
@@ -199,6 +200,29 @@ describe('credentials', () => {
     const listed = await asTenant(app, orgId, (tx) => listCredentials(tx, agentId));
     expect(listed.length).toBeGreaterThan(0);
     expect(new Set(listed.map((entry) => entry.status))).toEqual(new Set(['REVOKED']));
+  });
+
+  it('reads a revocation as revoked even when its timestamp is ahead of this process', async () => {
+    const orgId = await tenant();
+    const { agentId, issued } = await setup(orgId);
+    // A clock a few hundred milliseconds apart is ordinary; `revoked_at <= now` treated an
+    // ordinary skew as a revocation that had not happened yet, and the stale-capability
+    // report — the one an operator uses to answer "what can this agent still do" — said
+    // ACTIVE about a credential somebody had just revoked.
+    await asTenant(app, orgId, (tx) =>
+      tx.client.query(`UPDATE ari.agent_credentials SET revoked_at = now() + interval '30 seconds' WHERE id = $1`, [
+        issued.credentialId,
+      ]),
+    );
+
+    const listed = await asTenant(app, orgId, (tx) => listCredentials(tx, agentId));
+    expect(listed.map((entry) => entry.status)).toContain('REVOKED');
+    expect(listed.map((entry) => entry.status)).not.toContain('ACTIVE');
+
+    // And the authorizing read was never this function's to weaken: `activeScopes` asks
+    // Postgres, and Postgres says the credential is revoked. Two clocks, one verdict.
+    const scopes = await asTenant(app, orgId, (tx) => activeScopes(tx, issued.credentialId));
+    expect(scopes).toEqual([]);
   });
 
   it('cannot un-revoke a retired agent, which is what "revoked" has to mean', async () => {

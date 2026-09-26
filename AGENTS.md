@@ -319,6 +319,18 @@ reservation stayed SETTLED through it.
    not let the budget field follow it silently. Also `verifyCounterIntegrity` derives from `HELD` rows
    only, which matches `current_reserved` but not `settled` — extend it when the reconciliation pass learns
    to settle.
+10c. **The last process-clock read that mattered is fixed; two TTL *computations* are not.**
+   Both approval-expiry decisions are now made by the row (`expires_at <= now()` in
+   `recordDecision`, `AND expires_at > now()` in the consumption update), and
+   `listCredentials` no longer reads a future-stamped revocation as a live credential — a
+   revocation is a fact, not a scheduled event. What still uses `tx.startedAtMs` is the
+   *start time* of a newly computed expiry at issuance (`credentials.ts`, `approvals.ts`),
+   which is a duration rather than a verdict. `verifyCredential` at the gateway reads the
+   process clock by design; the divergence is bounded because `activeScopes`, inside the
+   tenant transaction, asks Postgres — so a stale-clock authentication still lands on a
+   denial. Say so if a later session changes that ordering: it is the reason two clocks are
+   tolerable here at all.
+
 11. **Simulation (Phase 7) is the next phase with a hole already cut for it.** `state.simulation` is still
     `null` in every path, the kernel's simulation arms (`SIMULATION_MISMATCH`, `SIMULATION_UNAVAILABLE`,
     `fallback.onSimulationUnavailable`) are written and tested against hand-built states, and

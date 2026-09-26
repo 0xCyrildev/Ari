@@ -383,8 +383,14 @@ export async function listCredentials(
   return rows.rows.map((row) => ({
     id: row.id,
     scopes: row.scopes as Scope[],
+    // A revocation is a fact, not a scheduled event: `revoked_at <= now` would have read
+    // a revocation stamped a few milliseconds ahead of this process's clock as a live
+    // credential, which is the one classification this report exists to get right. The
+    // expiry comparison stays on the clock because expiry *is* a time — and that one is a
+    // report, not the authorizing read, which is `verifyCredential`'s and `activeScopes`'
+    // business.
     status:
-      row.revoked_at !== null && row.revoked_at.getTime() <= now
+      row.revoked_at !== null
         ? 'REVOKED'
         : row.expires_at.getTime() <= now
           ? 'EXPIRED'
@@ -444,7 +450,17 @@ export async function resolveGrant(
   };
 }
 
-/** The credential scopes an agent currently holds, for the engine's identity stage. */
+/**
+ * The credential scopes an agent currently holds, for the engine's identity stage.
+ *
+ * A live credential, on the database's clock: `revoked_at IS NULL AND expires_at > now()`.
+ * The gateway's `verifyCredential` answers the same question with the process clock a few
+ * lines earlier, and the two are allowed to disagree in exactly one direction — an
+ * authentication that a stale clock let through still has to find scopes here, inside the
+ * tenant transaction, where a revoked or expired credential yields none and the kernel
+ * denies with `SCOPE_MISSING`. Divergence lands on a refusal, which is the only ordering
+ * that is safe to leave in place.
+ */
 export async function activeScopes(tx: TenantTx, credentialId: string): Promise<readonly string[]> {
   const rows = await tx.client.query<{ scopes: string[] }>(
     `SELECT scopes FROM ari.agent_credentials
