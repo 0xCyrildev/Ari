@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/ari-logo.svg" alt="Ari" width="128" height="128">
+</p>
+
 # Ari
 
 Permission infrastructure for autonomous money.
@@ -86,9 +90,9 @@ proves each one.
 pnpm install
 pnpm db:up            # Postgres on 127.0.0.1:5435, Redis on 6381
 pnpm typecheck
-pnpm test             # everything: 406 tests / 25 files
+pnpm test             # everything: 412 tests / 25 files
 pnpm test:unit        # the 235 that need no database
-pnpm test:security    # the 171 that need Postgres, and do not skip without it
+pnpm test:security    # the 177 that need Postgres, and do not skip without it
 pnpm test:coverage
 ```
 

@@ -187,6 +187,106 @@ describe('single use is a row, not a flag', () => {
   });
 });
 
+describe('a minted ticket cannot be rewritten', () => {
+  /**
+   * Mint, and redeem, one ticket — the state an attacker would start from.
+   *
+   * Written as the owner through the real functions, because the subject here is what
+   * the *row* will accept afterwards, and a fixture that got refused by its own writer
+   * would prove nothing about the guard.
+   */
+  async function spentTicket(): Promise<string> {
+    const ticketId = await withTransaction(pool, async (tx) => {
+      const allowed = await recordDecision(tx, decision('ALLOW'));
+      return (
+        await mintTicket(tx, {
+          decisionId: allowed.id,
+          digest: DIGEST,
+          walletId,
+          expiresAtMs: 1_761_400_060_000n,
+        })
+      ).id;
+    });
+    expect(await withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST, INSIDE_WINDOW))).toBe(true);
+    return ticketId;
+  }
+
+  /** Every one of these is the same statement shape: `ari_app` holds UPDATE on this table. */
+  const rewrites: readonly { readonly name: string; readonly sql: string }[] = [
+    { name: 'un-redeems it', sql: 'SET redeemed_at = NULL' },
+    {
+      name: 'extends its window',
+      sql: `SET expires_at_ms = ${BigInt(1_761_400_060_000) + 3_600_000n}`,
+    },
+    { name: 'shortens its window', sql: `SET expires_at_ms = ${BigInt(1_761_400_030_000) - 1n}` },
+    { name: 'swaps the bytes it seals', sql: `SET digest = '${OTHER_DIGEST}'` },
+    { name: 'moves it to another wallet', sql: `SET wallet_id = '${newId('wal')}'` },
+    { name: 'moves it to another decision', sql: `SET decision_id = '${newId('dec')}'` },
+    { name: 'moves it to another tenant', sql: `SET org_id = '${newId('org')}'` },
+  ];
+
+  it('refuses every rewrite that would make a spent authorisation spendable again', async () => {
+    const ticketId = await spentTicket();
+    for (const rewrite of rewrites) {
+      await expect(
+        pool.query(`UPDATE ari.signing_tickets ${rewrite.sql} WHERE id = $1`, [ticketId]),
+        `the database accepted a rewrite that ${rewrite.name}`
+      ).rejects.toThrow(/signing_tickets|not editable|does not become spendable|seals an expiry/);
+    }
+
+    // The row is exactly what the redemption left it, after seven attempts to change it.
+    const row = await pool.query<{ redeemed_at: Date | null; digest: string; expires_at_ms: string }>(
+      `SELECT redeemed_at, digest, expires_at_ms FROM ari.signing_tickets WHERE id = $1`,
+      [ticketId],
+    );
+    expect(row.rows[0]?.redeemed_at).toBeInstanceOf(Date);
+    expect(row.rows[0]?.digest).toBe(DIGEST);
+    expect(row.rows[0]?.expires_at_ms).toBe('1761400060000');
+  });
+
+  it('refuses them to the role the signer actually holds, not only to an owner', async () => {
+    // `008` grants `ari_app` UPDATE on `signing_tickets` — redeeming is an UPDATE — and
+    // `011` deliberately gave this table no row security, because `ari-signer` redeems
+    // across tenants. That combination is precisely why the guard has to be a trigger:
+    // the role that can reach the row can reach every tenant's rows.
+    const ticketId = await spentTicket();
+    const app = await connect(1, 'ari_app');
+    try {
+      await expect(
+        app.query(`UPDATE ari.signing_tickets SET redeemed_at = NULL WHERE id = $1`, [ticketId]),
+      ).rejects.toThrow(/does not become spendable again/);
+    } finally {
+      await app.end();
+    }
+  });
+
+  it('still lets the one legitimate write through, so the guard is not an outage', async () => {
+    const ticketId = await withTransaction(pool, async (tx) => {
+      const allowed = await recordDecision(tx, decision('ALLOW'));
+      return (
+        await mintTicket(tx, { decisionId: allowed.id, digest: DIGEST, walletId, expiresAtMs: 1_761_400_060_000n })
+      ).id;
+    });
+    expect(await withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST, INSIDE_WINDOW))).toBe(true);
+  });
+
+  it('refuses a fresh ticket whose own fields are edited before anyone spends it', async () => {
+    // The quieter half of the same hole: an edit does not have to reverse a redemption
+    // to matter. Re-pointing an unspent ticket at a bigger amount, a different wallet or
+    // a longer window is a *different authorisation* wearing an id that already cleared
+    // policy — and the digest is the only thing tying it back to what was decided.
+    const ticketId = await withTransaction(pool, async (tx) => {
+      const allowed = await recordDecision(tx, decision('ALLOW'));
+      return (
+        await mintTicket(tx, { decisionId: allowed.id, digest: DIGEST, walletId, expiresAtMs: 1_761_400_060_000n })
+      ).id;
+    });
+    await expect(
+      pool.query(`UPDATE ari.signing_tickets SET digest = $2 WHERE id = $1`, [ticketId, OTHER_DIGEST]),
+    ).rejects.toThrow(/not editable/);
+  });
+});
+
 describe('what a decision row will not let you write', () => {
   it('refuses an ALLOW with no digest, because it would commit to nothing', async () => {
     await expect(

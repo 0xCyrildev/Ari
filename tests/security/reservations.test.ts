@@ -473,4 +473,57 @@ describe('the role the service actually runs as', () => {
     expect((await readCounter(pool, key))?.reservedRaw).toBe(0n);
     expect((await readCounter(pool, month))?.reservedRaw).toBe(0n);
   });
+
+  it('re-claims a released claim, because a release is not a spend', async () => {
+    // The 500 this is the record of. `authorize` releases the daily hold when the
+    // *monthly* cap refuses — the honest move, since nothing left the account — and the
+    // agent's next attempt carries the same idempotency key, so it found that released
+    // row and tried to re-claim it. `010`'s machine permitted only `ABANDONED → PENDING`,
+    // so the trigger raised: a cap refusal that became an internal error, an audit row
+    // rolled back, and no `LIMIT_RESERVATION_FAILED` for a refusal that had happened.
+    // `012` makes the two agree, and says which way round the rule goes: a dead claim may
+    // be re-taken, and money that moved never is.
+    const key = fixture();
+    const cap = usd(2_000n);
+    const first = await asApp(key, (tx) =>
+      reserve(tx, { ...key, amountRaw: usd(2_000n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'after-release', policyVersionId: newId('ppv') }),
+    );
+    if (first.status !== 'HELD') throw new Error('expected the first hold');
+    const released = await asApp(key, (tx) => release(tx, first.reservationId, 'monthly cap refused the request'));
+    expect(released.status).toBe('RELEASED');
+    expect((await readCounter(pool, key))?.reservedRaw).toBe(0n);
+
+    // Same key, smaller amount, after the capacity went back. This is the retry the
+    // agent would make, and it is an answer rather than an exception.
+    const retried = await asApp(key, (tx) =>
+      reserve(tx, { ...key, amountRaw: usd(1_500n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'after-release', policyVersionId: newId('ppv') }),
+    );
+    expect(retried.status).toBe('HELD');
+    expect((await readCounter(pool, key))?.reservedRaw).toBe(usd(1_500n));
+  });
+
+  it('will not re-claim a claim whose money actually moved', async () => {
+    // The other half of the rule, and the reason the widening above is safe: `SETTLED`
+    // left the account, so treating it as an unspent claim would let one payment be
+    // counted twice against a window that has already charged for it.
+    const key = fixture();
+    const held = await asApp(key, (tx) =>
+      reserve(tx, { ...key, amountRaw: usd(900n), maxRaw: usd(1_000n), requestId: newId('txr'), idempotencyKey: 'settled-claim', policyVersionId: newId('ppv') }),
+    );
+    if (held.status !== 'HELD') throw new Error('expected the hold');
+    await asApp(key, (tx) => settle(tx, held.reservationId));
+
+    await expect(
+      pool.query(`UPDATE ari.reservations SET status = 'PENDING' WHERE id = $1`, [held.reservationId]),
+    ).rejects.toThrow(/does not become PENDING/);
+    // And a live hold is not a starting point either: downgrading `HELD` to `PENDING`
+    // would leave the counter holding money that no row claims to hold.
+    const live = await asApp(key, (tx) =>
+      reserve(tx, { ...key, amountRaw: usd(50n), maxRaw: usd(1_000n), requestId: newId('txr'), idempotencyKey: 'live-claim', policyVersionId: newId('ppv') }),
+    );
+    if (live.status !== 'HELD') throw new Error('expected the second hold');
+    await expect(
+      pool.query(`UPDATE ari.reservations SET status = 'PENDING' WHERE id = $1`, [live.reservationId]),
+    ).rejects.toThrow(/does not become PENDING/);
+  });
 });

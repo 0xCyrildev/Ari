@@ -14,7 +14,7 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | Phase | Status | Evidence |
 |---|---|---|
 | 0 discovery | done | four docs, 1,750 lines, every claim labelled VERIFIED / DOC-ONLY / ASSUMED / NOT-FOUND |
-| 1 core domain | done | migrations `001–011`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table — and `tests/security/schema.test.ts` asks the catalogue, not the code |
+| 1 core domain | done | migrations `001–012`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table — and `tests/security/schema.test.ts` asks the catalogue, not the code |
 | 2 policy engine | done | 76 tests + `tests/security/` on real Postgres; 98.75 % branch on the kernel |
 | 3 signing boundary | done | `packages/signing`, `apps/signer`, `002` ALLOW-before-ticket trigger |
 | 3.5 policy lifecycle | done | `@ari/policies`: draft→activate, breadth comparison, owner-only widening, justification on rollback |
@@ -25,8 +25,8 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | agent SDK | started | `packages/client`: the outbound half of the decimal-string rule, three methods, 19 tests, and 2 contract tests that run the client's transport against the real routes |
 | 4–5, 7–11 | not started | intent, risk, simulation, the CLI, Ika, dashboard |
 
-`pnpm test` is **406 tests / 25 files**, in two halves that add up to it: `pnpm test:unit` is the
-**235** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **171** that
+`pnpm test` is **412 tests / 25 files**, in two halves that add up to it: `pnpm test:unit` is the
+**235** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **177** that
 need Postgres and do not skip without it. They did not always add up: `test:security` was
 `vitest run --dir tests/security`, which on vitest 5 matches **no files** at all. Positional filters are
 used now, and the two numbers are written down because "the security gate is green" has to mean the
@@ -309,6 +309,29 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   `connect(max, 'ari_app')` in `tests/security/database.ts` sets the role where the connection opens (the
   same `-c role=` the two services use) instead of `SET ROLE`-ing a client that then returns to the pool
   still holding it.
+
+- **A ticket's redemption is a one-way door in the schema, not just in a query.** `claimTicket`
+  filtered on `redeemed_at IS NULL AND expires_at_ms > now`, which is a *read*; the write that makes
+  a ticket spent is an ordinary UPDATE, `008` grants `ari_app` UPDATE on `signing_tickets`, and `011`
+  deliberately gave that table no row security because the signer redeems across tenants. So
+  `UPDATE ari.signing_tickets SET redeemed_at = NULL, expires_at_ms = <next year>` was one statement,
+  from the role the service already holds, on the one tenant table with no policy — an untraceable
+  second signature for a single authorisation. `012` adds a BEFORE UPDATE trigger that permits exactly
+  one field change after minting: `redeemed_at`, from NULL to a timestamp. The columns that *define
+  what was authorised* — digest, wallet, decision, org, expiry — are the ticket; editing one does not
+  amend an authorisation, it forges a different one under an id that already cleared policy. Verified
+  by removing the trigger: three tests in `decisions.test.ts` turn on the guard rather than passing
+  around it.
+- **A dead claim may be re-taken; money that moved never is.** `010`'s reservation machine permitted
+  only `ABANDONED → PENDING`, while the ledger re-claimed any row that was not `HELD` or `SETTLED` —
+  including `RELEASED`. That is not a cosmetic disagreement: `authorize` releases the daily hold when
+  the *monthly* cap refuses (nothing left the account), and the agent's retry carries the same
+  idempotency key, so it hit the released row, the trigger raised, and a cap refusal became a 500 with
+  its audit row rolled back — the exact failure `010` exists to eliminate, arriving by another route.
+  `012` widens the machine to `ABANDONED | RELEASED → PENDING` and the ledger now names the three
+  re-claimable statuses instead of inferring them from "not a live one", so a fourth status added to
+  the CHECK cannot silently become spendable. `SETTLED → PENDING` and `HELD → PENDING` both still
+  raise, and both are tested.
 
 ## Ran for real (2026-09-26)
 `pnpm --filter @ari/api start` and `pnpm --filter @ari/signer start`, both against Postgres on 5435, seeded

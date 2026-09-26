@@ -80,6 +80,14 @@ const TABLE_COUNTERS = 'ari.limit_counters';
 const TABLE_RESERVATIONS = 'ari.reservations';
 
 /**
+ * The reservation statuses that a new claim may be taken from.
+ *
+ * `012`'s trigger permits exactly these, and no others: `HELD` is somebody's live
+ * reservation, `SETTLED` is money that left, and neither is a starting point.
+ */
+const RECLAIMABLE = new Set(['PENDING', 'ABANDONED', 'RELEASED']);
+
+/**
  * A transaction this module opened, and the only thing `reserve` will accept.
  *
  * The handle is branded and constructed in exactly one place, because "reserve
@@ -220,10 +228,19 @@ export async function reserve(tx: LedgerTx, input: ReserveInput): Promise<Reserv
     if (row.status === 'HELD' || row.status === 'SETTLED') {
       return { status: 'ALREADY_HELD', reservationId: row.id, reservedRaw: BigInt(row.amount_raw) };
     }
-    // A dead claim — `ABANDONED` by an attempt the cap refused, or `RELEASED` by a
-    // signature that never landed — is re-claimed rather than duplicated. The unique
-    // key is the request's identity, so there is exactly one row per (key, dimension)
-    // and the history of an attempt that failed twice stays one row.
+    // A dead claim — `ABANDONED` by an attempt the cap refused, `RELEASED` by a signature
+    // that never landed, or `PENDING` left by a transaction that died between claim and
+    // capacity — is re-claimed rather than duplicated. The unique key is the request's
+    // identity, so there is exactly one row per (key, dimension) and the history of an
+    // attempt that failed twice stays one row.
+    //
+    // Listed rather than inferred from "not one of the live ones", and `012` is its
+    // mirror image: the trigger permits exactly these three backwards steps. An unknown
+    // status arriving here is a schema change nobody reconciled, and silently re-claiming
+    // it is how a fourth state becomes spendable money.
+    if (!RECLAIMABLE.has(row.status)) {
+      throw new Error(`reservation ${row.id} holds status ${row.status}, which is neither live nor re-claimable`);
+    }
     await client.query(
       `UPDATE ${TABLE_RESERVATIONS}
           SET status = 'PENDING', amount_raw = $2, request_id = $3, policy_version_id = $4,
