@@ -1,11 +1,14 @@
 {
   "compilerOptions": {
     "target": "ES2023",
-    "lib": ["ES2023"],
+    "lib": [
+      "ES2023"
+    ],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "types": ["node"],
-
+    "types": [
+      "node"
+    ],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
@@ -20,15 +23,26 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "noEmit": true,
-
     "baseUrl": ".",
     "paths": {
-      "@ari/schemas": ["packages/schemas/src/index.ts"],
-      "@ari/transaction-engine": ["packages/transaction-engine/src/index.ts"],
-      "@ari/policy-engine": ["packages/policy-engine/src/index.ts"],
-      "@ari/signing": ["packages/signing/src/index.ts"],
-      "@ari/audit": ["packages/audit/src/index.ts"],
-      "@ari/simulation": ["packages/simulation/src/index.ts"]
+      "@ari/schemas": [
+        "packages/schemas/src/index.ts"
+      ],
+      "@ari/transaction-engine": [
+        "packages/transaction-engine/src/index.ts"
+      ],
+      "@ari/policy-engine": [
+        "packages/policy-engine/src/index.ts"
+      ],
+      "@ari/signing": [
+        "packages/signing/src/index.ts"
+      ],
+      "@ari/audit": [
+        "packages/audit/src/index.ts"
+      ],
+      "@ari/simulation": [
+        "packages/simulation/src/index.ts"
+      ]
     }
   },
   "include": [
@@ -36,6 +50,7 @@
     "packages/*/test/**/*.ts",
     "apps/*/src/**/*.ts",
     "apps/*/test/**/*.ts",
-    "tests/**/*.ts"
+    "tests/**/*.ts",
+    "vitest.config.ts"
   ]
 }

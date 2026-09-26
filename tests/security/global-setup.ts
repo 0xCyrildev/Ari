@@ -1,0 +1,44 @@
+/**
+ * One schema, applied once, before any worker starts.
+ *
+ * Each security file used to run the migration series itself under an advisory
+ * lock, and the advisory lock guarded against nothing that mattered: `DROP TRIGGER`
+ * and `CREATE TRIGGER` take an ACCESS EXCLUSIVE lock on the table, which deadlocks
+ * against any other suite's in-flight INSERT no matter who holds which advisory
+ * key. The fix is not a better lock — it is that DDL and concurrent DML do not
+ * belong in the same phase of a test run.
+ *
+ * A missing database is not an error here: the suites that need one fail loudly on
+ * connect, and `pnpm test:unit` should not depend on a container.
+ */
+
+import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { Pool } from 'pg';
+
+const MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations', import.meta.url));
+
+export const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://ari:ari@127.0.0.1:5435/ari';
+
+export default async function setup(): Promise<() => Promise<void>> {
+  const files = readdirSync(MIGRATIONS_DIR)
+    .filter((name) => name.endsWith('.sql'))
+    .sort()
+    .map((name) => `${MIGRATIONS_DIR}/${name}`);
+
+  let pool: Pool | null = null;
+  try {
+    pool = new Pool({ connectionString: DATABASE_URL, max: 1 });
+    for (const file of files) {
+      await pool.query(readFileSync(file, 'utf8'));
+    }
+  } catch (error) {
+    await pool?.end().catch(() => undefined);
+    console.warn(`[ari] security migrations skipped — ${DATABASE_URL} unreachable (${(error as Error).message})`);
+    return async () => undefined;
+  }
+
+  return async () => {
+    await pool?.end();
+  };
+}

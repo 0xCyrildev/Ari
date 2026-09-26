@@ -1,56 +1,30 @@
-import { readdirSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
+import { DATABASE_URL } from './global-setup.js';
+
+export { DATABASE_URL };
 
 /**
- * One numbered series for the whole database, applied in order.
+ * A pool for a suite that needs real transactions.
  *
- * Deliberately not per-package: a migration that has to know another package's
- * table names (the audit chain and the reservation counters share the `ari`
- * schema, and identity will share both) cannot live in two places at once.
- * Filename order is the dependency order.
- */
-const MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations', import.meta.url));
-const MIGRATIONS = readdirSync(MIGRATIONS_DIR)
-  .filter((name) => name.endsWith('.sql'))
-  .sort()
-  .map((name) => `${MIGRATIONS_DIR}/${name}`);
-
-export const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://ari:ari@127.0.0.1:5435/ari';
-
-/**
- * A real Postgres, or a loud stop.
+ * The schema is applied once, before any worker starts (`global-setup.ts`), so
+ * nothing here runs DDL: an `ALTER TABLE` in flight while another suite inserts is
+ * an access-exclusive lock meeting a row-exclusive one, and Postgres resolves that
+ * by killing one of them.
  *
- * These suites are the Phase 1 and Phase 2 gates, and both are about behaviour
- * only a transaction can show — a row lock, a trigger, a `CHECK`. Skipping when
- * the database is absent would make the suite greenest exactly when nobody has
- * looked at the thing it exists to check.
+ * It does not skip when the database is absent, deliberately. These suites are the
+ * Phase 1 and Phase 2 gates, and both are about behaviour only a transaction can
+ * show — a row lock, a trigger, a grant, a policy. A skipped gate reads as a passed
+ * one in every summary that matters.
  */
-export async function connect(): Promise<Pool> {
-  const pool = new Pool({ connectionString: DATABASE_URL, max: 16 });
+export async function connect(max = Number(process.env.ARI_TEST_POOL_MAX ?? '6')): Promise<Pool> {
+  const pool = new Pool({ connectionString: DATABASE_URL, max });
   try {
     await pool.query('SELECT 1');
   } catch (error) {
     await pool.end().catch(() => undefined);
     throw new Error(
-      `Postgres is not reachable at ${DATABASE_URL} (${(error as Error).message}). ` +
-        'This suite does not skip: run `pnpm db:up`.',
+      `Postgres is not reachable at ${DATABASE_URL} (${(error as Error).message}). Run \`pnpm db:up\`.`,
     );
-  }
-  // The DDL is idempotent but not concurrency-safe: two vitest workers sharing one
-  // database dropping and recreating the same trigger race each other ("tuple
-  // concurrently updated"), which reads as a product defect and is a test
-  // harness one. An advisory lock makes "has the schema been applied" a single
-  // serial question.
-  const lock = await pool.connect();
-  try {
-    await lock.query(`SELECT pg_advisory_lock(hashtext('ari:test-schema'))`);
-    for (const file of MIGRATIONS) {
-      await lock.query(readFileSync(file, 'utf8'));
-    }
-  } finally {
-    await lock.query(`SELECT pg_advisory_unlock(hashtext('ari:test-schema'))`).catch(() => undefined);
-    lock.release();
   }
   return pool;
 }

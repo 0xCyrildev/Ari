@@ -20,6 +20,7 @@
     "test:coverage": "vitest run --coverage.enabled --coverage.include='packages/*/src/**' --coverage.reporters=text"
   },
   "devDependencies": {
+    "@ari/audit": "workspace:*",
     "@ari/ledger": "workspace:*",
     "@ari/policy-engine": "workspace:*",
     "@ari/schemas": "workspace:*",
@@ -32,6 +33,9 @@
     "prisma": "7.10.0",
     "typescript": "5.9.3",
     "vitest": "5.0.1",
-    "@ari/audit": "workspace:*"
+    "@ari/identity": "workspace:*"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.2.1"
   }
 }

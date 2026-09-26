@@ -45,8 +45,19 @@ CREATE INDEX IF NOT EXISTS audit_events_request_idx ON ari.audit_events (org_id,
 -- A row, once written, does not change. This is the polite layer: it stops a bug
 -- in the application. The role grants below are the layer that stops an attacker
 -- who has the application's credential.
+--
+-- The one exception is a maintenance session that names itself, for exactly the
+-- duration of one transaction. Without a sanctioned path, an operator correcting a
+-- bad row would have to `DROP TRIGGER` — a cluster-wide, quietly-restored-by-nobody
+-- act that every other session is unaware of. A `SET LOCAL` cannot leak past its
+-- transaction, so the escape hatch is narrower than the workaround it replaces,
+-- and it is the same shape as everything else here: a decision that has to be
+-- stated to be taken.
 CREATE OR REPLACE FUNCTION ari.reject_audit_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+  IF COALESCE(current_setting('ari.audit_maintenance', true), '') = 'amend' THEN
+    RETURN NEW;
+  END IF;
   RAISE EXCEPTION 'audit_events is append-only: % is not permitted', TG_OP
     USING ERRCODE = 'insufficient_privilege';
 END;

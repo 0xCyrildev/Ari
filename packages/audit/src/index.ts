@@ -240,6 +240,9 @@ export async function appendEvent(tx: AuditTx, input: AuditEventInput): Promise<
   const severity = input.severity ?? 'info';
   const id = newId('aud');
 
+  // Re-entrant when the caller came through `asTenant`, which takes this lock as
+  // the first statement of the transaction; necessary for a caller that did not,
+  // such as the bootstrap path that creates an organisation.
   await tx.client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [input.orgId]);
   const prevHash = await chainHead(tx.client, input.orgId);
 

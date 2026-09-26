@@ -114,14 +114,17 @@ describe('the chain', () => {
     const victim = await append(orgId, 'policy.activated');
     await append(orgId, 'ticket.minted');
 
-    await pool.query(`DROP TRIGGER audit_events_append_only ON ari.audit_events`);
+    // A maintenance transaction, not a dropped trigger: the latter is cluster-wide
+    // and would let every other suite in this run append to a history nobody is
+    // guarding. This is the shape the migration offers for exactly this reason.
+    const amend = await pool.connect();
     try {
-      await pool.query(`UPDATE ari.audit_events SET actor = 'someone-else' WHERE id = $1`, [victim.id]);
+      await amend.query('BEGIN');
+      await amend.query(`SET LOCAL ari.audit_maintenance = 'amend'`);
+      await amend.query(`UPDATE ari.audit_events SET actor = 'someone-else' WHERE id = $1`, [victim.id]);
+      await amend.query('COMMIT');
     } finally {
-      await pool.query(
-        `CREATE TRIGGER audit_events_append_only BEFORE UPDATE OR DELETE ON ari.audit_events
-           FOR EACH ROW EXECUTE FUNCTION ari.reject_audit_mutation()`,
-      );
+      amend.release();
     }
 
     const report = await verifyChain(pool, orgId);
