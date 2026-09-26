@@ -425,6 +425,8 @@ ari/
     simulation/       SimulationProvider interface; MockSimulationProvider; EvmForkProvider
     signing/          SigningProvider interface; Mock; Ika adapter (isolated, documented assumptions)
     ledger/           Postgres limit accounting: atomic reservation, release, settle (CC3)
+    identity/         tenancy handle, credentials (Argon2id + org pepper), agents, wallets, grants, requests
+    policies/         version proposals, activation, breadth comparison and the owner-only guard (§7.3)
     audit/            append-only writer, hash chain, typed redaction
     sdk/              @ari/sdk
     cli/              ari …

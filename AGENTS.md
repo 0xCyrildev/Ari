@@ -9,17 +9,21 @@ Permission infrastructure for autonomous money: an AI agent asks to pay, a compi
 process. Ika dWallets are the eventual signer. Read `docs/ASSUMPTIONS.md` first, then `ARCHITECTURE.md`,
 then `ROADMAP.md`, then `THREAT_MODEL.md`.
 
-## State — 2026-09-26
+## State — 2026-09-26 (second pass)
 
 | Phase | Status | Evidence |
 |---|---|---|
 | 0 discovery | done | four docs, 1,750 lines, every claim labelled VERIFIED / DOC-ONLY / ASSUMED / NOT-FOUND |
-| 1 core domain | **partial** | schemas + canonicalisation exist; **no Prisma schema, no migrations, no `apps/api`, no credentials/org model** |
+| 1 core domain | **nearly** | migrations `001–005`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table. **Missing: `apps/api`, and the Prisma question below.** |
 | 2 policy engine | done | 76 tests + `tests/security/` on real Postgres; 98.75 % branch on the kernel |
-| 3 signing boundary | done | `packages/signing`, `apps/signer`, `sql/002` trigger |
-| 4–11 | not started | approvals (Phase 6, moved up), intent, risk, simulation, SDK/CLI, Ika, dashboard |
+| 3 signing boundary | done | `packages/signing`, `apps/signer`, `002` ALLOW-before-ticket trigger |
+| 3.5 policy lifecycle | done | `@ari/policies`: draft→activate, breadth comparison, owner-only widening, justification on rollback |
+| 4–11 | not started | approvals (Phase 6, moved up next), intent, risk, simulation, SDK/CLI, Ika, dashboard |
 
-`pnpm typecheck && pnpm test && pnpm test:security` — 210 tests, 11 files. `test:security` needs
+`pnpm test` is **258 tests / 14 files**; `pnpm test:unit` skips the DB suites; `pnpm test:security` is
+56 tests that need Postgres and do not skip without it.
+
+`pnpm typecheck && pnpm test` — needs no database for the unit half. `test:security` needs
 `pnpm db:up` (Postgres on **127.0.0.1:5435**, Redis 6381; 5432/5433/6380 belong to other projects on this
 box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent, deliberately.
 `pnpm test:coverage` measures the kernel. Coverage for `ledger` and the negative path lives in
@@ -55,15 +59,26 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
 
 ## Open threads
 
-1. **Phase 1 is the gap.** No `apps/api`, no Prisma schema, no org/agent/credential tables, so nothing here
-   has been run as a service. The Phase 1 gate (IDOR suite, credential hashing with an org-scoped pepper,
-   `audit_events` insert-only at the *role* level) is entirely unwritten.
-2. **Phase 6 human approvals** — `packages/approvals`, the bound-token flow, and `approval_reuse_attempted`
-   as an event. It completes the decision set and Phase 4/5 escalate into it.
-3. `ASSUMPTIONS.md` §6 U-IKA-1/2/3/5/7 gate any real Ika work; each has a named experiment, none is
+1. **No `apps/api` yet.** Nothing in here has been run as a service: no routes, no gateway, no composition
+   root wiring `evaluate → reserve → mintTicket → signer`. Every building block is tested at the layer below.
+2. **Prisma is still a declared-but-unused devDependency.** Phase 1's text says "Prisma schema + first
+   migration" and T8 says "Prisma, no string SQL on any auth path" — but the schema is hand-written SQL
+   (`migrations/001–005`) with a `pg` repository layer, because constraint ownership (triggers, RLS, role
+   grants) is what these gates test and a generator adds a step without adding a guarantee. `allowBuilds`
+   still refuses prisma's install scripts. **Decide deliberately: adopt Prisma on top of these migrations,
+   or amend the two doc lines and drop the dependency.** Do not let it sit half-adopted.
+3. **Phase 6 human approvals** — the bound-token flow (`§8`: HMAC over digest ‖ policy version ‖ agent ‖
+   wallet ‖ amount ‖ expiry ‖ nonce), quorum enforced by Ari's database, `approval_reuse_attempted` as a
+   first-class event, and an actor who cannot second-approve a change to their own authority (T19). It
+   completes the decision set; Phase 4/5 escalate into it.
+4. `ASSUMPTIONS.md` §6 U-IKA-1/2/3/5/7 gate any real Ika work; each has a named experiment, none is
    answerable by reading harder. `~/ika` has the SDK source at a pinned version — guessing when the source is
    present is not acceptable here.
-4. `tests/security/` shares one database across two vitest workers; migrations are applied under an
-   advisory lock (`database.ts`). A third suite that runs DDL will need the same guard.
-5. `docs/ARCHITECTURE.md` §13's `IntentInterpreter` names `AMBIGUOUS` while the schema and every doc call it
+5. `tests/security/` applies all migrations **once**, in `global-setup.ts`, before any worker starts. DDL
+   inside a suite deadlocked against another suite's in-flight INSERT (access-exclusive vs row-exclusive on
+   the same table) — advisory locks do not help with that. Keep DDL out of the test files.
+6. **A `SET ROLE` connection must never share a pool with privileged ones.** `packages/policies`'s suite and
+   `tests/security/identity.test.ts` each keep a dedicated pool for the `ari_app` half; a released client
+   comes back still holding the role and the next owner query quietly returns zero rows.
+7. `docs/ARCHITECTURE.md` §13's `IntentInterpreter` names `AMBIGUOUS` while the schema and every doc call it
    `NEEDS_CLARIFICATION`. `ASSUMPTIONS.md` A5 has the old name too. Fix when Phase 4 starts.
