@@ -103,7 +103,9 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
       typeof body.name !== 'string' ||
       typeof body.ownerEmail !== 'string' ||
       typeof body.ownerDisplayName !== 'string' ||
+      body.name.trim().length === 0 ||
       body.name.length > 200 ||
+      body.ownerDisplayName.trim().length === 0 ||
       body.ownerEmail.length > 320 ||
       body.ownerDisplayName.length > 200
     ) {
@@ -143,10 +145,15 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     const body = request.body as { candidate?: unknown; idempotencyKey?: unknown; approvalToken?: unknown };
     const parsed = CandidateTransaction.safeParse(body.candidate);
     // Bounded here because the column bounds it and a 23-column INSERT is a worse way to
-    // say "too long" than a 400. `idempotency_key` is `BETWEEN 1 AND 200` in `001` and
-    // sits in a unique index; the body limit is 64 KB, so without this a caller can write
-    // a 60 KB "key" straight into Postgres and get a constraint error as a 500.
-    if (!parsed.success || typeof body.idempotencyKey !== 'string' || body.idempotencyKey.length > 200) {
+    // say "too long" — or "too short" — than a 400. `idempotency_key` is
+    // `BETWEEN 1 AND 200` in `004`; the body limit is 64 KB, so without this a caller can
+    // send a 60 KB "key", or an empty one, and get a constraint error as a 500.
+    if (
+      !parsed.success ||
+      typeof body.idempotencyKey !== 'string' ||
+      body.idempotencyKey.length === 0 ||
+      body.idempotencyKey.length > 200
+    ) {
       // A body the parser cannot read is not the same case as `kind: 'unknown'`:
       // that is a *parsed* transaction the policy refuses with a reason code, and
       // this is a request that never reached a decision at all.

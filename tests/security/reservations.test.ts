@@ -27,8 +27,8 @@ import {
   type WindowKey,
 } from '@ari/ledger';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { asTenant } from '@ari/identity';
 import { connect } from './database.js';
-import type { PoolClient } from 'pg';
 
 let pool: Awaited<ReturnType<typeof connect>>;
 let appPool: Awaited<ReturnType<typeof connect>>;
@@ -40,18 +40,16 @@ let appPool: Awaited<ReturnType<typeof connect>>;
  * outside both the grants and row security, so an entire class of bug is invisible to
  * it. That is not a hypothetical: the over-limit path deleted its idempotency claim,
  * `008` grants no DELETE on `reservations`, and every test in this file was green.
+ *
+ * The role is set at the connection, and the tenant at the transaction, exactly as the
+ * service does it: `011` put these tables under row security, so an `ari_app`
+ * connection with no `ari.org_id` is now a connection that can insert nothing and see
+ * nothing. A test that skipped the scope would be asserting a failure mode production
+ * cannot reach — which is why all five cases below go through `asTenant`.
  */
-const app = {
-  async connect(): Promise<PoolClient> {
-    const client = await appPool.connect();
-    await client.query(`SET ROLE ari_app`);
-    return client;
-  },
-};
-
 beforeAll(async () => {
   pool = await connect();
-  appPool = await connect(4);
+  appPool = await connect(4, 'ari_app');
 });
 
 afterAll(async () => {
@@ -76,6 +74,15 @@ function held(results: ReservationResult[]): bigint {
   return results
     .filter((result): result is Extract<ReservationResult, { status: 'HELD' }> => result.status === 'HELD')
     .reduce((total, result) => total + result.reservedRaw, 0n);
+}
+
+/**
+ * One transaction as `ari-api` would open it: the application role, holding this
+ * tenant's scope. `asTenant` is the product's own helper, so this is not a test
+ * shape — it is the only shape that can write these tables at all.
+ */
+function asApp<T>(key: WindowKey, fn: (tx: LedgerTx) => Promise<T>): Promise<T> {
+  return asTenant(appPool, key.orgId, fn);
 }
 
 describe('the brief’s own example', () => {
@@ -361,7 +368,7 @@ describe('the role the service actually runs as', () => {
   it('refuses an over-cap request as a refusal, not as a permission error', async () => {
     const key = fixture();
     const cap = usd(5_000n);
-    await withTransaction(app, (tx) =>
+    await asApp(key, (tx) =>
       reserve(tx, { ...key, amountRaw: usd(4_000n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'a-1', policyVersionId: newId('ppv') }),
     );
 
@@ -369,7 +376,7 @@ describe('the role the service actually runs as', () => {
     // `permission denied for table reservations`: the claim row was inserted as HELD and
     // deleted when the cap refused it, and `ari_app` may not delete. The refusal is a
     // value the pipeline audits, so a 500 here is a refusal that never got recorded.
-    const second = await withTransaction(app, (tx) =>
+    const second = await asApp(key, (tx) =>
       reserve(tx, { ...key, amountRaw: usd(2_000n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'a-2', policyVersionId: newId('ppv') }),
     );
     expect(second.status).toBe('LIMIT_EXCEEDED');
@@ -378,14 +385,20 @@ describe('the role the service actually runs as', () => {
   it('leaves the refused attempt as a row, because this role cannot delete one', async () => {
     const key = fixture();
     const cap = usd(1_000n);
-    const refused = await withTransaction(app, (tx) =>
+    const refused = await asApp(key, (tx) =>
       reserve(tx, { ...key, amountRaw: usd(2_000n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'abandon-me', policyVersionId: newId('ppv') }),
     );
     expect(refused.status).toBe('LIMIT_EXCEEDED');
 
-    const rows = await appPool.query<{ status: string; count: string }>(
-      `SELECT status, count(*)::text FROM ari.reservations WHERE agent_id = $1 AND idempotency_key = $2 AND dimension = $3 GROUP BY status`,
-      [key.agentId, 'abandon-me', key.dimension],
+    // Read back as this role, inside its own tenant scope, rather than as the table
+    // owner: the claim is that the row *survives*, and row security is now part of the
+    // story — an unscoped read would return zero rows and look identical to the row
+    // having been deleted.
+    const rows = await asApp(key, (tx) =>
+      tx.client.query<{ status: string; count: string }>(
+        `SELECT status, count(*)::text FROM ari.reservations WHERE agent_id = $1 AND idempotency_key = $2 AND dimension = $3 GROUP BY status`,
+        [key.agentId, 'abandon-me', key.dimension],
+      ),
     );
     expect(rows.rows.map((row) => `${row.status}:${row.count}`)).toEqual(['ABANDONED:1']);
     // Abandoned is not a spend, and the window must not have moved.
@@ -396,14 +409,14 @@ describe('the role the service actually runs as', () => {
     const key = fixture();
     const tooBig = usd(2_000n);
     const cap = usd(1_000n);
-    const first = await withTransaction(app, (tx) =>
+    const first = await asApp(key, (tx) =>
       reserve(tx, { ...key, amountRaw: tooBig, maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'retry-key', policyVersionId: newId('ppv') }),
     );
     expect(first.status).toBe('LIMIT_EXCEEDED');
 
     // Same key, smaller amount, after the cap had refused it. The claim exists and is
     // dead; the attempt is allowed to live.
-    const again = await withTransaction(app, (tx) =>
+    const again = await asApp(key, (tx) =>
       reserve(tx, { ...key, amountRaw: usd(600n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'retry-key', policyVersionId: newId('ppv') }),
     );
     expect(again.status).toBe('HELD');
@@ -418,16 +431,16 @@ describe('the role the service actually runs as', () => {
     // called `settle` yet; the delivery step does now.
     const key = fixture();
     const cap = usd(2_000n);
-    const held = await withTransaction(app, (tx) =>
+    const held = await asApp(key, (tx) =>
       reserve(tx, { ...key, amountRaw: usd(2_000n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'paid', policyVersionId: newId('ppv') }),
     );
     if (held.status !== 'HELD') throw new Error('expected the first hold');
-    await withTransaction(app, (tx) => settle(tx, held.reservationId));
+    await asApp(key, (tx) => settle(tx, held.reservationId));
 
     expect((await readCounter(pool, key))?.reservedRaw).toBe(0n);
     expect((await readCounter(pool, key))?.settledRaw).toBe(usd(2_000n));
 
-    const next = await withTransaction(app, (tx) =>
+    const next = await asApp(key, (tx) =>
       reserve(tx, { ...key, amountRaw: usd(1n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'after-settle', policyVersionId: newId('ppv') }),
     );
     expect(next.status).toBe('LIMIT_EXCEEDED');
@@ -440,10 +453,10 @@ describe('the role the service actually runs as', () => {
   it('holds one request against a day and a month as two claims', async () => {
     const key = fixture();
     const month: WindowKey = { ...key, windowKey: '2026-09', dimension: 'monthly_raw' };
-    const daily = await withTransaction(app, (tx) =>
+    const daily = await asApp(key, (tx) =>
       reserve(tx, { ...key, amountRaw: usd(500n), maxRaw: usd(1_000n), requestId: 'txr_shared', idempotencyKey: 'two-windows', policyVersionId: newId('ppv') }),
     );
-    const monthly = await withTransaction(app, (tx) =>
+    const monthly = await asApp(month, (tx) =>
       reserve(tx, { ...month, amountRaw: usd(500n), maxRaw: usd(20_000n), requestId: 'txr_shared', idempotencyKey: 'two-windows', policyVersionId: newId('ppv') }),
     );
 
@@ -454,7 +467,7 @@ describe('the role the service actually runs as', () => {
     // not one per request, so a monthly limit can exist at all.
     expect(daily.reservationId).not.toBe(monthly.reservationId);
 
-    const released = await withTransaction(app, (tx) => releaseForRequest(tx, 'txr_shared', 'test'));
+    const released = await asApp(key, (tx) => releaseForRequest(tx, key.orgId, 'txr_shared', 'test'));
     expect(released.rows).toBe(2);
     expect(released.releasedRaw).toBe(usd(1_000n));
     expect((await readCounter(pool, key))?.reservedRaw).toBe(0n);

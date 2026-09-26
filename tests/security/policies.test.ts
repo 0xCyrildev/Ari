@@ -137,7 +137,8 @@ async function fixture() {
 
 async function events(orgId: string, eventType: string) {
   return pool.query<{ severity: string; metadata: Record<string, string>; reason_codes: string[] }>(
-    `SELECT severity, metadata, reason_codes FROM ari.audit_events WHERE org_id = $1 AND event_type = $2`,
+    `SELECT severity, metadata, reason_codes FROM ari.audit_events
+       WHERE org_id = $1 AND event_type = $2 ORDER BY seq`,
     [orgId, eventType],
   );
 }

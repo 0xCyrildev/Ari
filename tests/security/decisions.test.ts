@@ -86,16 +86,23 @@ describe('a ticket needs an ALLOW underneath it', () => {
   });
 
   it('refuses a ticket with no decision behind it at all', async () => {
-    // The trigger reports it, not the foreign key: a BEFORE INSERT runs first, so
-    // "found no decision" is what an operator sees rather than a constraint name
-    // that leaves them to work out which of two rules fired.
+    // Two rules could report this, and which one does is worth being explicit about:
+    // `mintTicket` derives the ticket's tenant from the decision row it points at, so a
+    // decision that does not exist produces no insert at all and the writer's own error,
+    // while a decision that exists but refused the payment reaches the trigger. The
+    // message differs; neither is a constraint name the operator has to decode.
     await expect(
       withTransaction(pool, (tx) =>
         mintTicket(tx, { decisionId: newId('dec'), digest: DIGEST, walletId, expiresAtMs: 1_761_400_060_000n }),
       ),
-    ).rejects.toThrow(/not backed by an ALLOW decision \(found no decision\)/);
+    ).rejects.toThrow(/no such decision/);
   });
 });
+
+/** Inside every ticket minted below (`expiresAtMs` ends ...060_000). */
+const INSIDE_WINDOW = 1_761_400_030_000n;
+/** One millisecond past the last of them. */
+const AFTER_WINDOW = 1_761_400_060_001n;
 
 describe('single use is a row, not a flag', () => {
   it('claims once and never again', async () => {
@@ -110,9 +117,9 @@ describe('single use is a row, not a flag', () => {
       return row.id;
     });
 
-    const first = await withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST));
+    const first = await withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST, INSIDE_WINDOW));
     expect(first).toBe(true);
-    const second = await withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST));
+    const second = await withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST, INSIDE_WINDOW));
     expect(second).toBe(false);
   });
 
@@ -126,10 +133,10 @@ describe('single use is a row, not a flag', () => {
         expiresAtMs: 1_761_400_060_000n,
       })).id;
     });
-    expect(await withTransaction(pool, (tx) => claimTicket(tx, ticketId, OTHER_DIGEST))).toBe(false);
+    expect(await withTransaction(pool, (tx) => claimTicket(tx, ticketId, OTHER_DIGEST, INSIDE_WINDOW))).toBe(false);
     // And the ticket is still there for its rightful bytes: a wrong presentation
     // must not be able to burn a legitimate authorisation.
-    expect(await withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST))).toBe(true);
+    expect(await withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST, INSIDE_WINDOW))).toBe(true);
   });
 
   it('admits exactly one of two concurrent claims on the same ticket', async () => {
@@ -144,11 +151,39 @@ describe('single use is a row, not a flag', () => {
     });
 
     const claims = await Promise.all([
-      withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST)),
-      withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST)),
-      withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST)),
+      withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST, INSIDE_WINDOW)),
+      withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST, INSIDE_WINDOW)),
+      withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST, INSIDE_WINDOW)),
     ]);
     expect(claims.filter((claimed) => claimed)).toHaveLength(1);
+  });
+
+  it('refuses a claim presented after the window the row recorded', async () => {
+    // The seal the caller hands over states its own expiry, and a seal is a claim. This
+    // row's `expires_at_ms` was written at the moment of authorisation, which is the
+    // only reason "60 seconds" bounds anything: single use without a window is an
+    // authorisation that never lapses, and a ticket kept in a drawer is still a ticket.
+    const ticketId = await withTransaction(pool, async (tx) => {
+      const allowed = await recordDecision(tx, decision('ALLOW'));
+      return (await mintTicket(tx, {
+        decisionId: allowed.id,
+        digest: DIGEST,
+        walletId,
+        expiresAtMs: 1_761_400_060_000n,
+      })).id;
+    });
+    expect(await withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST, AFTER_WINDOW))).toBe(false);
+    // Refusing an expired presentation must not spend it either: the row was never
+    // claimable, and `redeemed_at` staying NULL is what tells a reconciliation pass
+    // "this authorisation lapsed" rather than "this authorisation signed something".
+    const redeemed = await pool.query<{ redeemed_at: Date | null }>(
+      `SELECT redeemed_at FROM ari.signing_tickets WHERE id = $1`,
+      [ticketId],
+    );
+    expect(redeemed.rows[0]?.redeemed_at).toBeNull();
+    // And the same ticket, one millisecond earlier, was claimable — so what refused it
+    // is the clock and not something about the row.
+    expect(await withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST, INSIDE_WINDOW))).toBe(true);
   });
 });
 

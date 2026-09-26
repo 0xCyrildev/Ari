@@ -29,7 +29,14 @@ import type { Pool, PoolClient } from 'pg';
 /** Anything that can run a read, so verification works against a pool or a client. */
 export type AuditReader = Pool | PoolClient;
 
-/** The head of every organisation's chain, so the first event is verifiable too. */
+/**
+ * The head of every organisation's chain, so the first event is verifiable too.
+ *
+ * The lock that makes appending serialise is `hashtextextended(orgId, 0)` — the same
+ * expression `@ari/identity`'s `asTenant` uses, and it has to be the same one: two
+ * derivations of "the lock for this tenant" is two locks, and the transaction that took
+ * the other one still believes the chain is its own.
+ */
 export const GENESIS = 'genesis';
 
 /** `audit/v1` inside the hash, so a later change to the encoding cannot reinterpret history. */
@@ -284,7 +291,7 @@ export async function appendEvent(tx: AuditTx, input: AuditEventInput): Promise<
   // `asTenant`, asking again buys a round trip and nothing else, so it does not.
   const cached = tx.chain?.lockHeld === true ? tx.chain.head : undefined;
   if (tx.chain === undefined || !tx.chain.lockHeld) {
-    await tx.client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [input.orgId]);
+    await tx.client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [input.orgId]);
   }
   const prevHash =
     cached !== undefined && cached !== null && cached.org === input.orgId

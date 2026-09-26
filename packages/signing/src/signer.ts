@@ -28,14 +28,20 @@ import type { AuthorizedSigningRequest, SigningProvider, SigningRef, SigningStat
  */
 export interface TicketStore {
   /** Atomically mark `ticketId` spent against `digest`. False if already spent. */
-  redeem(ticketId: string, digest: CanonicalDigest): Promise<boolean>;
+  /**
+   * `nowMs` is this process's clock, passed down so the store can compare it against the
+   * expiry the *database* recorded. A seal's own expiry is a claim by whoever signed it;
+   * the row's is a fact written at authorisation time, and single use without a window is
+   * an authorisation that never lapses.
+   */
+  redeem(ticketId: string, digest: CanonicalDigest, nowMs: bigint): Promise<boolean>;
 }
 
 /** Test and single-process implementation. The Postgres form lives in `@ari/ledger`. */
 export class InMemoryTicketStore implements TicketStore {
   private readonly spent = new Map<string, string>();
 
-  async redeem(ticketId: string, digest: CanonicalDigest): Promise<boolean> {
+  async redeem(ticketId: string, digest: CanonicalDigest, _nowMs: bigint): Promise<boolean> {
     const existing = this.spent.get(ticketId);
     if (existing !== undefined) return false;
     this.spent.set(ticketId, digest);
@@ -159,7 +165,7 @@ export async function redeemAndSign(deps: SignerDeps, attempt: SigningAttempt): 
     return { status: 'AWAITING_USER_SHARE', ticketId: claims.ticketId, digest: claims.digest };
   }
 
-  if (!(await deps.store.redeem(claims.ticketId, claims.digest))) {
+  if (!(await deps.store.redeem(claims.ticketId, claims.digest, now))) {
     return { status: 'REJECTED', code: 'TICKET_ALREADY_USED', detail: claims.requestId };
   }
 

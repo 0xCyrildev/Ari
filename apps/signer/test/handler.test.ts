@@ -5,6 +5,7 @@ import { createSignHandler, responseFor } from '../src/handler.js';
 import { guardStore, readConfig } from '../src/main.js';
 
 const walletId = newId('wal');
+const NOW = 1_761_400_030_000n;
 
 function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
@@ -123,7 +124,7 @@ describe('a store that cannot be written to', () => {
     };
     const guarded = guardStore(refusing);
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      expect(await guarded.redeem(newId('tkt'), (`canon/v1:${'a'.repeat(64)}`) as CanonicalDigest)).toBe(false);
+      expect(await guarded.redeem(newId('tkt'), (`canon/v1:${'a'.repeat(64)}`) as CanonicalDigest, NOW)).toBe(false);
     }
   });
 
@@ -131,12 +132,12 @@ describe('a store that cannot be written to', () => {
     const inner = new InMemoryTicketStore();
     const guarded = guardStore(inner);
     const digest = (`canon/v1:${'b'.repeat(64)}`) as CanonicalDigest;
-    expect(await guarded.redeem(newId('tkt'), digest)).toBe(true);
+    expect(await guarded.redeem(newId('tkt'), digest, NOW)).toBe(true);
     expect(inner.size).toBe(1);
   });
 });
 
 interface TicketStoreLike {
-  redeem(ticketId: string, digest: CanonicalDigest): Promise<boolean>;
+  redeem(ticketId: string, digest: CanonicalDigest, nowMs: bigint): Promise<boolean>;
 }
 

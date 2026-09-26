@@ -61,13 +61,16 @@ export async function createOrganization(
 ): Promise<string> {
   if (input.name.trim().length === 0) throw new RangeError('an organisation needs a name');
   const id = newId('org');
-  const client = await pool.connect();
-  try {
-    await client.query(
-      `INSERT INTO ari.organizations (id, name) VALUES ($1, $2)`,
-      [id, input.name.trim()],
-    );
-    await appendEvent({ client }, {
+  // One transaction, and inside the tenant scope, for two reasons that are the same
+  // reason: the organisation row and the event recording its creation either both exist
+  // or neither does — an `organizations` row with no `organization.created` event is a
+  // tenant that appears to have no beginning — and `ari.audit_events` is under row
+  // security like every other tenant table, so the write has to carry the scope that
+  // policy reads. There is no "bootstrap connections skip the policy" carve-out here:
+  // that is the hole, not the workaround.
+  await asTenant(pool, id, async (tx) => {
+    await tx.client.query(`INSERT INTO ari.organizations (id, name) VALUES ($1, $2)`, [id, input.name.trim()]);
+    await appendEvent(tx, {
       orgId: id,
       actor: input.bootstrapActor,
       actorType: 'system',
@@ -76,9 +79,7 @@ export async function createOrganization(
       resourceId: id,
       metadata: {},
     });
-  } finally {
-    client.release();
-  }
+  });
   return id;
 }
 
@@ -111,6 +112,18 @@ export async function changeUserRole(
   tx: TenantTx,
   input: { readonly userId: string; readonly role: UserRole; readonly actor: string },
 ): Promise<void> {
+  // Lock the row being replaced before deleting and re-inserting it. Without this, two
+  // concurrent changes read the same membership, both delete (one blocks on the other's
+  // lock and then deletes *nothing*, having already decided what the old role was), and
+  // both insert — and the role that the second audit event reports as `from` was never
+  // what the row held. The organisation's advisory lock already serialises tenants from
+  // each other; this is the one that keeps two changes to the *same* membership ordered.
+  const current = await tx.client.query<{ role: string }>(
+    `SELECT role FROM ari.memberships WHERE user_id = $1 AND org_id = $2 FOR UPDATE`,
+    [input.userId, tx.orgId],
+  );
+  const from = current.rows[0]?.role ?? 'none';
+
   await tx.client.query(`DELETE FROM ari.memberships WHERE user_id = $1 AND org_id = $2`, [input.userId, tx.orgId]);
   await tx.client.query(
     `INSERT INTO ari.memberships (user_id, org_id, role, granted_by) VALUES ($1, $2, $3, $4)`,
@@ -124,7 +137,7 @@ export async function changeUserRole(
     resource: 'user',
     resourceId: input.userId,
     severity: 'warning',
-    metadata: { actorRole: input.role },
+    metadata: { actorRole: input.role, fromState: from },
   });
 }
 
@@ -389,6 +402,9 @@ export async function listCredentials(
     // expiry comparison stays on the clock because expiry *is* a time — and that one is a
     // report, not the authorizing read, which is `verifyCredential`'s and `activeScopes`'
     // business.
+    // Revocation outranks expiry. The old order reported a revoked *and* expired
+    // credential as EXPIRED, which is the classification that invites "it would have
+    // lapsed anyway" about the one event an incident review is asking about.
     status:
       row.revoked_at !== null
         ? 'REVOKED'
@@ -495,7 +511,11 @@ export async function recipientFirstSeenAt(
         AND lifecycle_state IN ('SIGNING_COMPLETE', 'BROADCAST', 'BROADCAST_CONFIRMED')`,
     [input.walletId, tx.orgId, input.address],
   );
-  return BigInt(rows.rows[0]?.first_seen?.getTime() ?? 'NaN') || null;
+  // Explicit, not `?? null` chained onto a coercion: a `Date` is the only shape this
+  // column can come back as, and there is no falsy timestamp to rescue — epoch zero is
+  // a real instant that a `|| null` would quietly turn into "never seen".
+  const seen = rows.rows[0]?.first_seen;
+  return seen instanceof Date && !Number.isNaN(seen.getTime()) ? BigInt(seen.getTime()) : null;
 }
 
 export async function requestStateOf(

@@ -75,6 +75,7 @@ afterAll(async () => {
 });
 
 const usd = (whole: bigint) => whole * 1_000_000n;
+const TICKET_TTL = 60_000n;
 
 function policyDocument(walletId: string, mode: 'delegated' | 'user_gated', cap: bigint): PolicyDocument {
   return {
@@ -349,6 +350,34 @@ describe('the negative paths the brief closes on', () => {
     if (first.status !== 'TICKET_ISSUED' || second.status !== 'TICKET_ISSUED') return;
     expect(second.ticketId).toBe(first.ticketId);
     expect(await ticketsIssued(w.orgId)).toBe(1);
+  });
+
+  it('lets a retry re-seal only inside the window the first authorisation recorded', async () => {
+    // The retry path exists so a client that timed out does not pay twice. It re-seals
+    // the same ticket rather than storing it, and until this test that re-seal said
+    // "issued now", which made every retry a fresh 60 seconds — an authorisation you
+    // could keep alive by asking, past the usage snapshot and the policy version it was
+    // decided against.
+    let clock = NOW;
+    const at = (): PipelineDeps => ({ ...deps, nowMs: () => clock });
+    const w = await world();
+    const input = request(w, { address: RECIPIENT, amount: usd(500n), idempotencyKey: 'window-1' });
+    const first = await authorize(at(), w.orgId, input);
+    expect(first.status).toBe('TICKET_ISSUED');
+
+    // Still inside: the same answer, the same ticket, no second of anything.
+    clock = NOW + 30_000n;
+    const inside = await authorize(at(), w.orgId, input);
+    expect(inside.status === 'TICKET_ISSUED' && inside.ticketId).toBe(
+      first.status === 'TICKET_ISSUED' ? first.ticketId : 'mismatch',
+    );
+
+    // Past the row's expiry, the honest answer is that the authorisation lapsed.
+    clock = NOW + TICKET_TTL + 1n;
+    const lapsed = await authorize(at(), w.orgId, input);
+    expect(lapsed.status).toBe('REFUSED');
+    if (lapsed.status !== 'REFUSED') return;
+    expect(lapsed.reason).toMatch(/lapsed/);
   });
 
   it('refuses to re-decide a request that was already denied', async () => {

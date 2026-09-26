@@ -49,6 +49,10 @@ export const ReasonCode = z.enum([
   'TRANSFER_TYPE_DISABLED',
   // limits
   'AMOUNT_ZERO',
+  // A `contract_call` carries `value`, and nothing in the policy language bounds it: the
+  // limits are denominated in a token unit (`usdc-6dp`) that native value is not measured
+  // in. Refusing is the only honest answer until a policy can express the other one.
+  'CONTRACT_VALUE_NOT_PERMITTED',
   'AMOUNT_EXCEEDS_PER_TRANSACTION',
   'AMOUNT_EXCEEDS_DAILY_LIMIT',
   'AMOUNT_EXCEEDS_MONTHLY_LIMIT',

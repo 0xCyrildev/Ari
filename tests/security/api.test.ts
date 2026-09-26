@@ -683,8 +683,18 @@ describe('what the API process itself is allowed to hold', () => {
       // difference between the `org_id` filters in the routes being a second line of
       // defence and being the only one.
       await expect(client.query(`DELETE FROM ari.audit_events`)).rejects.toThrow(/permission denied/i);
-      const unscoped = await client.query<{ count: number }>(`SELECT count(*)::int AS count FROM ari.users`);
-      expect(unscoped.rows[0]?.count).toBe(0);
+      // Row security on *every* tenant table, including the ones that hold money and
+      // evidence rather than identity: an unscoped connection reads none of it. Tenants
+      // have paid for rows in all of these tables by now, so zero is a statement.
+      for (const table of ['users', 'audit_events', 'reservations', 'limit_counters', 'authorization_decisions']) {
+        // Identifier position, not a value position: a table name cannot be a bind
+        // parameter, so this loop is only safe because the list above is a literal. The
+        // `sql-hygiene` test in `tests/unit/` is what keeps that true repo-wide.
+        const unscoped = await client.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM ari.` + table,
+        );
+        expect(unscoped.rows[0]?.count, `unscoped read of ${table} saw rows`).toBe(0);
+      }
     } finally {
       client.release();
     }

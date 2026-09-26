@@ -86,9 +86,9 @@ proves each one.
 pnpm install
 pnpm db:up            # Postgres on 127.0.0.1:5435, Redis on 6381
 pnpm typecheck
-pnpm test             # everything: 387 tests / 23 files
-pnpm test:unit        # the 234 that need no database
-pnpm test:security    # the 153 that need Postgres, and do not skip without it
+pnpm test             # everything: 406 tests / 25 files
+pnpm test:unit        # the 235 that need no database
+pnpm test:security    # the 171 that need Postgres, and do not skip without it
 pnpm test:coverage
 ```
 

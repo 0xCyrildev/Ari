@@ -14,6 +14,7 @@ import { z } from 'zod';
 import {
   AgentId,
   AssetRef,
+  EvmAddress,
   Money,
   RawBigIntNonNeg,
   RecipientAddress,
@@ -85,9 +86,14 @@ export const ContractCallTransaction = z
   .object({
     kind: z.literal('contract_call'),
     chain: z.literal('ethereum'),
-    contract: z.string().min(42).max(42),
-    selector: z.string().min(2).max(10),
-    calldata: z.string(),
+    // An EVM address, not "42 characters": the recipient grammar already says so, and
+    // the comparison the kernel makes is an exact string match against the policy's
+    // allowlist. A 42-character string that is not an address can only ever fail that
+    // match, so the shape that gets through the parser is the shape that silently
+    // disables the rule.
+    contract: EvmAddress,
+    selector: z.string().regex(/^0x[0-9a-fA-F]{8}$/, 'expected a 4-byte function selector'),
+    calldata: z.string().regex(/^0x[0-9a-fA-F]*$/, 'expected hex calldata').max(131_072, 'calldata over 64 KiB is not a transaction, it is an upload'),
     value: RawBigIntNonNeg,
     replayProtection: ReplayProtection,
     ...commonFields,

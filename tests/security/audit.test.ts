@@ -221,6 +221,11 @@ describe('the database refuses what the application must not do', () => {
     const orgId = newId('org');
     await asApp(async (client) => {
       await client.query('BEGIN');
+      // The scope the writer always runs inside. `011` put `audit_events` under row
+      // security, so an `ari_app` transaction that never said which tenant it was
+      // writing for is refused its own insert — and a history that silently stops
+      // growing is worse than one nobody can write to.
+      await client.query(`SELECT set_config('ari.org_id', $1, true)`, [orgId]);
       await appendEvent({ client }, {
         orgId,
         actor: newId('agt'),
@@ -288,3 +293,83 @@ describe('S10 — the decision is witnessed in the transaction that made it', ()
     expect((await verifyChain(pool, orgId)).events).toBe(1);
   });
 });
+
+describe('tenants that are not each other', () => {
+  /**
+   * The per-organisation advisory lock used to be keyed on `hashtext`, which returns a
+   * 32-bit integer. With tenant ids being generated constantly, two of them share a key
+   * within a few tens of thousands of organisations — and that lock is what makes the
+   * head-of-chain read and the insert one serialised action. A collision is therefore not
+   * a performance surprise: it is two transactions each believing it holds the chain alone,
+   * which is how a hash chain ends up with two events claiming one predecessor.
+   *
+   * So the test does not sample the hash and hope to observe a collision. It *finds* a
+   * colliding pair in the old key space, confirms the new one separates them, and then
+   * appends concurrently for exactly those two organisations and verifies both chains.
+   */
+  async function collidingPair(): Promise<readonly [string, string]> {
+    const found = await pool.query<{ a: string; b: string }>(
+      `WITH ids AS (
+         SELECT 'org_' || g AS id, hashtext('org_' || g) AS h
+           FROM generate_series(1, 200000) g
+       ), colliding AS (
+         SELECT h, min(id) AS a, max(id) AS b FROM ids GROUP BY h HAVING count(*) > 1 LIMIT 1
+       )
+       SELECT a, b FROM colliding`,
+    );
+    const row = found.rows[0];
+    if (row?.a === undefined || row.b === undefined) {
+      throw new Error('no 32-bit collision in 200k ids — the premise of this test has changed');
+    }
+    return [row.a, row.b] as const;
+  }
+
+  it('separates two organisations whose 32-bit key was the same', async () => {
+    const [orgA, orgB] = await collidingPair();
+    const widths = await pool.query<{ old_same: boolean; new_same: boolean }>(
+      `SELECT hashtext($1) = hashtext($2) AS old_same,
+              hashtextextended($1, 0) = hashtextextended($2, 0) AS new_same`,
+      [orgA, orgB],
+    );
+    expect(widths.rows[0]?.old_same).toBe(true);
+    expect(widths.rows[0]?.new_same).toBe(false);
+  });
+
+  it('appends concurrently for a colliding pair without disturbing either chain', async () => {
+    const [orgA, orgB] = await collidingPair();
+    // The colliding pair is a fact about the hash, so it is the same pair every run and
+    // this database outlives the run. Count what this test adds, not what is there.
+    const before = await pool.query<{ org_id: string; n: string }>(
+      `SELECT org_id, count(*)::text AS n FROM ari.audit_events WHERE org_id = ANY($1) GROUP BY org_id`,
+      [[orgA, orgB]],
+    );
+    const starting = new Map(before.rows.map((row) => [row.org_id, Number(row.n)]));
+
+    await Promise.all(
+      Array.from({ length: 60 }, () =>
+        Promise.all([append(orgA, 'transaction.proposed'), append(orgB, 'transaction.proposed')]),
+      ),
+    );
+
+    for (const orgId of [orgA, orgB]) {
+      const report = await verifyChain(pool, orgId);
+      expect(report.ok, `the chain broke for ${orgId}`).toBe(true);
+    }
+    const rows = await pool.query<{ events: string; seqs: string }>(
+      `SELECT count(*)::text AS events, count(DISTINCT seq)::text AS seqs
+         FROM ari.audit_events WHERE org_id = $1`,
+      [orgA],
+    );
+    const added = Number(rows.rows[0]?.events ?? '0') - (starting.get(orgA) ?? 0);
+    // Sixty appends, sixty distinct positions, one unbroken chain — for a tenant that
+    // had to share its lock key with another under the old 32-bit derivation. `seq` is a
+    // global sequence, so "distinct" is the claim being made here, not "consecutive":
+    // the chain's integrity comes from `prev_hash`, which is what `verifyChain` above
+    // recomputes.
+    expect(added).toBe(60);
+    // Every position this org occupies is its own: no two events for one tenant were
+    // written with the same `seq`, which is the shape a stolen lock produces.
+    expect(Number(rows.rows[0]?.seqs)).toBe(Number(rows.rows[0]?.events));
+  });
+});
+

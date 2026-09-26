@@ -53,6 +53,7 @@ const NOW = BigInt(Date.parse('2026-09-26T09:00:00.000Z'));
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
 const REGULAR = '0x3f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c';
 const STRANGER = '0x9bc1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9';
+const NOVEL_CONTRACT = '0x1111111111111111111111111111111111111111';
 const UNIT = 'usdc-6dp';
 const usd = (whole: bigint) => whole * 1_000_000n;
 const DAY = 86_400_000n;
@@ -167,10 +168,19 @@ interface Observed {
   readonly idempotencyKey?: string;
 }
 
-/** A request that already happened, written as the row the baseline reads. */
+/**
+ * A request that already happened, written as the row the baseline reads.
+ *
+ * The idempotency key comes from a counter rather than the entry index because a test
+ * calls this more than once for the same agent, and `transaction_requests` keys
+ * `(agent_id, idempotency_key)` uniquely — the second batch would collide with the first.
+ */
+let seeded = 0;
+
 async function observed(w: World, entries: readonly Observed[]): Promise<void> {
   await asTenant(app, w.orgId, async (tx) => {
-    for (const [index, entry] of entries.entries()) {
+    for (const entry of entries) {
+      seeded += 1;
       const at = new Date(Number(NOW - (entry.agoMs ?? 2n * DAY))).toISOString();
       await tx.client.query(
         `INSERT INTO ari.transaction_requests
@@ -182,9 +192,9 @@ async function observed(w: World, entries: readonly Observed[]): Promise<void> {
           w.orgId,
           w.agentId,
           w.walletId,
-          entry.idempotencyKey ?? `history-${index}`,
-          `canonical-${index}`,
-          `01${String(index).padStart(62, '0')}`,
+          entry.idempotencyKey ?? `history-${seeded}`,
+          `canonical-${seeded}`,
+          `01${String(seeded).padStart(62, '0')}`,
           entry.state ?? 'TICKET_MINTED',
           at,
           entry.recipient ?? REGULAR,
@@ -205,6 +215,7 @@ function subject(w: World, over: Partial<RiskSubject> = {}): RiskSubject {
     nowMs: NOW,
     amountRaw: usd(100n),
     currencyUnit: UNIT,
+    isTransfer: true,
     recipientAddress: REGULAR,
     perTransactionCapRaw: usd(5_000n),
     ...over,
@@ -341,6 +352,77 @@ describe('the measurements', () => {
     const active = await world();
     await observed(active, [{ amount: usd(100n), agoMs: 2n * DAY }]);
     expect(await signals(active, { amountRaw: usd(100n) })).not.toContain('DORMANT_AGENT_RESUMED');
+  });
+
+  it('counts a day of recipients against the subject of the request, not the server', async () => {
+    // The regression this exists for: the 24-hour slice was bound one parameter off, so
+    // it compared against `to_timestamp(17)` — 1970-01-01 — and every row was after it.
+    // "Distinct recipients in the last day" silently meant "ever", and because that
+    // population is also the denominator of the ratio, the signal became a constant for
+    // any agent with a few days of history: it fired on ordinary behaviour and stopped
+    // distinguishing anything, which is the failure mode that never shows up as red.
+    const calm = await world();
+    await observed(
+      calm,
+      Array.from({ length: 20 }, (_, i) => ({
+        amount: usd(100n),
+        recipient: `0x${(i + 1).toString(16).padStart(40, '0')}`,
+        agoMs: BigInt(i + 1) * DAY,
+      })),
+    );
+    // Twenty distinct recipients over twenty days is one a day, and today has brought none.
+    const quiet = await assess(calm, { amountRaw: usd(100n), recipientAddress: `0x${'1'.repeat(40)}` });
+    if (!quiet.ok) throw new Error('expected an assessment');
+    expect(quiet.assessment.signals).not.toContain('RECIPIENT_VELOCITY_CHANGE');
+
+    // The same agent, four new recipients inside an hour, has changed what it does.
+    const surge = await world();
+    await observed(
+      surge,
+      Array.from({ length: 20 }, (_, i) => ({
+        amount: usd(100n),
+        recipient: `0x${(i + 1).toString(16).padStart(40, '0')}`,
+        agoMs: BigInt(i + 2) * DAY,
+      })),
+    );
+    await observed(surge, [
+      { amount: usd(100n), recipient: '0xaaaa000000000000000000000000000000000001', agoMs: 60_000n },
+      { amount: usd(100n), recipient: '0xaaaa000000000000000000000000000000000002', agoMs: 120_000n },
+      { amount: usd(100n), recipient: '0xaaaa000000000000000000000000000000000003', agoMs: 180_000n },
+      { amount: usd(100n), recipient: '0xaaaa000000000000000000000000000000000004', agoMs: 240_000n },
+    ]);
+    const busy = await assess(surge, { amountRaw: usd(100n), recipientAddress: STRANGER });
+    if (!busy.ok) throw new Error('expected an assessment');
+    expect(busy.assessment.signals).toContain('RECIPIENT_VELOCITY_CHANGE');
+  });
+
+  it('does not call every contract call a first-time recipient', async () => {
+    // `contract_call` carries a recipient in the candidate schema — the contract being
+    // called — and that address is never written to `transaction_requests.recipient_address`,
+    // which only transfers populate. Deriving novelty from a column that can only ever be
+    // absent for that shape flagged every contract call as a first encounter, forever.
+    const w = await world();
+    await observed(w, [{ amount: usd(100n) }, { amount: usd(100n) }, { amount: usd(100n) }]);
+    const asTransfer = await assess(w, { recipientAddress: NOVEL_CONTRACT, isTransfer: true });
+    const asCall = await assess(w, { recipientAddress: NOVEL_CONTRACT, isTransfer: false, amountRaw: 0n });
+    if (!asTransfer.ok || !asCall.ok) throw new Error('expected assessments');
+    expect(asTransfer.assessment.signals).toContain('NEW_RECIPIENT');
+    expect(asCall.assessment.signals).not.toContain('NEW_RECIPIENT');
+  });
+
+  it('measures the median against payments, not against everything', async () => {
+    // A percentile ignores NULLs when ordering but counts them in its denominator, so a
+    // wallet whose history is mostly non-payments had its median drawn from a population
+    // that includes them — a median that drifts upward as unrelated traffic arrives, which
+    // is the direction that makes an unusually large payment look ordinary.
+    const w = await world();
+    await observed(
+      w,
+      [1n, 2n, 3n, 4n].map((n) => ({ amount: usd(100n * n), recipient: REGULAR })).concat(
+        Array.from({ length: 40 }, () => ({ amount: usd(1n), recipient: REGULAR })),
+      ),
+    );
+    expect(await signals(w, { amountRaw: usd(900n) })).toContain('AMOUNT_8X_BASELINE');
   });
 
   it('flags a payment sitting under the ceiling by one unit', async () => {

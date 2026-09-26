@@ -466,15 +466,31 @@ describe('stage 8 — escalation conditions', () => {
 describe('stage 8 — escalation conditions against a permitted contract call', () => {
   const contractAllowed = { contractCalls: { enabled: true, contracts: [USDC] } };
 
-  it('lets a listed contract call through, with no transfer limit applied to it', () => {
+  it('refuses a contract call that moves value no limit in the policy can bound', () => {
     const decision = decide({
       policy: withCondition(null, contractAllowed),
       cand: contractCand({ value: (CAP * 10n).toString() }),
     });
-    // The huge `value` is the point: an ETH amount must not be measured against a
-    // USDC ceiling, and comparing them would be the unit bug wearing a different
-    // label. Contract-call amounts belong to a limit dimension this fixture
-    // policy does not have.
+    // This test used to assert ALLOW, and the reasoning written beside it was half
+    // right: an ETH amount must not be measured against a USDC ceiling, because
+    // comparing them is the unit bug wearing a different label. The conclusion drawn
+    // from that was the hole — *therefore nothing bounds it* — which leaves every
+    // monetary limit in the policy bypassable through one allowlisted contract, up to
+    // the wallet's whole balance, while the audit trail reads as fully limited.
+    // "Not comparable" and "not bounded" are different statements. The first is true;
+    // the second is a permission nobody wrote.
+    expect(decision.outcome).toBe('DENY');
+    if (decision.outcome !== 'DENY') return;
+    expect(decision.reasonCodes).toContain('CONTRACT_VALUE_NOT_PERMITTED');
+  });
+
+  it('lets a listed contract call through when it moves nothing', () => {
+    const decision = decide({
+      policy: withCondition(null, contractAllowed),
+      cand: contractCand(),
+    });
+    // The capability that *is* expressible still works: a pure call, no value, no
+    // transfer limits applied to it.
     expect(decision.outcome).toBe('ALLOW');
   });
 

@@ -55,11 +55,22 @@ export interface TicketRow {
  */
 export async function mintTicket(tx: LedgerTx, input: Omit<TicketRow, 'id'>): Promise<TicketRow> {
   const id = newId('tkt');
-  await tx.client.query(
-    `INSERT INTO ari.signing_tickets (id, decision_id, digest, wallet_id, expires_at_ms)
-     VALUES ($1, $2, $3, $4, $5)`,
+  // The tenant is *derived*, not passed. `011` made `signing_tickets.org_id` real so a
+  // ticket can be counted and reconciled per tenant, and the only honest source for it is
+  // the decision the row already points at — a caller that supplied `orgId` itself could
+  // attach a ticket to a tenant whose policy never authorised it, which is the one thing
+  // the column would otherwise be there to prevent. `002`'s trigger still refuses a row
+  // with no ALLOW behind it; this statement refuses one with no decision at all.
+  const minted = await tx.client.query(
+    `INSERT INTO ari.signing_tickets (id, org_id, decision_id, digest, wallet_id, expires_at_ms)
+     SELECT $1, d.org_id, d.id, $3, $4, $5
+       FROM ari.authorization_decisions d
+      WHERE d.id = $2`,
     [id, input.decisionId, input.digest, input.walletId, input.expiresAtMs.toString()],
   );
+  if ((minted.rowCount ?? 0) === 0) {
+    throw new Error(`ticket cannot be minted against decision ${input.decisionId}: no such decision`);
+  }
   return { ...input, id };
 }
 
@@ -70,14 +81,27 @@ export async function mintTicket(tx: LedgerTx, input: Omit<TicketRow, 'id'>): Pr
  * be told they won: the update filters on `redeemed_at IS NULL` and on the
  * digest the row was created with, so a second caller — or the same caller with
  * different bytes — gets `false` and refuses.
+ *
+ * `nowMs` is the *presenter's* clock, and the row's own `expires_at_ms` is what it is
+ * compared against. That direction is the whole point: the seal a caller hands over
+ * states its own expiry, and a seal is a claim, while this row was written by the
+ * decision plane at the moment it authorised the payment. Single use without a window
+ * would mean an authorisation that never lapses — a ticket kept in a drawer is still a
+ * ticket, and "60 seconds" has to be enforced somewhere that is not the document being
+ * verified.
  */
-export async function claimTicket(tx: LedgerTx, ticketId: string, digest: string): Promise<boolean> {
+export async function claimTicket(
+  tx: LedgerTx,
+  ticketId: string,
+  digest: string,
+  nowMs: bigint,
+): Promise<boolean> {
   const claimed = await tx.client.query<{ id: string }>(
     `UPDATE ari.signing_tickets
         SET redeemed_at = now()
-      WHERE id = $1 AND digest = $2 AND redeemed_at IS NULL
+      WHERE id = $1 AND digest = $2 AND redeemed_at IS NULL AND expires_at_ms > $3
       RETURNING id`,
-    [ticketId, digest],
+    [ticketId, digest, nowMs.toString()],
   );
   return (claimed.rowCount ?? 0) > 0;
 }

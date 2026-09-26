@@ -77,6 +77,14 @@ CREATE OR REPLACE FUNCTION ari.enforce_audit_chain() RETURNS trigger LANGUAGE pl
 DECLARE
   head_hash text;
 BEGIN
+  -- Take the tenant's chain lock *here*, rather than trusting every writer to have taken
+  -- it first. The head read below is a plain SELECT, so without this the check is only as
+  -- good as the discipline of the caller — and the one thing a hash chain must not have is
+  -- two writers who each read the same head. Re-entrant against the lock `asTenant` takes,
+  -- and the derivation has to match `hashtextextended(org_id, 0)` in `@ari/identity` and
+  -- `@ari/audit` exactly: three keys for one lock is three locks.
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.org_id, 0));
+
   SELECT hash INTO head_hash
     FROM ari.audit_events
    WHERE org_id = NEW.org_id

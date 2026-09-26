@@ -38,7 +38,16 @@ export interface RiskSubject {
   readonly nowMs: bigint;
   readonly amountRaw: bigint;
   readonly currencyUnit: string;
-  /** Null for anything with no recipient, which is why the recipient signals are guarded. */
+  /**
+   * Null for anything with no recipient, which is why the recipient signals are guarded.
+   * `isTransfer` is a separate field rather than an inference from that one: a contract
+   * call carries a `recipient` in the candidate schema — the contract it calls — and a
+   * contract never appears in `transaction_requests.recipient_address`, which is written
+   * only for transfers. Deriving novelty from an address that can only ever be absent
+   * would flag every contract call as a first-time recipient, for the same reason a
+   * `false` that can never fire is worse than no option at all.
+   */
+  readonly isTransfer: boolean;
   readonly recipientAddress: string | null;
   readonly perTransactionCapRaw: bigint;
 }
@@ -69,6 +78,32 @@ export interface BaselineOptions {
 }
 
 const DEFAULTS: BaselineOptions = { windowDays: 30, dormantAfterDays: 14, proximityFraction: 0.9 };
+
+/**
+ * Validate rather than coerce.
+ *
+ * `{ ...DEFAULTS, ...options }` is the tempting form and it has two holes: an object
+ * reaching here from a config file carries inherited enumerable properties (`toString`
+ * and friends) that the spread happily copies into numeric fields, and an explicit
+ * `null` or `0` sails through to the query as a window of "everything, ever" or a
+ * fraction that makes every payment look like it is sitting on the ceiling.
+ */
+function configured(input: Partial<BaselineOptions>): BaselineOptions {
+  const source: Record<string, unknown> = { ...DEFAULTS };
+  for (const key of ['windowDays', 'dormantAfterDays', 'proximityFraction'] as const) {
+    const value = Object.prototype.hasOwnProperty.call(input, key) ? input[key] : undefined;
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      throw new RangeError(`risk baseline ${key} must be a positive finite number`);
+    }
+    source[key] = value;
+  }
+  return {
+    windowDays: source.windowDays as number,
+    dormantAfterDays: source.dormantAfterDays as number,
+    proximityFraction: source.proximityFraction as number,
+  };
+}
 
 interface BaselineRow {
   observations: number;
@@ -101,11 +136,23 @@ WITH observed AS (
 SELECT
   count(*)::int                                             AS observations,
   count(*) FILTER (WHERE amount_raw IS NOT NULL)::int       AS amount_observations,
-  percentile_disc(0.5)  WITHIN GROUP (ORDER BY amount_raw)::text AS median_raw,
-  percentile_disc(0.95) WITHIN GROUP (ORDER BY amount_raw)::text AS p95_raw,
+  -- FILTER on the aggregates, not just the counts. Percentiles ignore NULLs in the
+  -- ordering but count them in the denominator, so a wallet with a page of contract
+  -- calls (no amount) and four payments would have had its "median" picked from a
+  -- population of eight — a median that drifts *upward* as unrelated traffic arrives,
+  -- which is the direction that makes an unusually large payment look normal.
+  percentile_disc(0.5)  WITHIN GROUP (ORDER BY amount_raw)
+    FILTER (WHERE amount_raw IS NOT NULL)::text             AS median_raw,
+  percentile_disc(0.95) WITHIN GROUP (ORDER BY amount_raw)
+    FILTER (WHERE amount_raw IS NOT NULL)::text             AS p95_raw,
   max(created_at)                                           AS last_seen,
   count(DISTINCT recipient_address)::int                    AS distinct_recipients,
-  count(DISTINCT recipient_address) FILTER (WHERE created_at > now() - interval '24 hours')::int
+  -- One clock. Everything else in this query is windowed against the subject's own
+  -- nowMs, supplied by the caller; the database's now() here would have measured the
+  -- last day according to a different machine and compared it to a subject possibly
+  -- minutes away from it — the split this repository has now been bitten by twice.
+  count(DISTINCT recipient_address)
+    FILTER (WHERE created_at > to_timestamp($9 / 1000.0))::int
                                                             AS recipients_24h,
   count(*) FILTER (WHERE recipient_address = $6)::int       AS recipient_observations,
   count(*) FILTER (WHERE utc_hour = $7)::int                AS requests_at_this_hour,
@@ -114,7 +161,7 @@ FROM observed
 `;
 
 export function behaviouralProvider(options: Partial<BaselineOptions> = {}): RiskProvider {
-  const config: BaselineOptions = { ...DEFAULTS, ...options };
+  const config = configured(options);
 
   return {
     async assess(tx, subject) {
@@ -126,6 +173,7 @@ export function behaviouralProvider(options: Partial<BaselineOptions> = {}): Ris
       // with a page of authorised payments.
       const windowStart = Number(subject.nowMs) - config.windowDays * 86_400_000;
       const lastHourStart = Number(subject.nowMs) - 3_600_000;
+      const dayStart = Number(subject.nowMs) - 86_400_000;
       let rows: readonly BaselineRow[];
       try {
         const result = await tx.client.query<BaselineRow>(BASELINE_SQL, [
@@ -137,6 +185,7 @@ export function behaviouralProvider(options: Partial<BaselineOptions> = {}): Ris
           subject.recipientAddress,
           utcHour,
           lastHourStart,
+          dayStart,
         ]);
         rows = result.rows;
       } catch (error) {
@@ -175,7 +224,7 @@ function build(subject: RiskSubject, row: BaselineRow, config: BaselineOptions):
   } else {
     facts.push(`${row.observations} authorised request(s) in ${config.windowDays}d`);
 
-    if (row.amount_observations > 0 && subject.amountRaw > 0n) {
+    if (subject.isTransfer && row.amount_observations > 0 && subject.amountRaw > 0n) {
       const comparison = compareAmount(subject.amountRaw, median, p95);
       if (comparison === 'EIGHT_TIMES_MEDIAN') {
         signals.push('AMOUNT_8X_BASELINE');
@@ -190,7 +239,7 @@ function build(subject: RiskSubject, row: BaselineRow, config: BaselineOptions):
       }
     }
 
-    if (subject.recipientAddress !== null && row.recipient_observations === 0) {
+    if (subject.isTransfer && subject.recipientAddress !== null && row.recipient_observations === 0) {
       signals.push('NEW_RECIPIENT');
       facts.push('recipient not in the observed set for this wallet');
     }
@@ -223,7 +272,10 @@ function build(subject: RiskSubject, row: BaselineRow, config: BaselineOptions):
   // Proximity is not a baseline comparison — the cap is the policy's own number, and a
   // payment that sits under it by one unit is inside the rule in the way that most often
   // means the cap was set around the payment rather than the other way round.
-  if (subject.amountRaw > 0n && subject.perTransactionCapRaw > 0n) {
+  // Transfers only, on the same reasoning as the amount baseline: the cap is denominated
+  // in the policy's token unit, and a contract call's `value` is native currency. A
+  // ratio across the two is a number that looks comparable and is not.
+  if (subject.isTransfer && subject.amountRaw > 0n && subject.perTransactionCapRaw > 0n) {
     if (subject.amountRaw * 100n >= subject.perTransactionCapRaw * BigInt(Math.round(config.proximityFraction * 100))) {
       signals.push('POLICY_BOUNDARY_PROXIMITY');
       facts.push(`within ${Math.round((1 - config.proximityFraction) * 100)}% of the per-transaction ceiling`);

@@ -17,7 +17,7 @@
  */
 
 import { z } from 'zod';
-import { AssetRef, SignatureTriple, SupportedChain } from './primitives.js';
+import { AssetRef, BitcoinAddress, EvmAddress, SignatureTriple, SupportedChain } from './primitives.js';
 
 /** A limit that names its unit. `5000` next to `2000000000` is an accident. */
 const Limit = z
@@ -30,7 +30,14 @@ const Limit = z
 const RecipientAllowlist = z
   .object({
     mode: z.literal('allowlist'),
-    addresses: z.array(z.string().min(1).max(200)).min(1, 'an allowlist with no entries is a deny'),
+    // The same grammar the candidate is parsed with, and that is the whole point: an
+    // allowlist entry that is not an address compares unequal to every address forever,
+    // so a policy that looked restrictive was a permanent deny with a friendly editor.
+    // One grammar per chain that can be paid: the comparison the kernel makes is an
+    // exact string match against `candidate.recipient.address`, so an entry that is not
+    // a valid address of either kind compares unequal forever — a policy that looked
+    // restrictive was a permanent deny with a friendly editor.
+    addresses: z.array(z.union([EvmAddress, BitcoinAddress])).min(1, 'an allowlist with no entries is a deny'),
   })
   .strict();
 
@@ -105,7 +112,7 @@ export const PolicyDocument = z
         contractCalls: z
           .object({
             enabled: z.boolean(),
-            contracts: z.array(z.string().min(1).max(200)).max(200),
+            contracts: z.array(EvmAddress).max(200),
           })
           .strict(),
 

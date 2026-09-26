@@ -204,10 +204,16 @@ export async function reserve(tx: LedgerTx, input: ReserveInput): Promise<Reserv
 
   if (holdId === undefined) {
     const existing = await client.query<{ id: string; status: string; amount_raw: string }>(
+      // The tenant predicate is written even though `agent_id` is a globally unique
+      // uuidv7 and row security already filters this statement for `ari_app`: the
+      // alternative is that re-claiming another tenant's idempotency key rests on two
+      // things being true at once — the id generator, and the connection not being one
+      // that bypasses policies. Both are invisible at the point where someone changes
+      // either of them.
       `SELECT id, status, amount_raw FROM ${TABLE_RESERVATIONS}
-        WHERE agent_id = $1 AND idempotency_key = $2 AND dimension = $3
+        WHERE org_id = $1 AND agent_id = $2 AND idempotency_key = $3 AND dimension = $4
         FOR UPDATE`,
-      [input.agentId, input.idempotencyKey, input.dimension],
+      [input.orgId, input.agentId, input.idempotencyKey, input.dimension],
     );
     const row = existing.rows[0];
     if (row === undefined) throw new Error('idempotency claim exists but its reservation does not');
@@ -338,11 +344,18 @@ export async function release(
  */
 async function heldForRequest(
   client: PoolClient,
+  orgId: string,
   requestId: string,
 ): Promise<readonly string[]> {
+  // `request_id` is a uuidv7 and globally unique, and `release`/`settle` still CAS on
+  // `status = 'HELD'` per row, so a missing tenant predicate here could not move another
+  // tenant's money today. It is written anyway because the alternative is that the safety
+  // of a funds-moving statement rests on a uniqueness argument nobody re-states when the
+  // id generation changes.
   const rows = await client.query<{ id: string }>(
-    `SELECT id FROM ${TABLE_RESERVATIONS} WHERE request_id = $1 AND status = 'HELD' ORDER BY dimension`,
-    [requestId],
+    `SELECT id FROM ${TABLE_RESERVATIONS}
+      WHERE org_id = $1 AND request_id = $2 AND status = 'HELD' ORDER BY dimension`,
+    [orgId, requestId],
   );
   return rows.rows.map((row) => row.id);
 }
@@ -350,9 +363,10 @@ async function heldForRequest(
 /** Settle every hold a request took. Returns the raw total moved, and the rows it moved. */
 export async function settleForRequest(
   tx: LedgerTx,
+  orgId: string,
   requestId: string,
 ): Promise<{ readonly settledRaw: bigint; readonly rows: number }> {
-  const ids = await heldForRequest(tx.client, requestId);
+  const ids = await heldForRequest(tx.client, orgId, requestId);
   let total = 0n;
   for (const id of ids) {
     const settled = await settle(tx, id);
@@ -364,10 +378,11 @@ export async function settleForRequest(
 /** Give back every hold a request took, when the request can no longer be honoured. */
 export async function releaseForRequest(
   tx: LedgerTx,
+  orgId: string,
   requestId: string,
   reason: string,
 ): Promise<{ readonly releasedRaw: bigint; readonly rows: number }> {
-  const ids = await heldForRequest(tx.client, requestId);
+  const ids = await heldForRequest(tx.client, orgId, requestId);
   let total = 0n;
   for (const id of ids) {
     const released = await release(tx, id, reason);

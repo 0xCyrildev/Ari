@@ -48,6 +48,15 @@ export function canonicalEncode(value: unknown): string {
     return `y${value.byteLength}:${Buffer.from(value).toString('hex')}`;
   }
   if (typeof value === 'object') {
+    // A `Date`, a `Map`, a class instance: `Object.keys` finds nothing on any of them,
+    // so they encode as `o{}` — every one of them, distinctly different, identically
+    // digested. Unreachable through a parsed candidate, which is exactly the kind of
+    // "the type system means it" reasoning this file refuses to rely on for a digest.
+    const prototype = Object.getPrototypeOf(value) as unknown;
+    if (prototype !== Object.prototype && prototype !== null) {
+      const name = (prototype as { constructor?: { name?: string } } | null)?.constructor?.name ?? 'non-plain';
+      throw new TypeError(`canonicalEncode: a ${name} has no canonical form; convert it to a plain value first`);
+    }
     const record = value as Record<string, unknown>;
     const keys = Object.keys(record).sort();
     const body = keys

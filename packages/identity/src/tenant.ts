@@ -86,7 +86,15 @@ async function runOnce<T>(pool: Connector, orgId: string, fn: (tx: TenantTx) => 
     // the only thing that prevents that cycle, so it is fixed here rather than
     // left to each caller. Advisory transaction locks are re-entrant, so
     // `appendEvent` asking again is free.
-    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [orgId]);
+    //
+    // `hashtextextended`, not `hashtext`: the latter returns a 32-bit `integer`, and
+    // with tenant ids being generated constantly, the birthday bound says two of them
+    // share a lock within a few tens of thousands of organisations. Two tenants
+    // silently serialising behind each other is a performance surprise; two tenants
+    // each believing it holds the chain lock alone, while the other appends, is a
+    // broken hash chain. 64 bits is not a collision budget anyone has to reason about.
+    // The companion lock in `@ari/audit` must derive its key identically.
+    await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [orgId]);
     // The lock is held from here to commit, so the audit writer inside this transaction
     // may take the chain's head on trust — its own last write — instead of reading it
     // back before every event. See `ChainCursor` in `@ari/audit`.

@@ -329,6 +329,25 @@ export function evaluate(input: {
       }
     }
 
+    // --- 4b. native value a contract call carries ------------------------------
+    //
+    // `contract_call.value` moves currency, and every monetary limit in a policy is
+    // denominated in the token unit its transfers block names. So the value a call sends
+    // is compared against nothing: an agent allowed to call one approved contract could
+    // drain the wallet through a rule that reads, in the audit trail, as fully limited.
+    // Denying is a deliberate refusal to invent a comparison the policy never asked for —
+    // the alternative was quietly treating a native amount as if it were a USDC one,
+    // which is the same unit confusion `compilePolicy` exists to catch at load time.
+    // The way this becomes a capability is a `contractCalls` limit with its own unit; see
+    // AGENTS.md.
+    if (candidate.kind === 'contract_call' && candidate.value > 0n) {
+      return deny(
+        ['CONTRACT_VALUE_NOT_PERMITTED'],
+        'permissions.contractCalls.value',
+        `a contract call moving ${candidate.value} native units cannot be bounded by a policy denominated in ${policy.transfers.amountUnit}`,
+      );
+    }
+
     // --- 5. monetary limits --------------------------------------------------
     if (candidate.kind === 'transfer') {
       if (candidate.amount.unit !== policy.transfers.amountUnit) {

@@ -14,7 +14,7 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | Phase | Status | Evidence |
 |---|---|---|
 | 0 discovery | done | four docs, 1,750 lines, every claim labelled VERIFIED / DOC-ONLY / ASSUMED / NOT-FOUND |
-| 1 core domain | done | migrations `001–010`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table |
+| 1 core domain | done | migrations `001–011`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table — and `tests/security/schema.test.ts` asks the catalogue, not the code |
 | 2 policy engine | done | 76 tests + `tests/security/` on real Postgres; 98.75 % branch on the kernel |
 | 3 signing boundary | done | `packages/signing`, `apps/signer`, `002` ALLOW-before-ticket trigger |
 | 3.5 policy lifecycle | done | `@ari/policies`: draft→activate, breadth comparison, owner-only widening, justification on rollback |
@@ -25,9 +25,9 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | agent SDK | started | `packages/client`: the outbound half of the decimal-string rule, three methods, 19 tests, and 2 contract tests that run the client's transport against the real routes |
 | 4–5, 7–11 | not started | intent, risk, simulation, the CLI, Ika, dashboard |
 
-`pnpm test` is **388 tests / 23 files**, in two halves that now add up to it: `pnpm test:unit` is the
-**234** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **154** that
-need Postgres and do not skip without it. They did not add up before: `test:security` was
+`pnpm test` is **406 tests / 25 files**, in two halves that add up to it: `pnpm test:unit` is the
+**235** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **171** that
+need Postgres and do not skip without it. They did not always add up: `test:security` was
 `vitest run --dir tests/security`, which on vitest 5 matches **no files** at all. Positional filters are
 used now, and the two numbers are written down because "the security gate is green" has to mean the
 security gate ran.
@@ -226,6 +226,90 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   script deliberately uses the same packages and the same unprivileged role the service uses, so a
   privilege it needs that the service does not have fails here first.
 
+- **A value-bearing contract call is refused, not unbounded.** `contract_call.value` moves native
+  currency and *nothing in the policy language can bound it*: every monetary limit is denominated in the
+  token unit the transfers block names, so an ETH amount against a `usdc-6dp` ceiling is exactly the unit
+  confusion `compilePolicy` exists to refuse at load time. The old answer was "no transfer limit applies",
+  which is a permission nobody wrote — one allowlisted contract, and every cap in the policy is bypassable
+  up to the wallet's balance. Stage 4b now denies it with `CONTRACT_VALUE_NOT_PERMITTED`. The way this
+  becomes a capability is a `contractCalls` limit with its own unit; until then, do not let the comparison
+  be reintroduced as a convenience.
+- **A caller cannot supply the number a policy rule is about.** `usdEstimate` arrives on the candidate, is
+  excluded from the digest, and is what `usd_gte` compares — so `{cents: "0", asOf: <fresh>}` cleared any
+  threshold while the human approving the payment was shown bytes that never contained the figure that
+  cleared it. There is no server-side price feed in this build, so the pipeline drops the estimate whenever
+  the governing policy has a `usd_gte` rule, and the kernel's existing "missing evidence escalates" path is
+  what the policy already chose. When a feed exists it is written *by Ari*, here, and digested.
+- **The lifecycle is enforced where the rows are, and both copies are tested against each other.**
+  `transaction_requests.lifecycle_state` was free text while two partial indexes, the risk plane's
+  population and the audit trail's meaning were all defined over particular values of it, and
+  `setRequestState` compared against whatever the caller claimed. `011` adds the value CHECK and the
+  transition trigger mirroring `transaction-engine`'s table — which makes this the *third* copy of a state
+  machine in the schema (with `005`'s policy versions and `010`'s reservations). The drift guard is
+  `tests/security/lifecycle.test.ts`: it inserts one row per state, asks each for all seventeen targets
+  inside one tenant transaction with a savepoint per attempt, and compares the database's verdict with
+  `canTransition` — every pair, in both directions. Verified against a mutant migration that widened one
+  SQL edge: the guard names the pair it disagrees about.
+- **`signing_tickets.org_id` is derived from the decision, never passed.** The ticket row had no tenant
+  column at all, so it could not be counted, reconciled or scoped per tenant; and a caller allowed to state
+  the tenant could attach a ticket to one whose policy never authorised anything. The insert is now
+  `SELECT … FROM ari.authorization_decisions`, which makes the FK, the ALLOW trigger and the org come from
+  one row — and refuses a ticket against a decision that does not exist.
+- **No unprivileged connection holds a cross-tenant read on money.** `reservations`, `limit_counters`,
+  `authorization_decisions`, `audit_events` and `transaction_requests` carry `org_id` and are behind row
+  security (`011`, following `004`/`005`). `signing_tickets` is the deliberate exception and the reason is
+  in the migration: `ari-signer` redeems tickets for every tenant and has no `ari.org_id` to set, so a
+  policy there would make each claim a silent no-op; what bounds a cross-tenant claim instead is that
+  `claimTicket` needs the sealed digest and an unredeemed row. Two consequences a later session has to live
+  with: *every* application-path write to those tables is inside `asTenant` (there is no "bootstrap
+  connections skip the policy" carve-out — that is the hole, not the workaround), and the ledger's
+  idempotency-claim lookup carries its tenant predicate even though `agent_id` is globally unique and RLS
+  filters it anyway, because the alternative is that re-claiming another tenant's key rests on two facts
+  nobody re-states when either changes.
+- **`tests/security/schema.test.ts` is the shape gate, and it has been seen to bite.** A missing policy is
+  invisible to every test that never queries that table, which is how the money tables carried an `org_id`
+  *convention* for eight migrations. It asserts three things from the catalogue: the only tenant-bearing
+  table outside row security is the one this file names; no policy on a secured table carries an unscoped
+  predicate (permissive policies are OR-ed, so one `USING (true)` beside a correct `tenant_isolation`
+  leaves the table wide open *and* reads as coverage in a diff); and an `ari_app` connection with no scope
+  reads zero rows from each probed table — with the control that the same role, same table, same query, one
+  `set_config` away, reads exactly its own row. Controls run against a scratch database with the
+  migrations *not* re-applied: re-applying them repairs the mutation, so a control that goes through
+  `pnpm test:security` proves nothing.
+- **The chain lock is one derivation, in three places.** `asTenant`, `appendEvent` and
+  `enforce_audit_chain` all take `pg_advisory_xact_lock(hashtextextended(orgId, 0))` — the trigger takes it
+  too, so the head check is structural rather than dependent on every caller remembering. `hashtext` (the
+  old form) returns a **32-bit integer**: with ids being generated constantly, two tenants share it within
+  tens of thousands of organisations, and two transactions each believing they hold the chain alone is how
+  a hash chain gets two events claiming one predecessor. `tests/security/audit.test.ts` *finds* a
+  colliding pair in the old key space and appends 60 events for each through the new one.
+- **An approval can record "no amount", which is not amount zero.** `requestApproval` takes
+  `bigint | null` and the column is nullable now (`011`); `NULL` is what distinguishes a valueless contract
+  call from a payment whose amount was computed as zero — which the kernel refuses separately as
+  `AMOUNT_ZERO`, and which the reservation path skips rather than holding for a figure that does not exist.
+  The sealed token still always binds a number: making *it* nullable would change the payload bytes of every
+  outstanding token, and the payload is what the HMAC covers.
+- **Addresses are validated by one grammar on both sides of a comparison.** A policy's recipient and
+  contract allowlists were free strings while a candidate's address had to match the EVM/Bitcoin grammar,
+  and the kernel's check is an exact string match — so a pasted checksummed `0xAbC…` allowlist entry
+  compared unequal to every possible payment: a permanent deny that reads as a restriction. `contract` is
+  `EvmAddress` now, selectors and calldata are hex and bounded, and an invalid allowlist entry is a parse
+  error at authoring time.
+- **A migration that ran and failed is not a database that is absent.** `global-setup.ts` wrapped the whole
+  loop in one `try` and reported any throw as "unreachable — skipped", so a constraint that already existed
+  made the suite pass against a half-migrated schema while printing a sentence about a container. It now
+  distinguishes the two, fails the run on DDL, and names the file. Companion rule: every file in
+  `migrations/` is re-applied on every test run, so each one has to be idempotent — including dropping a
+  constraint by *both* the name it has now and the name it had before the edit.
+- **A test transaction has to carry the scope its writes are filtered by.** Five `reservations` cases and
+  the audit append-as-`ari_app` test were unscoped `withTransaction` calls that had been green for weeks and
+  turned red the moment `011` covered those tables: `set_config` is transaction-local, `current_setting` is
+  NULL without it, and `org_id = NULL` matches nothing — so the inserts were refused and the reads were
+  empty. They now go through `asTenant`, which is the only shape the service itself uses, and
+  `connect(max, 'ari_app')` in `tests/security/database.ts` sets the role where the connection opens (the
+  same `-c role=` the two services use) instead of `SET ROLE`-ing a client that then returns to the pool
+  still holding it.
+
 ## Ran for real (2026-09-26)
 `pnpm --filter @ari/api start` and `pnpm --filter @ari/signer start`, both against Postgres on 5435, seeded
 a tenant through the packages (there is no HTTP route for it yet), and every state was observed over a real
@@ -291,7 +375,11 @@ reservation stayed SETTLED through it.
 7. **A `SET ROLE` connection must never share a pool with privileged ones.** `packages/policies`'s suite and
    `tests/security/identity.test.ts` each keep a dedicated pool for the `ari_app` half; a released client
    comes back still holding the role and the next owner query quietly returns zero rows. Same reason the two
-   services get their own pools and their own role.
+   services get their own pools and their own role. Prefer the newer form where a file can afford it:
+   `connect(max, 'ari_app')` sets the role with `-c role=` *at the connection*, so no client in that pool
+   ever has one, and a login that is not a member of the role fails at open rather than halfway through an
+   assertion. The two files still using `SET ROLE` are correct — they just carry a hazard the parameter
+   does not.
 8. **Cross-suite test assertions must be scoped to the tenant they own.** `api.test.ts` once counted
    `transaction_requests` globally to prove a preview wrote nothing; the suites run as parallel workers
    against one database, so the control was another file's traffic and it failed about 1 run in 8. Count
@@ -305,13 +393,15 @@ reservation stayed SETTLED through it.
     ASSUMED numbers with no corpus behind them. Revisit when there is traffic to look at, and change the
     weights in `scoring.ts` only with the monotonicity properties still passing.
 10a. **One tenant, one request at a time — deliberately.** `asTenant` takes
-   `pg_advisory_xact_lock(hashtext(orgId))` as the transaction's first statement and holds it to commit,
-   which is what fixed the audit-chain deadlock and what makes the chain head cache sound. It also means a
-   single organisation's authorizations serialise for the length of a transaction (~29 statements plus
-   Argon2id, which is measured at p50 ~30ms per request on this box). Cross-tenant traffic is unaffected.
-   If per-tenant throughput ever becomes the constraint, the honest fix is to narrow the lock to the audit
-   append rather than to add a second chain-writing scheme — and `hashtext` is 32-bit, so two org ids can
-   collide onto one lock. Nothing in the repo asserts either property; this is the note, not a TODO.
+   `pg_advisory_xact_lock(hashtextextended(orgId, 0))` as the transaction's first statement and holds it to
+   commit, which is what fixed the audit-chain deadlock and what makes the chain head cache sound. It also
+   means a single organisation's authorizations serialise for the length of a transaction (~29 statements
+   plus Argon2id, which is measured at p50 ~30ms per request on this box). Cross-tenant traffic is
+   unaffected. If per-tenant throughput ever becomes the constraint, the honest fix is to narrow the lock to
+   the audit append rather than to add a second chain-writing scheme. The 32-bit problem the key used to
+   have is closed — `hashtext` returned an `integer`, and `tests/security/audit.test.ts` finds a colliding
+   pair in that space to prove the new key does not share it — but the throughput property above is still
+   asserted by nothing, and the day it stops being true is a benchmark, not a test.
 10b. **Two counters are placeholders and one of them is load-bearing in a policy field.**
    `usageOf` supplies `ikaSpentTodayRaw: 0n`, so `validity.signingBudget.maxIkaRawPerDay` cannot fire —
    correct for a system with no Ika provider, wrong the day one exists, and a policy that reads as cost

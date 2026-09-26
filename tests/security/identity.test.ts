@@ -25,6 +25,7 @@ import {
   parsePresented,
   pepperFor,
   recordRequest,
+  recipientFirstSeenAt,
   revokeCredential,
   rotateCredential,
   setAgentStatus,
@@ -453,6 +454,65 @@ describe('wallets, grants and requests', () => {
     ).rejects.toThrow(/not in DRAFT/);
   });
 
+  it('measures a recipient\'s first appearance against money that actually settled', async () => {
+    // The regression this exists for: the reader coerced `min(created_at)` with a
+    // `?? 'NaN'` chained through `BigInt()`. Over zero rows the aggregate still returns
+    // a row, whose value is NULL, so the `??` never fired and `BigInt('NaN')` threw —
+    // on the *first* payment to any address, which is the one case a novelty rule is
+    // there to answer. It arrived as a 500 with no decision and no audit event, on the
+    // path that has no history to fall back on.
+    const orgId = await tenant();
+    const { agentId } = await setup(orgId);
+    const walletId = await asTenant(app, orgId, (tx) => createWallet(tx, { ...walletFields, displayName: 'w' }));
+    const recipient = '0x3f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c';
+
+    expect(await asTenant(app, orgId, (tx) => recipientFirstSeenAt(tx, { walletId, address: recipient }))).toBeNull();
+
+    const { id } = await asTenant(app, orgId, (tx) =>
+      recordRequest(tx, {
+        agentId,
+        walletId,
+        idempotencyKey: 'novelty',
+        canonical: 'o{n}',
+        digest: `canon/v1:${'3'.repeat(64)}`,
+        recipientAddress: recipient,
+        amountRaw: 1_000_000n,
+      }),
+    );
+    // Proposed is not paid. A recipient Ari authorised once and never actually received
+    // is still novel, which is why the predicate names three states rather than "any row".
+    expect(await asTenant(app, orgId, (tx) => recipientFirstSeenAt(tx, { walletId, address: recipient }))).toBeNull();
+
+    const walked = await asTenant(app, orgId, async (tx) => {
+      const path = [
+        ['DRAFT', 'VALIDATED'],
+        ['VALIDATED', 'EVALUATING'],
+        ['EVALUATING', 'RESERVED'],
+        ['RESERVED', 'TICKET_MINTED'],
+        ['TICKET_MINTED', 'SIGNING_PENDING'],
+        ['SIGNING_PENDING', 'SIGNING_COMPLETE'],
+      ] as const;
+      for (const [from, to] of path) {
+        await setRequestState(tx, { requestId: id, from, to, actor: 'system' });
+      }
+      return recipientFirstSeenAt(tx, { walletId, address: recipient });
+    });
+    if (walked === null) throw new Error('a settled payment did not make its recipient familiar');
+    // Epoch *milliseconds*, and asserted as a magnitude rather than a type: `getTime()`
+    // is ms while `to_timestamp` wants seconds, and this repo has been bitten by that
+    // confusion twice. A value below 10¹² would be seconds, and would make every
+    // recipient look centuries stale.
+    expect(walked > 1_700_000_000_000n).toBe(true);
+
+    // Per (wallet, recipient), not per wallet: the same wallet paying a different
+    // address is still a new recipient.
+    expect(
+      await asTenant(app, orgId, (tx) =>
+        recipientFirstSeenAt(tx, { walletId, address: '0x1111111111111111111111111111111111111111' }),
+      ),
+    ).toBeNull();
+  });
+
   it('records a role change at the severity that makes it visible', async () => {
     const orgId = await tenant();
     const ownerId = await asTenant(app, orgId, (tx) =>
@@ -461,7 +521,8 @@ describe('wallets, grants and requests', () => {
     await asTenant(app, orgId, (tx) => changeUserRole(tx, { userId: ownerId, role: 'approver', actor: ownerId }));
 
     const rows = await pool.query<{ severity: string }>(
-      `SELECT severity FROM ari.audit_events WHERE org_id = $1 AND event_type = 'user.role_changed'`,
+      `SELECT severity FROM ari.audit_events
+        WHERE org_id = $1 AND event_type = 'user.role_changed' ORDER BY seq`,
       [orgId],
     );
     expect(rows.rows[0]?.severity).toBe('warning');

@@ -30,11 +30,21 @@ import {
   type Connector,
   type TenantTx,
 } from '@ari/identity';
-import { claimTicket, mintTicket, readCounter, recordDecision, release, releaseForRequest, reserve, settleForRequest } from '@ari/ledger';
+import {
+  claimTicket,
+  mintTicket,
+  readCounter,
+  recordDecision,
+  release,
+  releaseForRequest,
+  reserve,
+  settleForRequest,
+  type ReservationResult,
+} from '@ari/ledger';
 import { evaluate, type CompiledPolicy, type EvaluationState } from '@ari/policy-engine';
 import { loadVersion, type StoredVersion } from '@ari/policies';
-import { Decision, type AuthorizationTicket, type CandidateTransaction, type ReasonCode } from '@ari/schemas';
-import { TicketKey, claimsFor, sealTicket } from '@ari/signing';
+import { CanonicalDigest, Decision, type AuthorizationTicket, type CandidateTransaction, type ReasonCode } from '@ari/schemas';
+import { TicketKey, claimsFor, sealTicket, TICKET_TTL_MS } from '@ari/signing';
 import type { RiskProvider } from '@ari/risk-engine';
 import { canTransition, canonicalize, computeDigest, LifecycleState } from '@ari/transaction-engine';
 
@@ -214,6 +224,21 @@ async function usageOf(tx: TenantTx, orgId: string, policy: CompiledPolicy, agen
   } satisfies EvaluationState['usage'];
 }
 
+/**
+ * Read a stored digest back through the grammar that defines it.
+ *
+ * `null` rather than a throw, because the caller has something specific to say in
+ * this case: the replay path already knows how to refuse with a reason, and "the row
+ * does not hold a canonical digest" is a fact about stored data, not a bug in the
+ * request being handled. Asserting the brand instead — `stored.digest as CanonicalDigest`
+ * — is the pattern this file's own comment calls a type error, and the seal it feeds
+ * would commit to bytes the database never checked.
+ */
+function parseDigest(stored: string): CanonicalDigest | null {
+  const parsed = CanonicalDigest.safeParse(stored);
+  return parsed.success ? parsed.data : null;
+}
+
 function denied(codes: readonly ReasonCode[], requestId: string): AuthorizeOutcome {
   return { status: 'DENIED', requestId, codes };
 }
@@ -258,10 +283,30 @@ async function evaluateAndIssue(
 ): Promise<AuthorizeOutcome> {
   const nowMs = deps.nowMs();
   const context = { policyVersionId: version.id };
-  const canonical = canonicalize(input.candidate, context);
-  const digest = computeDigest(input.candidate, context);
-  const isTransfer = input.candidate.kind === 'transfer';
-  const amountRaw = isTransfer && input.candidate.kind === 'transfer' ? input.candidate.amount.raw : 0n;
+  // A `usd_gte` rule asks about the *worth* of a payment, and the only source of that
+  // number in this build is the candidate — which is written by the agent the rule exists
+  // to constrain. Left alone, an estimate of `{cents: "0", asOf: now}` satisfies any
+  // threshold and is excluded from the digest, so the human approving the payment would be
+  // approving bytes that never contained the number that cleared it. There is no
+  // server-side FX source yet, so the estimate is dropped rather than trusted: the kernel
+  // then treats a required escalation as unmet evidence and sends it to a human, which is
+  // the answer the policy already chose for missing data. The day a price feed exists, it
+  // is written here, by Ari, and digested.
+  const candidate =
+    policy.escalation.some((condition) => condition.op === 'usd_gte') && input.candidate.usdEstimate !== null
+      ? ({ ...input.candidate, usdEstimate: null } as CandidateTransaction)
+      : input.candidate;
+
+  const canonical = canonicalize(candidate, context);
+  const digest = computeDigest(candidate, context);
+  const isTransfer = candidate.kind === 'transfer';
+  // What this request moves. For a contract call that is *nothing*, and saying so with
+  // `null` rather than `0n` is the point: `0` is a computed amount that the kernel
+  // refuses as `AMOUNT_ZERO` and the reservations table refuses as a hold on no money,
+  // so a fabricated zero made an honest request look like a dishonest one on its way to a
+  // constraint error. The kernel denies a call carrying native value before any of this
+  // is reached, which is why `value` is reported to the risk plane but never held.
+  const amountRaw = isTransfer ? candidate.amount.raw : null;
   const scopes = await activeScopes(tx, input.credentialId);
   const usage = await usageOf(tx, orgId, policy, input.agentId, nowMs);
   const history = await historyOf(
@@ -288,9 +333,14 @@ async function evaluateAndIssue(
     agentId: input.agentId,
     walletId: input.candidate.walletId,
     nowMs,
-    amountRaw,
+    // The token amount, or zero. A contract call's native `value` is deliberately not
+    // passed here: every limit and every baseline this plane compares against is
+    // denominated in the policy's token unit, and the kernel refuses a value-bearing call
+    // outright for the same reason (stage 4b).
+    amountRaw: candidate.kind === 'transfer' ? candidate.amount.raw : 0n,
     currencyUnit: policy.transfers.amountUnit,
-    recipientAddress: input.candidate.kind === 'transfer' ? input.candidate.recipient.address : null,
+    isTransfer: input.candidate.kind === 'transfer',
+    recipientAddress: candidate.kind === 'transfer' ? candidate.recipient.address : null,
     perTransactionCapRaw: policy.transfers.perTransactionRaw,
   });
 
@@ -319,7 +369,7 @@ async function evaluateAndIssue(
       requestId: input.candidate.requestId,
       decision: evaluate({
         policy,
-        candidate: input.candidate,
+        candidate,
         state: assessment(previewRisk.ok ? previewRisk.assessment : null),
       }),
     };
@@ -333,9 +383,9 @@ async function evaluateAndIssue(
     digest,
     ...(isTransfer && input.candidate.kind === 'transfer'
       ? {
-          recipientAddress: input.candidate.recipient.address,
-          amountRaw,
-          currencyUnit: input.candidate.amount.unit,
+          recipientAddress: candidate.recipient.address,
+          ...(amountRaw === null ? {} : { amountRaw }),
+          currencyUnit: candidate.amount.unit,
         }
       : {}),
   });
@@ -391,7 +441,7 @@ async function evaluateAndIssue(
 
   const decision = evaluate({
     policy,
-    candidate: input.candidate,
+    candidate,
     state: assessment(riskOutcome.ok ? riskOutcome.assessment : null),
   });
   // The spine reads its own kernel's output back through the published contract before
@@ -493,7 +543,7 @@ interface IssueArgs {
   readonly digest: ReturnType<typeof computeDigest>;
   readonly version: StoredVersion;
   readonly policy: CompiledPolicy;
-  readonly amountRaw: bigint;
+  readonly amountRaw: bigint | null;
   readonly decision: Decision;
   readonly from: string;
 }
@@ -514,26 +564,34 @@ async function issue(
   input: AuthorizeInput,
   args: IssueArgs,
 ): Promise<AuthorizeOutcome> {
-  const held = await reserve(tx, {
-    orgId,
-    agentId: input.agentId,
-    windowKey: dayWindow(deps.nowMs()),
-    dimension: dimensionFor(args.policy),
-    amountRaw: args.amountRaw,
-    maxRaw: args.policy.transfers.perDayRaw,
-    requestId: args.requestId,
-    idempotencyKey: input.idempotencyKey,
-    policyVersionId: args.version.id,
-  });
+  // A request that moves no token amount reserves no capacity. `0` is not a small hold:
+  // `reservations.amount_raw > 0` says a hold is on money, and holding zero against a
+  // daily total is bookkeeping for a fact that did not happen.
+  const held: ReservationResult | null =
+    args.amountRaw === null
+      ? null
+      : await reserve(tx, {
+          orgId,
+          agentId: input.agentId,
+          windowKey: dayWindow(deps.nowMs()),
+          dimension: dimensionFor(args.policy),
+          amountRaw: args.amountRaw,
+          maxRaw: args.policy.transfers.perDayRaw,
+          requestId: args.requestId,
+          idempotencyKey: input.idempotencyKey,
+          policyVersionId: args.version.id,
+        });
 
   // The month window is taken after the day and released back if it refuses, rather
   // than the other way round: the two guards are the same statement shape, and a
   // monthly refusal must not leave a daily hold parked behind it. This is the ledger's
   // own check — the kernel already refused an over-month request a moment earlier — so
   // reaching it means two requests raced into the same window.
-  const dailyHold = held.status === 'HELD' ? held.reservationId : null;
+  // `null` on either side of this is the same statement: there was no amount to hold.
+  const dailyHold = held === null ? null : held.status === 'HELD' || held.status === 'ALREADY_HELD' ? held.reservationId : null;
+
   const monthly =
-    dailyHold !== null && args.policy.transfers.perMonthRaw !== null
+    args.amountRaw !== null && dailyHold !== null && args.policy.transfers.perMonthRaw !== null
       ? await reserve(tx, {
           orgId,
           agentId: input.agentId,
@@ -569,7 +627,7 @@ async function issue(
     return denied(['LIMIT_RESERVATION_FAILED'], args.requestId);
   }
 
-  if (held.status === 'LIMIT_EXCEEDED') {
+  if (held !== null && held.status === 'LIMIT_EXCEEDED') {
     // The engine said yes a moment ago and the ledger said no: that gap is the race
     // the reservation exists to close, and the audit line has to name the ledger as
     // the one that refused.
@@ -617,7 +675,11 @@ async function issue(
       walletId: input.candidate.walletId,
       policyVersionId: args.version.id,
       digest: args.digest,
-      amountRaw: args.amountRaw,
+      // A ticket always seals a number, and for a request that moves no token amount the
+      // honest number is zero. The distinction that matters — "no amount" rather than
+      // "an amount that happens to be zero" — lives on the reservation and approval rows,
+      // where a zero would otherwise be read as a hold on free money.
+      amountRaw: args.amountRaw ?? 0n,
       issuedAtMs: deps.nowMs(),
       authorityMode: args.policy.authorityMode,
       nonce: ticket.id,
@@ -675,8 +737,10 @@ async function replay(
     policy_version_id: string;
     approval_id: string;
     approval_expires_at: Date;
+    ticket_expires_at_ms: string | null;
   }>(
-    `SELECT r.lifecycle_state, r.digest, t.id AS ticket_id, r.agent_id,
+    `SELECT r.lifecycle_state, r.digest, t.id AS ticket_id, t.expires_at_ms AS ticket_expires_at_ms,
+            r.agent_id,
             d.policy_version_id, a.id AS approval_id, a.expires_at AS approval_expires_at
        FROM ari.transaction_requests r
        LEFT JOIN ari.authorization_decisions d ON d.request_id = r.id
@@ -699,10 +763,31 @@ async function replay(
     // capabilities are not persisted. Same id, same digest, same single-use row in
     // `signing_tickets`, so the second presentation of either string still spends
     // the one authorisation rather than getting a second one.
+    //
+    // The re-seal carries the *original* expiry, not a fresh one. Issuing at
+    // `now + TTL` on every retry made an idempotent replay a capability that could be
+    // extended indefinitely by asking again — the row's own window and the signer's
+    // clock check both read the document the plane just wrote, so nothing else bounded
+    // it. An agent whose signer is down for ten minutes now gets a refusal naming the
+    // lapse, which is the honest answer: the money was authorised under a usage
+    // snapshot ten minutes stale, and re-authorising is a new request with its own
+    // evaluation, not a retry.
     const amount = await tx.client.query<{ amount_raw: string | null; canonical: string }>(
       `SELECT amount_raw, canonical FROM ari.transaction_requests WHERE id = $1`,
       [requestId],
     );
+    const replayDigest = parseDigest(stored.digest);
+    if (replayDigest === null) {
+      return { status: 'REFUSED', requestId, reason: 'the stored digest is not a canonical digest; the original ticket cannot be re-sealed' };
+    }
+    const window = BigInt(stored.ticket_expires_at_ms ?? '0');
+    if (window <= deps.nowMs()) {
+      return {
+        status: 'REFUSED',
+        requestId,
+        reason: 'the authorisation window has lapsed; submit the request to be evaluated again',
+      };
+    }
     const sealed = sealTicket(
       claimsFor({
         ticketId: stored.ticket_id,
@@ -710,9 +795,16 @@ async function replay(
         agentId: input.agentId,
         walletId: input.candidate.walletId,
         policyVersionId: stored.policy_version_id,
-        digest: stored.digest as ReturnType<typeof computeDigest>,
+        // Parsed, not cast. The stored column is text and the seal is only as
+        // trustworthy as the bytes it commits to, so a row whose digest has drifted —
+        // a truncated write, a value from before the digest grammar existed — has to
+        // refuse here rather than be asserted into a valid-looking ticket.
+        digest: replayDigest,
         amountRaw: BigInt(amount.rows[0]?.amount_raw ?? '0'),
-        issuedAtMs: deps.nowMs(),
+        // Back-computed so that `issuedAt + TTL` is exactly the stored expiry: the
+        // seal's lifetime stays inside the window the ledger row already records, and
+        // `sealTicket`'s own lifetime guard keeps it honest.
+        issuedAtMs: window - TICKET_TTL_MS,
         // Read from the version the original decision was made under, never from the
         // candidate that arrived on this retry: the retry's payload is untrusted
         // input, and the mode is part of what was authorised.
@@ -794,7 +886,7 @@ export async function recordDeliveryOutcome(
 
   return asTenant(deps.pool, orgId, async (tx) => {
     if (delivered.accepted) {
-      const settled = await settleForRequest(tx, requestId);
+      const settled = await settleForRequest(tx, orgId, requestId);
       await appendEvent(tx, {
         orgId,
         actor: 'system',
@@ -811,7 +903,7 @@ export async function recordDeliveryOutcome(
       await advance(tx, requestId, 'SIGNING_COMPLETE');
       return 'SETTLED';
     }
-    const released = await releaseForRequest(tx, requestId, `signer refused: ${delivered.code ?? 'unknown'}`);
+    const released = await releaseForRequest(tx, orgId, requestId, `signer refused: ${delivered.code ?? 'unknown'}`);
     await appendEvent(tx, {
       orgId,
       actor: 'system',

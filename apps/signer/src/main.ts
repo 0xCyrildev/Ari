@@ -91,7 +91,7 @@ export async function startSigner(config: SignerConfig): Promise<RunningSigner> 
     throw new Error(`ari-signer cannot start:\n  - the connection reads as "${probe.rows[0]?.role ?? 'unknown'}", not "${config.databaseRole}"`);
   }
   const store: TicketStore = {
-    redeem: (ticketId, digest) => withTransaction(pool, (tx) => claimTicket(tx, ticketId, digest)),
+    redeem: (ticketId, digest, nowMs) => withTransaction(pool, (tx) => claimTicket(tx, ticketId, digest, nowMs)),
   };
   const provider = new MockSigningProvider();
   const deps: SignerDeps = {
@@ -127,9 +127,9 @@ export async function startSigner(config: SignerConfig): Promise<RunningSigner> 
 /** Turns a thrown store into a spent ticket: fail closed, and fail quietly. */
 export function guardStore(inner: TicketStore): TicketStore {
   return {
-    async redeem(ticketId, digest) {
+    async redeem(ticketId, digest, nowMs) {
       try {
-        return await inner.redeem(ticketId, digest);
+        return await inner.redeem(ticketId, digest, nowMs);
       } catch {
         // The only safe reading of "we could not record this as spent" is "it was
         // spent". A store that cannot be written to cannot authorise a second

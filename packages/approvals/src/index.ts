@@ -38,7 +38,8 @@ export interface RequestApprovalInput {
   readonly policyVersionId: string;
   readonly agentId: string;
   readonly walletId: string;
-  readonly amountRaw: bigint;
+  /** Null when the thing being approved moves no token amount — a valueless contract call. */
+  readonly amountRaw: bigint | null;
   readonly currencyUnit: string;
   readonly quorumNeeded: number;
   readonly allowedRoles: readonly string[];
@@ -81,7 +82,11 @@ export async function requestApproval(tx: TenantTx, input: RequestApprovalInput)
     policyVersionId: input.policyVersionId,
     agentId: input.agentId,
     walletId: input.walletId,
-    amountRaw: input.amountRaw,
+    // The seal always binds a number; the *row* keeps the difference between "no amount
+    // is involved" (NULL) and "the amount is zero", which is the distinction a caller
+    // cannot forge. Changing this to nullable would change every outstanding token's
+    // payload bytes, and the payload is what the HMAC covers.
+    amountRaw: input.amountRaw ?? 0n,
     currencyUnit: input.currencyUnit,
     expiresAtMs,
     nonce: newId('req'),
@@ -102,7 +107,7 @@ export async function requestApproval(tx: TenantTx, input: RequestApprovalInput)
       input.policyVersionId,
       input.agentId,
       input.walletId,
-      input.amountRaw.toString(),
+      input.amountRaw === null ? null : input.amountRaw.toString(),
       input.currencyUnit,
       input.quorumNeeded,
       [...input.allowedRoles],
@@ -118,7 +123,10 @@ export async function requestApproval(tx: TenantTx, input: RequestApprovalInput)
     resource: 'approval_request',
     resourceId: approvalId,
     policyVersionId: input.policyVersionId,
-    metadata: { amountRaw: input.amountRaw.toString(), assetUnit: input.currencyUnit },
+    metadata: {
+      ...(input.amountRaw === null ? {} : { amountRaw: input.amountRaw.toString() }),
+      assetUnit: input.currencyUnit,
+    },
   });
 
   return {
@@ -345,12 +353,20 @@ export async function spendApproval(
       return { ok: true, approvalId: claims.approvalId, digest: claims.digest };
     }
 
-    const why = await tx.client.query<{ status: ApprovalStatus }>(
-      `SELECT status FROM ari.approval_requests WHERE id = $1 AND org_id = $2`,
+    const why = await tx.client.query<{ status: ApprovalStatus; expired: boolean }>(
+      `SELECT status, expires_at <= now() AS expired FROM ari.approval_requests WHERE id = $1 AND org_id = $2`,
       [claims.approvalId, tx.orgId],
     );
-    const current = why.rows[0]?.status;
+    const row = why.rows[0];
+    const current = row?.status;
     if (current === undefined) return { ok: false, code: 'APPROVAL_NOT_FOUND', detail: 'not in this organisation' };
+    // The window closes on a `PENDING` approval too, and saying
+    // "the votes are not in yet" about one nobody can now cast would send an operator
+    // to chase an approver who has nothing left to approve.
+    if (row?.expired === true) {
+      await appendEvent(tx, refusalEvent(tx, claims.approvalId, 'approval.claim_refused', 'APPROVAL_EXPIRED', 'the window closed before quorum'));
+      return { ok: false, code: 'APPROVAL_EXPIRED', detail: 'expired while pending' };
+    }
     if (current === 'CONSUMED') {
       await appendEvent(tx, refusalEvent(tx, claims.approvalId, 'approval_reuse_attempted', 'APPROVAL_ALREADY_CONSUMED', 'a second presentation of a spent approval'));
       return { ok: false, code: 'APPROVAL_ALREADY_CONSUMED', detail: 'already spent' };

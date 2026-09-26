@@ -59,7 +59,11 @@ export function toWire(value: unknown, path = '$'): JsonValue {
   }
 
   if (Array.isArray(value)) {
-    return value.map((entry, index) => toWire(entry, `${path}[${index}]`));
+    // `Array.from` first, because `map` skips holes: `[,1]` would come back as a hole
+    // too and `JSON.stringify` renders a hole as `null`. An omitted element becoming a
+    // null is the same silent type change as an `undefined` scalar, and an array of
+    // amounts is exactly where a caller would never think to look for it.
+    return Array.from(value).map((entry, index) => toWire(entry, `${path}[${index}]`));
   }
 
   if (typeof value === 'object') {
