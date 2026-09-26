@@ -173,6 +173,15 @@ comparison is verified, at which point it becomes a blocking gate.
 **Gate:** `digest(simulated) == digest(signed)` check · simulation-mismatch test · no surface anywhere presents
 a mock result as chain truth.
 
+**Done (2026-09-26).** All three, and one command proves them: `pnpm vitest run tests/security/simulation.test.ts`.
+The binding is asserted from both sides — a provider that answers `SIMULATED_OK` while stamping the digest of *another*
+candidate must be refused with `SIMULATION_MISMATCH` and leave no ticket, and the same candidate pinned to the block
+before the token was funded must revert while the same candidate at the head succeeds. No surface presents a mock as
+chain truth, because `trustworthy` is carried on the result type *and* on the audit line (`simTrustworthy`) rather than
+in a comment. What Phase 7 is **not** is a fork: this box has no upstream RPC, so the provider answers about whatever
+chain it is pointed at and records the chain id, the block and that block's timestamp — and refuses outright when the
+node's `eth_chainId`, the candidate's own `chainId` and its configured one do not all agree.
+
 ---
 
 ## Phase 9 — SDK + CLI  *(moved up; the E2E path is untestable without them)*
@@ -187,6 +196,19 @@ hash chain and verifies it client-side — a small feature with outsized trust v
 
 **Gate:** the whole MVP happy path is reproducible from the CLI alone · SDK type-tests assert no bypass method
 exists · `ari policy validate` rejects each malformed fixture in a corpus.
+
+**Done (2026-09-26), with one caveat kept on purpose.** `tests/security/cli.test.ts` raises a tenant from the bootstrap
+token and one `ari` call, walks a payment to `APPROVAL_PENDING`, has a human answer it through the same command line and
+finishes it; `policy validate` runs against `apps/cli/test/fixtures/policy-corpus.json` — 23 cases, one field away from
+the baseline each, every refusal asserted on the field it names. The caveat: that suite drives the CLI over a real
+socket with `ari-signer` replaced by a stub answering `SIGNING_PENDING`. The same loop against two real processes answers
+`COMPLETE`, and it is recorded in `AGENTS.md` rather than asserted here, because a suite cannot be the authority on a
+provider its own file substituted.
+
+**`ari tx simulate` was not built, and should not be.** The CLI's `tx` commands ask the *decision plane*, which runs the
+simulation itself and records which block it read. A command that returned a raw simulation would hand an operator an
+answer about bytes nobody had authorised yet — the one shape in this system where `digest(simulated) != digest(signed)`
+is not a bug to catch but the default.
 
 ---
 

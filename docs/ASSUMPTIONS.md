@@ -32,7 +32,9 @@ Measured on this machine, 2026-09-25.
 | PostgreSQL client | 18.4 (local server on `127.0.0.1:5432`) | A local server already runs on the default port |
 | Redis | 8.0.6 installed; **no listener on 6379** | `kuma-redis` occupies `127.0.0.1:6380` |
 | `sui` CLI | 1.77.3 (`~/.local/bin/sui`) | Matches Ika's pinned `mainnet-v1.77.2` → a real local Sui+Ika net is plausible |
-| `anvil` | 1.8.1, **already running on `127.0.0.1:8545`** | Real EVM fork simulation is available locally; the mock simulator is not the only option |
+| `anvil` | 1.8.1, running on `127.0.0.1:8545` — **someone else's**, forked from `rpc.risechain.com` at block 22722272 (chain id 4153), not mainnet | EVM simulation is available locally; that node is not ours to touch, and Ari starts its own on **8561** |
+| `forge` | 1.8.1, solc **embedded** (0.8.19/0.8.25/0.8.36 all compile under `unshare -rn`) | Contracts can be compiled offline; nothing needs to download a compiler |
+| Forking an upstream chain | **NOT-FOUND** — no `$MAINNET_RPC_URL`, no key, and Node 24's global `fetch` cannot reach any remote HTTPS host on this box (raw TCP to the same IPs connects) | `EvmForkProvider` simulates against whatever chain it is pointed at and records the block it read. Claiming a mainnet result from here would be a lie, so nothing in Ari does |
 | `cargo` / `rustc` | 1.97.1 | Matches Ika's `rust-toolchain.toml` |
 | git | 2.53.0, identity configured | |
 

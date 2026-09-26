@@ -68,14 +68,19 @@ if (preview.ok && preview.value.decision.outcome === 'ALLOW') {
 }
 ```
 
-Not built: the CLI, simulation, the dashboard, the AI-assisted *explanation* of a
-risk score (the score is computed; nothing here asks a model to justify it), and
-any real chain integration. The endpoints a *human* needs — create an agent,
-issue its credential, decide an approval, activate a policy — are not there
-either, because Ari has no user-session model yet and inventing one inside a
-route handler would be a security decision made as a side effect. Until then
-those are performed against the packages directly, which is what the test suites
-do.
+Built since that paragraph was written: the operator's and the approver's HTTP
+surface (create an agent, issue its credential, register a wallet, activate a
+policy, decide an approval, revoke an agent, read the trail — each gated on a
+scope read from the credential row, not from what authentication returned), the
+`ari` command line that drives it, and a simulation plane that asks a real node.
+No user-session model was invented to get there: an approver and an operator are
+bearer credentials, the same shape an agent already had.
+
+Still not built: the dashboard, the AI-assisted *explanation* of a risk score (the
+score is computed; nothing here asks a model to justify it), Ika itself, and any
+settlement or reconciliation of a signature against a chain. The signing provider
+that works today is a mock; the simulation provider that works today answers about
+a local chain.
 
 The signing provider that works today is a mock, and it reports
 `trustworthy: false` on its results rather than presenting a signature as chain
@@ -90,9 +95,9 @@ proves each one.
 pnpm install
 pnpm db:up            # Postgres on 127.0.0.1:5435, Redis on 6381
 pnpm typecheck
-pnpm test             # everything: 439 tests / 26 files
-pnpm test:unit        # the 235 that need no database
-pnpm test:security    # the 204 that need Postgres, and do not skip without it
+pnpm test             # everything: 534 tests / 30 files
+pnpm test:unit        # the 305 that need no database
+pnpm test:security    # the 229 that need Postgres, and do not skip without it
 pnpm test:coverage
 ```
 
@@ -103,12 +108,23 @@ pnpm --filter @ari/api start        # ari-api  → 127.0.0.1:4000
 pnpm --filter @ari/signer start     # ari-signer → 127.0.0.1:4100
 ```
 
-`pnpm seed` exists because Ari has an operator token but no operator surface yet: it is
-the route from an empty database to the two credentials a working tenant needs — one an
-agent can ask for money with, one a human can say yes with — and it goes through the same
-packages, as the same unprivileged role, as the service itself. Each prints its secret
-once. Both are hashed with Argon2id under a pepper that does not live in the database, so
-nothing — including Ari — can read them back afterwards.
+`pnpm seed` is the one-command version of what `pnpm ari` now does route by route: an
+empty database to the two credentials a working tenant needs — one an agent can ask for
+money with, one a human can say yes with — through the same packages, as the same
+unprivileged role, as the service itself. Each prints its secret once. Both are hashed
+with Argon2id under a pepper that does not live in the database, so nothing — including
+Ari — can read them back afterwards.
+
+```bash
+pnpm ari help                     # the operator's and the approver's command line
+pnpm ari --bootstrap "$TOKEN" init --name "Acme Treasury"
+```
+
+`ari` is the operator surface: it holds a bearer secret and nothing else — no database
+credentials, and no local path to authorise anything, because a tool that could decide a
+payment offline would be a second decision plane with a second copy of the rules. Two of
+its commands (`policy validate`, `verify chain`) are given no HTTP client at all, so they
+work with no deployment in reach and cannot be pointed at one by a stale `ARI_URL`.
 
 The two are different kinds of secret on purpose. `013` puts the separation in a CHECK: a
 human credential cannot carry `transaction:request` and an agent credential cannot carry

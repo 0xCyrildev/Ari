@@ -22,12 +22,15 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | 5 risk engine | done | `packages/risk-engine`: deterministic baselines over `transaction_requests`, nine signals, 10 property/unit tests + 17 DB tests including both halves of the Phase 5 gate |
 | spine | done | `apps/api/src/authorize.ts` + `tests/security/pipeline.test.ts`: evaluate→reserve→decide→ticket→sign, 11 tests walking the brief's own scenarios |
 | HTTP edge | done | `apps/api/src/{gateway,routes,signer-client,server}.ts` + `tests/security/api.test.ts`: 22 tests through `inject`, and both processes run for real (see "Ran for real" below) |
-| agent SDK | started | `packages/client`: the outbound half of the decimal-string rule, three methods, 19 tests, and 2 contract tests that run the client's transport against the real routes |
-| 4–5, 7–11 | not started | intent, risk, simulation, the CLI, Ika, dashboard |
+| agent SDK | partial | `packages/client`: the outbound half of the decimal-string rule, three methods (evaluate, authorize, status), 19 tests, and 2 contract tests that run the client's transport against the real routes. The `agents.*`/`policies.*` half of `ROADMAP`'s Phase 9 is **not** in it, and is not planned to be: those became operator HTTP routes driven by `ari`, because an agent that could create an agent or activate a policy would be a second decision plane with a bearer secret |
+| 7 simulation | done | `packages/simulation`: `eth_call` against a real anvil, advisory by A10, and the digest binding asserted from both sides — see "Ran against a chain" below |
+| 9 CLI | done | `apps/cli`: the operator's and the approver's tool, 16 commands, `policy validate` against a 23-case corpus, and its own socket-level suite |
+| 4, 8, 10–11 | not started | intent, Ika (blocked on §6), dashboard, security review |
 
-`pnpm test` is **439 tests / 26 files**, in two halves that add up to it: `pnpm test:unit` is the
-**235** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **204** that
-need Postgres and do not skip without it. They did not always add up: `test:security` was
+`pnpm test` is **534 tests / 30 files**, in two halves that add up to it: `pnpm test:unit` is the
+**305** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **229** that
+need Postgres and do not skip without it. `tests/security/simulation.test.ts` needs Postgres **and**
+`anvil`; it starts its own on 127.0.0.1:8561 and refuses to run if that port is already taken. They did not always add up: `test:security` was
 `vitest run --dir tests/security`, which on vitest 5 matches **no files** at all. Positional filters are
 used now, and the two numbers are written down because "the security gate is green" has to mean the
 security gate ran.
@@ -386,6 +389,77 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
     write with no security consequence and an operator who believed they had stopped someone. The credential
     lookup now joins on it, and a test proves both halves — suspended refuses, unsuspended works again.
 
+- **A simulation that never answered is not a simulation that passed, and the kernel has to ask
+  `available` before it looks at `success`.** The arm was `if (simulation !== null && !success) deny
+  SIMULATION_FAILED`, and an unavailable answer arrives as `{available: false, success: false}` — so a policy
+  that chose `onSimulationUnavailable: allow_advisory` denied anyway whenever a node was down, and the two
+  values of that field meant the same sentence. It is the risk-fallback bug this file already records, in its
+  other costume, and it was invisible for the same reason: nothing had ever produced a real `available: false`
+  until a real node could be pointed at.
+- **A provider that cannot encode a candidate answers, it does not shrug.** `authorize` used to return `null`
+  when `supports()` was false, which silently turned a policy's `onSimulationUnavailable: deny` into an
+  approval on a tenant whose chain cannot be simulated at all. It now returns an
+  `unavailable(NOT_SUPPORTED_BY_PROVIDER)` *without calling the provider* — that is what `supports` is for:
+  no wallet row read, no socket opened, and the policy's own fallback still gets to decide.
+- **`eth_call` to an address with no code returns `0x`, and `0x` is also what some real tokens return on
+  success.** So a payment to an ordinary account, or to a contract that was never deployed on this chain, is
+  a *clean simulation* unless the provider calls `eth_getCode` itself and refuses. `eth_estimateGas` is no
+  substitute: it answers 21 000, without error, for the same call. The chain guard runs both ways for the
+  same reason — the node's `eth_chainId` against the configured one, and the candidate's own against the
+  node's — and a pinned block the node has dropped is refused rather than quietly read at the head, because
+  "the answer is about the state you asked for" is the only thing separating simulation from guesswork.
+- **Reverts are classified by their 4-byte selector, never by a node's sentence — and every selector in the
+  table was produced by `cast sig`, with the signature written beside it.** The first version of
+  `CUSTOM_ERRORS` copied five values from a research probe and `ERC20InsufficientBalance` was not one of
+  them (0x37e748ba is somebody else's error; the real value is 0xe450d38c). A wrong entry does not fail
+  anything: it labels one revert as another, in an audit trail that will be read as evidence. OpenZeppelin's
+  *reason string* was also absent from the node's message entirely, which is why text matching is not a
+  fallback either.
+- **`@ari/simulation` is plain `fetch` JSON-RPC, with no provider SDK.** `viem` and `ethers` both pull a
+  dependency that runs code at install time, and `allowBuilds` exists to keep that out of this repository —
+  including for `esbuild`. Five methods and an envelope is smaller than the supply-chain decision required
+  to avoid writing them. Note for a later session: Node 24's global `fetch` on this box cannot reach *any*
+  remote HTTPS host (raw TCP to the same addresses connects, `curl` returns 200), so a real-chain provider
+  cannot be exercised here even in principle, and no test should assume it can.
+- **The CLI's commands declare two things about themselves: whether they need a deployment, and every flag
+  they read.** Both were claims without mechanisms before: `run()` resolved `--url` before dispatch, so
+  `ari verify chain --in export.json` — a command that touches no network — could not run without a URL, and
+  a local command was handed an `Api` it had no business holding; and `args.ts` had said since its first
+  draft that an unknown flag is an error, while the real behaviour was that `--desicion APPROVED` was merely
+  absent and the refusal named the wrong thing. Local commands are now given no client at all, which is the
+  enforcement rather than the convention: a stale `ARI_URL`/`ARI_TOKEN` in an operator's environment cannot
+  reach anything.
+- **`ari` sends a `content-type` only when it has a body, and the bug it fixed was invisible to every test
+  that passed.** `agent revoke` is the tool's first body-less POST; declaring JSON while sending no bytes
+  made Fastify refuse in its body parser with a 400 — before the credential was read, before the scope,
+  before the route existed to the server. `app.inject()` does not reproduce a framework default, so the
+  suite that drives the routes that way stayed green. Worth remembering the next time a claim is made about
+  the wire: the socket tests are the ones that can be wrong in this direction.
+- **A window over the audit chain makes no head claim, and `verifyEventLog` takes its anchor.** The report's
+  `head` is the hash the *whole* chain recomputes to, which is the value worth comparing against one written
+  down elsewhere; a page of rows cannot honestly carry that name, so `GET /v1/audit/events?after=&limit=`
+  answers with events and a cursor and no head at all. `verifyEventLog(entries, startAt)` is what lets the
+  same walk continue from a known anchor, and `ari audit tail --from` without `--head` is refused — a window
+  that starts mid-chain checks every link after its first and has nothing to check its first against, which
+  is exactly what a rebuilt chain can satisfy.
+- **An event type that does not exist is not a silent gap, it is a wrong sentence.** `setAgentStatus`
+  labelled every non-revoke transition `agent.paused`, because that was the only word in `AuditEventType` —
+  so resuming a paused agent wrote an event saying it had been paused again. `agent.resumed` now exists, the
+  ternary names each transition, and the pair is asserted against the trail. `003` leaves `event_type` as
+  plain `text` with no CHECK, so the type union is the only gate, and a missing member is what made the lie
+  writable.
+- **Revoking an agent is a route, and it answers 404 for a row that is not yours.** `setAgentStatus` already
+  revoked the agent's credentials in the same transaction; nothing reached it over HTTP. The route reads the
+  row first so a wrong id is a 404 rather than a thrown sentence turned into a 500, reports
+  `credentialsRevoked` (the one part of "revoked" an operator cannot otherwise verify), and answers a second
+  revoke as already-revoked at 200 because `REVOKED` is terminal and a second call is not a second act.
+- **The wallet's chain address is on the grant read, and the simulation happens outside the tenant
+  transaction.** `asTenant` holds the organisation's advisory lock to commit, so an `eth_call` inside it
+  would serialise every other request that tenant makes behind a network round trip — the same reason the
+  signing delivery is its own transaction. `resolveGrant` therefore also returns `address` (the row it
+  already joins), and the pre-read costs one statement on the simulated path only. The digest binding is what
+  makes the second, authoritative read's answer the one that counts.
+
 ## Ran for real (2026-09-26)
 `pnpm --filter @ari/api start` and `pnpm --filter @ari/signer start`, both against Postgres on 5435, seeded
 a tenant through the packages (there is no HTTP route for it yet), and every state was observed over a real
@@ -440,19 +514,44 @@ $1,000 and caps the day at $5,000:
 transaction that recorded it, and the seal the agent needed afterwards came from the row that row's quorum
 set — not from the test process, which is what the previous version of this loop had to fake.
 
+**Ran against a chain (2026-09-26) — Phase 7, and the first time anything in this repository spoke to a node.**
+`anvil` on 127.0.0.1:8561 (its own, started by the suite), the fixture token in
+`tests/security/fixtures/minierc20.json` deployed empty and then funded one block later, `mUSD` as the policy's
+asset and anvil's account #0 as the wallet's address:
+
+```
+1e6 transfer, at the head        -> SIMULATED_OK    returnData 0x…01  block 2  chainId 31337  trustworthy true
+1e6 transfer, pinned to block 1 -> SIMULATED_REVERT  ERC20_INSUFFICIENT_BALANCE  block 1
+2e12 transfer (more than holds)  -> SIMULATED_REVERT  ERC20_INSUFFICIENT_BALANCE
+configured for chain 1, same node-> CHAIN_ID_MISMATCH  and no eth_call was issued
+token address that is an EOA     -> TARGET_HAS_NO_CODE (while `eth_call` on it answers 0x, i.e. "success")
+node on a closed port            -> RPC_UNREACHABLE   and the refusal still carries the digest it is about
+authorize() end to end            -> TICKET_ISSUED, and `simulation.evaluated` in the trail with
+                                    simStatus/simChainId/simBlock/simBound/simTrustworthy all present
+```
+
+Two things were learned the hard way and are worth restating. The provider's revert classifier and the fixture's
+contract had to agree on a real selector: `cast sig 'ERC20InsufficientBalance(address,uint256,uint256)'` is
+**0xe450d38c**, not the 0x37e748ba a research probe had handed over — and the unit test passed either way, because
+both copies of the wrong number were mine. And the suite's refusal to run against an anvil it did not start was
+checked by squatting the port: it fails with the sentence in its header rather than producing eleven green
+assertions about somebody else's chain.
+
+
 ## Open threads
 
-1. **The agent-facing and approver-facing surfaces exist; the operator's does not.** `POST
-   /v1/organizations`, `POST /v1/users`, `POST /v1/users/:id/credentials` (all three bootstrap-gated), the
-   four agent routes and the approver's three — `GET /v1/approvals`, `GET /v1/approvals/:id`, `POST
-   /v1/approvals/:id/decisions` — are built and tested, and the escalation loop closes end to end over real
-   sockets (see "Ran for real"). Still missing: creating an agent, issuing *its* credential, and activating a
-   policy over HTTP. Those need the same treatment `013` gave approvals — a user credential with the right
-   scope and a route that reads it from the row — not a session, and Phase 10's dashboard is where a signed-in
-   person should be minting credentials rather than being handed one by an operator. `scripts/seed-tenant.mts`
-   remains the path today: `pnpm seed` prints an agent bearer credential *and* an approver's, and can read
-   neither back, which is also why `ROADMAP` moved the CLI (Phase 9) up — the CLI's first command is the same
-   question that script answers.
+1. **The operator's surface exists; what it does not do is verify itself.** `POST /v1/organizations`,
+   `/v1/users`, `/v1/users/:id/credentials` (bootstrap-gated), the four agent routes, the approver's three, and
+   now the operator's seven — create/list/revoke an agent, issue an agent credential, register a wallet, grant a
+   wallet, apply+activate a policy, read the trail — are built, tested at the socket by
+   `tests/security/cli.test.ts`, and drivable end to end by `pnpm ari`. `scripts/seed-tenant.mts` remains for
+   nothing more than convenience. Two things are still open here, and neither is a route: a wallet's `address` is
+   accepted because it matches a grammar, never because anything checked that the wallet *is* that address on the
+   chain (a wrong one makes every simulation of that wallet a question about an account holding nothing, which the
+   provider will refuse as `TARGET_HAS_NO_CODE` or answer as a revert — it will not say "you typed the wrong
+   wallet"); and Phase 10's dashboard is still where a signed-in person should be *minting* a user credential
+   rather than being handed one by an operator, which is the reason `013`'s shape was built to be minted
+   server-side at all.
 2. **A randomised test that has never failed is not evidence.** `properties.test.ts`'s "a HIGH threshold is
    never looser than a CRITICAL one" asserted that the stricter policy escalates on *every* input where the
    looser one allowed — false at once for any input below the threshold, and it had passed every run so far on
@@ -522,9 +621,18 @@ set — not from the test process, which is what the previous version of this lo
    denial. Say so if a later session changes that ordering: it is the reason two clocks are
    tolerable here at all.
 
-11. **Simulation (Phase 7) is the next phase with a hole already cut for it.** `state.simulation` is still
-    `null` in every path, the kernel's simulation arms (`SIMULATION_MISMATCH`, `SIMULATION_UNAVAILABLE`,
-    `fallback.onSimulationUnavailable`) are written and tested against hand-built states, and
-    `ASSUMPTIONS.md` §1 says anvil is already running on this box — so `EvmForkProvider` is the cheapest real
-    thing left. `packages/simulation` does not exist yet; the `@ari/simulation` entry in the root `tsconfig`
-    paths is a placeholder for it and currently points at nothing.
+11. **Simulation exists; three things about it are still open, and none is a provider.**
+   (a) *The simulated path is unbudgeted.* `pipeline.test.ts` counts 29 statements for a payment that mints a
+   ticket, and that number is unchanged because `simulation: null` there — with a provider configured and a
+   candidate it can encode, `simulateFirst` adds a whole extra `asTenant` (advisory lock, grant read, commit)
+   outside the counted transaction. That is the price of not holding a network call inside the lock, and it is
+   asserted by nothing. Measure it before a tenant with real traffic finds it.
+   (b) *It answers about whatever chain it is pointed at.* This box cannot reach a remote RPC at all (Node's
+   fetch, not the network — see `ASSUMPTIONS.md` §1), so `EvmForkProvider` has never seen a chain with real
+   counterparty state on it. The gate that makes that safe is the recorded `chainId`/`blockNumber`/`timestamp`
+   plus the two-directional chain guard; the thing that would make it *useful* is a deployment with a real
+   endpoint, and A10's "blocking once a real provider lands" has **not** been reached — advisory is still the
+   honest setting, because a local anvil's state root proves mechanics and nothing else.
+   (c) *The Ika wallets have no address yet.* `wallet create --address` is the only way to give the simulation
+   plane a `from`, and a dWallet's address is derived, not typed — Phase 8 needs to write it, and until then
+   every Ika-backed wallet is `WALLET_ADDRESS_UNKNOWN`, which is a refusal and not a failure, by design.
