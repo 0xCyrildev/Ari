@@ -56,6 +56,16 @@ export interface CompiledPolicy {
   readonly contractCalls: { readonly enabled: boolean; readonly contracts: ReadonlySet<string> };
   readonly newRecipients: { readonly allowed: boolean; readonly requireApproval: boolean };
   readonly escalation: readonly PolicyDocument['escalation']['humanApproval']['requiredWhen'][number][];
+  /**
+   * How a `REQUIRE_HUMAN_APPROVAL` is satisfied: who may decide, and how many of
+   * them. Kept on the compiled form because the pipeline reads this without ever
+   * touching the authoring document — that separation is A4, and an approval flow
+   * that reached back into the draft shape would quietly end it.
+   */
+  readonly approval: {
+    readonly quorum: number;
+    readonly approverRoles: readonly string[];
+  };
   readonly validity: {
     readonly ttlSeconds: number;
     readonly notBeforeMs: bigint | null;
@@ -133,6 +143,10 @@ export function compilePolicy(document: PolicyDocument, ids: {
     },
     newRecipients: document.permissions.newRecipients,
     escalation: document.escalation.humanApproval.requiredWhen,
+    approval: {
+      quorum: document.escalation.humanApproval.quorum,
+      approverRoles: document.escalation.humanApproval.approverRoles,
+    },
     validity: {
       ttlSeconds: document.validity.transactionTtlSeconds,
       notBeforeMs: isoToMs(document.validity.notBefore),

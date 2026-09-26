@@ -34,7 +34,9 @@
     "vitest": "5.0.1",
     "@ari/identity": "workspace:*",
     "@ari/policies": "workspace:*",
-    "@ari/approvals": "workspace:*"
+    "@ari/approvals": "workspace:*",
+    "@ari/api": "workspace:*",
+    "@ari/signing": "workspace:*"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.2.1"

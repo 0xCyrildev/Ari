@@ -13,14 +13,14 @@
  * to the pool carries nothing forward with it.
  */
 
+import { beginTransaction, type LedgerTx } from '@ari/ledger';
 import { newId } from '@ari/schemas';
 import type { Pool, PoolClient } from 'pg';
 
-const TENANT: unique symbol = Symbol('ari.identity.tenant');
-
-export interface TenantTx {
-  readonly client: PoolClient;
+export interface TenantTx extends LedgerTx {
+  /** The tenant the session is scoped to, and the value row security filters on. */
   readonly orgId: string;
+  /** The same handle under both contracts: one transaction, two capabilities. */
   /**
    * Wall clock, read once when the transaction opened.
    *
@@ -29,7 +29,6 @@ export interface TenantTx {
    * that disagree is a bug nobody can reproduce afterwards.
    */
   readonly startedAtMs: bigint;
-  readonly [TENANT]: true;
 }
 
 /** Anything that can open a connection, so a pool and a transaction are both fine. */
@@ -66,9 +65,8 @@ export async function asTenant<T>(pool: Connector, orgId: string, fn: (tx: Tenan
 }
 
 async function runOnce<T>(pool: Connector, orgId: string, fn: (tx: TenantTx) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  return beginTransaction(pool, async (ledgerTx) => {
+    const { client } = ledgerTx;
     // A parameter, not a splice: `SET LOCAL x = $1` is not valid SQL, so the only
     // safe form is set_config(), and the only safe value is one that has already
     // been checked against the format above.
@@ -81,16 +79,9 @@ async function runOnce<T>(pool: Connector, orgId: string, fn: (tx: TenantTx) => 
     // left to each caller. Advisory transaction locks are re-entrant, so
     // `appendEvent` asking again is free.
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [orgId]);
-    const tx: TenantTx = { client, orgId, startedAtMs: BigInt(Date.now()), [TENANT]: true };
-    const result = await fn(tx);
-    await client.query('COMMIT');
-    return result;
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
+    const tx = Object.assign(ledgerTx, { orgId, startedAtMs: BigInt(Date.now()) }) as TenantTx;
+    return fn(tx);
+  });
 }
 
 /** A minted organisation id. Creation is the one operation with no tenant to scope by. */

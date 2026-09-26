@@ -89,14 +89,15 @@ export async function requestApproval(tx: TenantTx, input: RequestApprovalInput)
 
   await tx.client.query(
     `INSERT INTO ari.approval_requests
-       (id, org_id, subject_kind, subject_id, digest, policy_version_id, agent_id, wallet_id,
+       (id, org_id, subject_kind, subject_id, request_id, digest, policy_version_id, agent_id, wallet_id,
         amount_raw, currency_unit, quorum_needed, allowed_roles, requested_by, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
     [
       approvalId,
       tx.orgId,
       input.subjectKind,
       input.subjectId,
+      input.requestId,
       input.digest,
       input.policyVersionId,
       input.agentId,
@@ -285,8 +286,25 @@ export async function claimApproval(
   presentedDigest: CanonicalDigest,
   key: ApprovalKey,
 ): Promise<ClaimResult> {
-  return asTenant(pool, orgId, async (tx) => {
-    const opened = openApproval(token, key);
+  return asTenant(pool, orgId, (tx) => spendApproval(tx, token, presentedDigest, key));
+}
+
+/**
+ * The claim itself, in a transaction the caller already holds.
+ *
+ * Split from `claimApproval` for a reason that is easy to miss: opening a second
+ * transaction from inside the first deadlocks on the organisation's advisory chain
+ * lock, because the outer transaction holds it and the inner one is waiting for it
+ * while the outer waits for the inner. The pipeline authorises, spends the approval
+ * and mints the ticket in one unit of work, so it needs this form.
+ */
+export async function spendApproval(
+  tx: TenantTx,
+  token: string,
+  presentedDigest: CanonicalDigest,
+  key: ApprovalKey,
+): Promise<ClaimResult> {
+  const opened = openApproval(token, key);
     if (!opened.ok) {
       return { ok: false, code: 'APPROVAL_NOT_FOUND', detail: `token is not a valid seal: ${opened.reason}` };
     }
@@ -308,11 +326,11 @@ export async function claimApproval(
           SET status = 'CONSUMED', consumed_at = now()
         WHERE id = $1 AND org_id = $2 AND status = 'GRANTED' AND digest = $3 AND consumed_at IS NULL
         RETURNING digest`,
-      [claims.approvalId, orgId, claims.digest],
+      [claims.approvalId, tx.orgId, claims.digest],
     );
     if ((spent.rowCount ?? 0) > 0) {
       await appendEvent(tx, {
-        orgId,
+        orgId: tx.orgId,
         actor: claims.requestId,
         actorType: 'system',
         eventType: 'approval.granted',
@@ -325,10 +343,10 @@ export async function claimApproval(
 
     const why = await tx.client.query<{ status: ApprovalStatus }>(
       `SELECT status FROM ari.approval_requests WHERE id = $1 AND org_id = $2`,
-      [claims.approvalId, orgId],
+      [claims.approvalId, tx.orgId],
     );
     const current = why.rows[0]?.status;
-    if (current === undefined) return { ok: false, code: 'APPROVAL_NOT_FOUND', detail: 'no such approval for this organisation' };
+    if (current === undefined) return { ok: false, code: 'APPROVAL_NOT_FOUND', detail: 'not in this organisation' };
     if (current === 'CONSUMED') {
       await appendEvent(tx, refusalEvent(tx, claims.approvalId, 'approval_reuse_attempted', 'APPROVAL_ALREADY_CONSUMED', 'a second presentation of a spent approval'));
       return { ok: false, code: 'APPROVAL_ALREADY_CONSUMED', detail: 'already spent' };
@@ -337,7 +355,6 @@ export async function claimApproval(
       return { ok: false, code: 'QUORUM_NOT_REACHED', detail: 'the votes are not in yet' };
     }
     return { ok: false, code: 'APPROVAL_EXPIRED', detail: `approval is ${current}` };
-  });
 }
 
 export { ApprovalKey, openApproval, sealApproval, type ApprovalClaims } from './token.js';

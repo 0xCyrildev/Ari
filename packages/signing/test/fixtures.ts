@@ -40,7 +40,7 @@ export function request(overrides: Partial<TicketRequest> = {}): TicketRequest {
   const { digest } = candidate();
   return {
     ticketId: newId('tkt'),
-    requestId: newId('req'),
+    requestId: newId('txr'),
     agentId,
     walletId,
     policyVersionId,

@@ -1,0 +1,30 @@
+{
+  "name": "@ari/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ari/audit": "workspace:*",
+    "@ari/approvals": "workspace:*",
+    "@ari/identity": "workspace:*",
+    "@ari/ledger": "workspace:*",
+    "@ari/policies": "workspace:*",
+    "@ari/policy-engine": "workspace:*",
+    "@ari/schemas": "workspace:*",
+    "@ari/signing": "workspace:*",
+    "@ari/transaction-engine": "workspace:*",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/pg": "8.23.1",
+    "typescript": "5.9.3",
+    "vitest": "5.0.1"
+  }
+}

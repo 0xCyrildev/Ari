@@ -12,6 +12,9 @@ importers:
         specifier: ^2.2.1
         version: 2.2.1
     devDependencies:
+      '@ari/api':
+        specifier: workspace:*
+        version: link:apps/api
       '@ari/approvals':
         specifier: workspace:*
         version: link:packages/approvals
@@ -33,6 +36,9 @@ importers:
       '@ari/schemas':
         specifier: workspace:*
         version: link:packages/schemas
+      '@ari/signing':
+        specifier: workspace:*
+        version: link:packages/signing
       '@ari/transaction-engine':
         specifier: workspace:*
         version: link:packages/transaction-engine
@@ -51,6 +57,52 @@ importers:
       pg:
         specifier: 8.23.0
         version: 8.23.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.1
+        version: 5.0.1(@types/node@24.10.1)(@vitest/coverage-v8@5.0.1)(vite@8.3.1(@types/node@24.10.1)(jiti@2.7.0))
+
+  apps/api:
+    dependencies:
+      '@ari/approvals':
+        specifier: workspace:*
+        version: link:../../packages/approvals
+      '@ari/audit':
+        specifier: workspace:*
+        version: link:../../packages/audit
+      '@ari/identity':
+        specifier: workspace:*
+        version: link:../../packages/identity
+      '@ari/ledger':
+        specifier: workspace:*
+        version: link:../../packages/ledger
+      '@ari/policies':
+        specifier: workspace:*
+        version: link:../../packages/policies
+      '@ari/policy-engine':
+        specifier: workspace:*
+        version: link:../../packages/policy-engine
+      '@ari/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
+      '@ari/signing':
+        specifier: workspace:*
+        version: link:../../packages/signing
+      '@ari/transaction-engine':
+        specifier: workspace:*
+        version: link:../../packages/transaction-engine
+      pg:
+        specifier: 8.23.0
+        version: 8.23.0
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
       typescript:
         specifier: 5.9.3
         version: 5.9.3

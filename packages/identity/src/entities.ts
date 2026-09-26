@@ -261,14 +261,36 @@ export async function recordRequest(
     readonly idempotencyKey: string;
     readonly canonical: string;
     readonly digest: string;
+    /**
+     * Derived from the same candidate the digest was computed over, and optional
+     * because not every candidate has a recipient or an amount a policy reads as
+     * money — a contract call has neither, and recording `null` for those is the
+     * honest answer rather than a zero that a later sum would count.
+     */
+    readonly recipientAddress?: string;
+    readonly amountRaw?: bigint;
+    readonly currencyUnit?: string;
   },
 ): Promise<{ readonly id: string; readonly reused: boolean }> {
   const inserted = await tx.client.query<{ id: string }>(
-    `INSERT INTO ari.transaction_requests (id, org_id, agent_id, wallet_id, idempotency_key, canonical, digest)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO ari.transaction_requests
+       (id, org_id, agent_id, wallet_id, idempotency_key, canonical, digest,
+        recipient_address, amount_raw, currency_unit)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (agent_id, idempotency_key) DO NOTHING
      RETURNING id`,
-    [newId('txr'), tx.orgId, input.agentId, input.walletId, input.idempotencyKey, input.canonical, input.digest],
+    [
+      newId('txr'),
+      tx.orgId,
+      input.agentId,
+      input.walletId,
+      input.idempotencyKey,
+      input.canonical,
+      input.digest,
+      input.recipientAddress ?? null,
+      input.amountRaw === undefined ? null : input.amountRaw.toString(),
+      input.currencyUnit ?? null,
+    ],
   );
   const fresh = inserted.rows[0];
   if (fresh !== undefined) return { id: fresh.id, reused: false };
@@ -343,3 +365,99 @@ export async function listCredentials(
 
 export { asTenant };
 export type { TenantTx, Connector, Scope };
+
+export interface ResolvedGrant {
+  readonly agentId: string;
+  readonly agentStatus: AgentStatus;
+  readonly walletId: string;
+  readonly walletMode: WalletMode;
+  readonly signatureTriple: string;
+  readonly policyVersionId: string;
+  readonly scopes: readonly string[];
+}
+
+/**
+ * What an agent is allowed to act on, and under which policy.
+ *
+ * The join the whole pipeline starts from, and the reason it is one query: a grant
+ * that is missing, revoked, or pointing at a policy version that no longer exists
+ * has to look the same from the outside — no authority — rather than resolve to
+ * whatever the last cached lookup said. Revocation taking effect on the next request
+ * (S14) is a property of this read, not of a session layer.
+ */
+export async function resolveGrant(
+  tx: TenantTx,
+  input: { readonly agentId: string; readonly walletId: string },
+): Promise<ResolvedGrant | null> {
+  const rows = await tx.client.query<{
+    agent_status: AgentStatus;
+    wallet_mode: WalletMode;
+    signature_triple: string;
+    policy_version_id: string;
+  }>(
+    `SELECT a.status AS agent_status, w.mode AS wallet_mode, w.signature_triple,
+            g.policy_version_id
+       FROM ari.agent_wallet_grants g
+       JOIN ari.agents a ON a.id = g.agent_id AND a.org_id = g.org_id
+       JOIN ari.wallets w ON w.id = g.wallet_id AND w.org_id = g.org_id
+      WHERE g.agent_id = $1 AND g.wallet_id = $2 AND g.org_id = $3
+        AND g.revoked_at IS NULL`,
+    [input.agentId, input.walletId, tx.orgId],
+  );
+  const row = rows.rows[0];
+  if (row === undefined) return null;
+  return {
+    agentId: input.agentId,
+    agentStatus: row.agent_status,
+    walletId: input.walletId,
+    walletMode: row.wallet_mode,
+    signatureTriple: row.signature_triple,
+    policyVersionId: row.policy_version_id,
+    scopes: [],
+  };
+}
+
+/** The credential scopes an agent currently holds, for the engine's identity stage. */
+export async function activeScopes(tx: TenantTx, credentialId: string): Promise<readonly string[]> {
+  const rows = await tx.client.query<{ scopes: string[] }>(
+    `SELECT scopes FROM ari.agent_credentials
+      WHERE id = $1 AND org_id = $2 AND revoked_at IS NULL AND expires_at > now()`,
+    [credentialId, tx.orgId],
+  );
+  return rows.rows[0]?.scopes ?? [];
+}
+
+/**
+ * The behavioural history the escalation rules ask about.
+ *
+ * Recipients are derived from what has already *settled* — a recipient a policy
+ * approved once is no longer novel — and `firstSeenWithinDays` is a real window
+ * rather than a boolean, because `recipient_first_seen_within_days` says days and
+ * answering it with "have we ever paid them" is a different question.
+ */
+export async function recipientHistory(
+  tx: TenantTx,
+  walletId: string,
+): Promise<{ readonly known: ReadonlySet<string>; readonly firstSeenWithinDays: (address: string, days: number) => boolean }> {
+  const rows = await tx.client.query<{ address: string; first_seen: Date }>(
+    `SELECT recipient_address AS address, min(created_at) AS first_seen FROM ari.transaction_requests
+      WHERE wallet_id = $1 AND org_id = $2 AND recipient_address IS NOT NULL
+        AND lifecycle_state IN ('SIGNING_COMPLETE', 'BROADCAST', 'BROADCAST_CONFIRMED')
+      GROUP BY recipient_address`,
+    [walletId, tx.orgId],
+  );
+  const seen = new Map<string, number>();
+  for (const row of rows.rows) {
+    const at = row.first_seen.getTime();
+    const prior = seen.get(row.address);
+    if (prior === undefined || at < prior) seen.set(row.address, at);
+  }
+  const now = Number(tx.startedAtMs);
+  return {
+    known: new Set(seen.keys()),
+    firstSeenWithinDays: (address, days) => {
+      const at = seen.get(address);
+      return at !== undefined && now - at <= days * 86_400_000;
+    },
+  };
+}

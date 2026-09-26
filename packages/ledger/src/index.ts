@@ -97,8 +97,17 @@ export interface LedgerTx {
   readonly [OPEN]: true;
 }
 
-/** Run `fn` in one transaction, committing on success and rolling back on any throw. */
-export async function withTransaction<T>(
+/**
+ * Open a transaction and hand out the one handle that can spend reservations.
+ *
+ * This is exported because `@ari/identity` builds its tenant handle on top of it.
+ * Two packages each branding their own handle over the same Postgres transaction is
+ * what made the pipeline unwritable: a reservation and the audit row that witnesses
+ * it have to be in one transaction, and a caller holding two incompatible handles
+ * can only put them in two, which is exactly the window where a decision is
+ * committed and its evidence is not.
+ */
+export async function beginTransaction<T>(
   pool: { connect(): Promise<PoolClient> },
   fn: (tx: LedgerTx) => Promise<T>,
 ): Promise<T> {
@@ -115,6 +124,14 @@ export async function withTransaction<T>(
   } finally {
     client.release();
   }
+}
+
+/** Run `fn` in one transaction, committing on success and rolling back on any throw. */
+export async function withTransaction<T>(
+  pool: { connect(): Promise<PoolClient> },
+  fn: (tx: LedgerTx) => Promise<T>,
+): Promise<T> {
+  return beginTransaction(pool, fn);
 }
 
 /**

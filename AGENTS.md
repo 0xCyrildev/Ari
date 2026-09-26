@@ -18,10 +18,11 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | 2 policy engine | done | 76 tests + `tests/security/` on real Postgres; 98.75 % branch on the kernel |
 | 3 signing boundary | done | `packages/signing`, `apps/signer`, `002` ALLOW-before-ticket trigger |
 | 3.5 policy lifecycle | done | `@ari/policies`: draft→activate, breadth comparison, owner-only widening, justification on rollback |
-| 4–11 | not started | approvals (Phase 6, moved up next), intent, risk, simulation, SDK/CLI, Ika, dashboard |
+| 6 approvals | done | `@ari/approvals` + `006_approvals.sql`; 21 DB tests on the bound token, quorum, replay and T19 |
+| 4–5, 7–11 | not started | intent, risk, simulation, SDK/CLI, Ika, dashboard |
 
-`pnpm test` is **258 tests / 14 files**; `pnpm test:unit` skips the DB suites; `pnpm test:security` is
-56 tests that need Postgres and do not skip without it.
+`pnpm test` is **291 tests / 16 files**; `pnpm test:unit` runs the no-database half;
+`pnpm test:security` is the 97 tests that need Postgres and do not skip without it.
 
 `pnpm typecheck && pnpm test` — needs no database for the unit half. `test:security` needs
 `pnpm db:up` (Postgres on **127.0.0.1:5435**, Redis 6381; 5432/5433/6380 belong to other projects on this
@@ -53,6 +54,13 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
 - **`ari-signer` exits rather than falling back to a mock** when `SIGNING_PROVIDER` is not `mock`, and
   `MockSigningProvider` results carry `trustworthy: false` on the type. An absent feature is a smaller error
   than a fake one presented as real (S12, A10).
+- **Approval tokens are sealed as an explicit field-by-field JSON payload, and verification HMACs the bytes
+  it received.** `canonicalEncode` is the *transaction* canonicaliser; a second one for tokens is the T10
+  substitution bug, and §8's `a ‖ b ‖ c` is ambiguous as literally written. The payload is written out field
+  by field in `packages/approvals/src/token.ts` — change it and every outstanding token is invalid, so
+  `token.test.ts` asserts the round trip.
+- **`approval_reuse_attempted` means replay, only.** A claim against an incomplete quorum records
+  `approval.claim_refused`. Collapsing the two is what turns a support ticket into a false incident.
 - `contract_not_in_allowlist` was removed from the escalation vocabulary: stage 2 already denies any
   contract outside the same list, so the condition could never fire. An option a human can write that does
   nothing is a policy that reads as protection.

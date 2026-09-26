@@ -128,13 +128,19 @@ function signer() {
  */
 async function mintAndRedeem(
   deps: SignerDeps,
-  decided: { candidate: Candidate; digest: ReturnType<typeof computeDigest>; requestId: string },
+  decided: { candidate: Candidate; digest: ReturnType<typeof computeDigest> },
+  /**
+   * The stored transaction request's id, not the candidate's correlation id. A
+   * ticket is resolved through the ledger by joining on exactly this value, so a
+   * ticket sealed against anything else is a signature nothing can reconcile.
+   */
+  transactionRequestId: string,
   canonical: string,
 ): Promise<SignerOutcome> {
   const sealed = sealTicket(
     claimsFor({
       ticketId: newId('tkt'),
-      requestId: decided.requestId,
+      requestId: transactionRequestId,
       agentId,
       walletId,
       policyVersionId,
@@ -197,7 +203,7 @@ describe('the MVP negative path', () => {
     if (decision.outcome !== 'REQUIRE_HUMAN_APPROVAL') return;
     expect(decision.digest).toBe(digest);
 
-    const outcome = await mintAndRedeem(deps, { candidate, digest, requestId: decision.requestId }, canonical);
+    const outcome = await mintAndRedeem(deps, { candidate, digest }, newId('txr'), canonical);
     if (outcome.status !== 'SIGNED') throw new Error(`expected SIGNED, got ${outcome.status}`);
     expect(provider.invocations).toBe(1);
     expect(store.size).toBe(1);

@@ -15,7 +15,7 @@
  */
 
 import { appendEvent } from '@ari/audit';
-import { compilePolicy } from '@ari/policy-engine';
+import { compilePolicy, type CompiledPolicy } from '@ari/policy-engine';
 import { asTenant, type Connector, type TenantTx } from '@ari/identity';
 import { newId, type PolicyDocument as Document } from '@ari/schemas';
 import {
@@ -35,6 +35,13 @@ export interface StoredVersion {
   readonly status: 'DRAFT' | 'ACTIVE' | 'SUPERSEDED' | 'RETIRED';
   readonly document: Document;
   readonly breadth: Breadth;
+  /**
+   * Compiled at load, once, from the immutable document. The pipeline evaluates
+   * against this and never against `document` — A4's promise is that nothing on the
+   * decision path reads the authoring shape, and holding both on one row is what
+   * makes that checkable rather than aspirational.
+   */
+  readonly compiled: CompiledPolicy;
   readonly justification: string | null;
 }
 
@@ -58,7 +65,8 @@ async function roleOf(tx: TenantTx, userId: string): Promise<string | null> {
   return rows.rows[0]?.role ?? null;
 }
 
-async function load(tx: TenantTx, versionId: string): Promise<StoredVersion | null> {
+/** Public: the authorization pipeline resolves an agent's grant to exactly one of these. */
+export async function loadVersion(tx: TenantTx, versionId: string): Promise<StoredVersion | null> {
   const rows = await tx.client.query<{
     id: string;
     policy_id: string;
@@ -75,6 +83,11 @@ async function load(tx: TenantTx, versionId: string): Promise<StoredVersion | nu
   const row = rows.rows[0];
   if (row === undefined) return null;
   const document = parseDocument(row.document);
+  const compiled = compilePolicy(document, {
+    policyId: row.policy_id,
+    versionId: row.id,
+    versionNumber: row.version_number,
+  });
   return {
     id: row.id,
     policyId: row.policy_id,
@@ -82,11 +95,8 @@ async function load(tx: TenantTx, versionId: string): Promise<StoredVersion | nu
     versionNumber: row.version_number,
     status: row.status,
     document,
-    breadth: breadthOf(compilePolicy(document, {
-      policyId: row.policy_id,
-      versionId: row.id,
-      versionNumber: row.version_number,
-    })),
+    breadth: breadthOf(compiled),
+    compiled,
     justification: row.justification,
   };
 }
@@ -97,7 +107,7 @@ export async function activeVersion(tx: TenantTx, policyId: string): Promise<Sto
     [policyId, tx.orgId],
   );
   const row = rows.rows[0];
-  return row === undefined ? null : load(tx, row.id);
+  return row === undefined ? null : loadVersion(tx, row.id);
 }
 
 export async function listVersions(tx: TenantTx, policyId: string): Promise<readonly StoredVersion[]> {
@@ -107,7 +117,7 @@ export async function listVersions(tx: TenantTx, policyId: string): Promise<read
   );
   const versions: StoredVersion[] = [];
   for (const row of rows.rows) {
-    const version = await load(tx, row.id);
+    const version = await loadVersion(tx, row.id);
     if (version !== null) versions.push(version);
   }
   return versions;
@@ -223,7 +233,7 @@ export async function activateVersion(
     refuse(context, 'APPROVER_NOT_AUTHORISED', `role ${role ?? 'none'} cannot activate policies`);
   }
 
-  const target = await load(tx, input.versionId);
+  const target = await loadVersion(tx, input.versionId);
   if (target === null || target.policyId !== input.policyId) {
     refuse(context, 'INTERNAL_ERROR_FAIL_CLOSED', 'version is not in this organisation');
     throw new Error('unreachable');
