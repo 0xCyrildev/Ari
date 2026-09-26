@@ -223,13 +223,27 @@ export async function createWallet(
     readonly signatureTriple: string;
     readonly provider: string;
     readonly actor: string;
+    /**
+     * The wallet's address on its chain, and nullable because a dWallet being *created*
+     * does not mean its address is known yet. Without it there is no `from` to simulate
+     * an `eth_call` as, which is a smaller answer rather than a wrong one.
+     *
+     * Validated here because the column is plain `text`: an address with one character
+     * transposed is not caught anywhere else, and it makes every simulation of this
+     * wallet a question about an account that holds nothing.
+     */
+    readonly address?: string | null;
   },
 ): Promise<string> {
   const id = newId('wal');
+  const address = input.address ?? null;
+  if (address !== null && !/^0x[0-9a-f]{40}$/.test(address) && !/^[13bc][a-zA-Z0-9]{13,88}$/.test(address)) {
+    throw new Error('wallet address must be a lowercase EVM address or a bitcoin address');
+  }
   await tx.client.query(
-    `INSERT INTO ari.wallets (id, org_id, display_name, mode, signature_triple, provider)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [id, tx.orgId, input.displayName, input.mode, input.signatureTriple, input.provider],
+    `INSERT INTO ari.wallets (id, org_id, display_name, mode, signature_triple, provider, address)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [id, tx.orgId, input.displayName, input.mode, input.signatureTriple, input.provider, address],
   );
   await audit(tx, {
     eventType: 'wallet.created',
@@ -434,6 +448,15 @@ export interface ResolvedGrant {
   readonly walletMode: WalletMode;
   readonly signatureTriple: string;
   readonly policyVersionId: string;
+  /**
+   * The wallet's chain address, or null when nobody has recorded one. Read here rather
+   * than by a second query because this join already touches the row, and because the
+   * simulation plane needs it *before* the decision transaction opens: an `eth_call` is a
+   * network round trip, and holding the tenant's advisory lock across one would make a
+   * slow node serialise every other request in the organisation behind it — the same
+   * reason the signing delivery is its own transaction.
+   */
+  readonly walletAddress: string | null;
 }
 
 /**
@@ -454,9 +477,10 @@ export async function resolveGrant(
     wallet_mode: WalletMode;
     signature_triple: string;
     policy_version_id: string;
+    wallet_address: string | null;
   }>(
     `SELECT a.status AS agent_status, w.mode AS wallet_mode, w.signature_triple,
-            g.policy_version_id
+            w.address AS wallet_address, g.policy_version_id
        FROM ari.agent_wallet_grants g
        JOIN ari.agents a ON a.id = g.agent_id AND a.org_id = g.org_id
        JOIN ari.wallets w ON w.id = g.wallet_id AND w.org_id = g.org_id
@@ -473,6 +497,7 @@ export async function resolveGrant(
     walletMode: row.wallet_mode,
     signatureTriple: row.signature_triple,
     policyVersionId: row.policy_version_id,
+    walletAddress: row.wallet_address,
   };
 }
 

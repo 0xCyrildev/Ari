@@ -62,6 +62,9 @@ const deps: PipelineDeps = {
   // baselines meet a database that has rows in them, and a fake here would test the
   // pipeline's plumbing while leaving the arithmetic unexercised.
   risk: behaviouralProvider(),
+  // No chain to ask. Explicit, because a null here is a decision: every
+  // simulation arm in these tests is exercised with a hand-built state instead.
+  simulation: null,
 };
 
 beforeAll(async () => {

@@ -10,6 +10,7 @@
 
 import { ApprovalKey } from '@ari/approvals';
 import { behaviouralProvider } from '@ari/risk-engine';
+import { EvmForkProvider, type EvmProviderConfig } from '@ari/simulation';
 import { TicketKey } from '@ari/signing';
 import fastify from 'fastify';
 import { Pool } from 'pg';
@@ -34,6 +35,8 @@ export interface ApiConfig {
   readonly approvalKey: ApprovalKey;
   readonly bootstrapToken: string;
   readonly signerUrl: string;
+  /** Null is a configuration, not an omission — see `PipelineDeps.simulation`. */
+  readonly simulation: EvmProviderConfig | null;
   readonly port: number;
 }
 
@@ -57,6 +60,31 @@ export function readConfig(env: NodeJS.ProcessEnv): ApiConfig {
   // An empty token here means "the endpoint is closed", not "anyone may create a
   // tenant"; the failure mode of a forgotten variable is an outage, never a hole.
   if (bootstrapToken.length < 16) problems.push('ORG_BOOTSTRAP_TOKEN must be at least 16 characters');
+  // Simulation is the one plane that may be absent, and its absence is decided here rather
+  // than at first use: a half-configured provider (a URL with no chain id) is a
+  // configuration error, and the alternative is a process that comes up, silently never
+  // simulates, and leaves a policy written against `onSimulationUnavailable: deny` refusing
+  // every payment for a reason nothing in the log names.
+  let simulation: EvmProviderConfig | null = null;
+  const simulationUrl = env.SIM_RPC_URL ?? '';
+  if (simulationUrl.length > 0) {
+    const chainId = env.SIM_CHAIN_ID ?? '';
+    if (!/^\d{1,39}$/.test(chainId)) problems.push('SIM_CHAIN_ID is required when SIM_RPC_URL is set, as a decimal integer');
+    const staleness = env.SIM_MAX_STALENESS_SECONDS;
+    if (staleness !== undefined && !/^\d{1,9}$/.test(staleness)) problems.push('SIM_MAX_STALENESS_SECONDS must be a whole number of seconds');
+    const timeout = env.SIM_TIMEOUT_MS;
+    if (timeout !== undefined && !/^\d{1,5}$/.test(timeout)) problems.push('SIM_TIMEOUT_MS must be at most five digits');
+    if (problems.length === 0) {
+      simulation = {
+        url: simulationUrl,
+        chainId,
+        ...(env.SIM_BLOCK_TAG === undefined || env.SIM_BLOCK_TAG.length === 0 ? {} : { blockTag: env.SIM_BLOCK_TAG }),
+        ...(staleness === undefined ? {} : { maxStalenessSeconds: Number(staleness) }),
+        ...(timeout === undefined ? {} : { timeoutMs: Number(timeout) }),
+      };
+    }
+  }
+
   if (problems.length > 0) throw new Error(`ari-api cannot start:\n  - ${problems.join('\n  - ')}`);
 
   return {
@@ -68,6 +96,7 @@ export function readConfig(env: NodeJS.ProcessEnv): ApiConfig {
     bootstrapToken,
     signerUrl: env.SIGNER_URL ?? 'http://127.0.0.1:4100/v1/sign',
     port: Number(env.API_PORT ?? '4000'),
+    simulation,
   };
 }
 
@@ -133,6 +162,10 @@ export async function startApi(config: ApiConfig, signer?: SignerClient): Promis
     // to say so with a provider, not by leaving the field out — the kernel escalates
     // when nothing assessed, so the absent provider is the loudest configuration.
     risk: behaviouralProvider(),
+    // Constructed here, so a URL that is neither TLS nor loopback — or a block tag the
+    // provider will not accept — fails the process at startup rather than arriving as an
+    // endless stream of `SIMULATED_UNAVAILABLE` answers.
+    simulation: config.simulation === null ? null : new EvmForkProvider(config.simulation),
   };
 
   const app = fastify({ logger: false, bodyLimit: 64 * 1024 });

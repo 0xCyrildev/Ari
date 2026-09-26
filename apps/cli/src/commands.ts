@@ -191,7 +191,7 @@ export const commands: Record<string, Command> = {
 
   'wallet create': {
     summary: 'register a wallet and the guarantee it offers',
-    takes: ['name', 'mode', 'triple', 'provider'],
+    takes: ['name', 'mode', 'triple', 'provider', 'address'],
     async run({ api, flags }) {
       return api.call({
         method: 'POST',
@@ -201,6 +201,10 @@ export const commands: Record<string, Command> = {
           mode: text(flags, 'mode'),
           signatureTriple: text(flags, 'triple'),
           provider: optional(flags, 'provider') ?? 'mock',
+          // Absent rather than empty: a wallet whose chain address is not known yet is a
+          // real state (a dWallet being created does not mean its address is), and `''`
+          // would be stored and then read back as an address.
+          ...(optional(flags, 'address') === undefined ? {} : { address: text(flags, 'address') }),
         },
       });
     },

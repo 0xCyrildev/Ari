@@ -256,6 +256,16 @@ describe('stage 7 — risk and simulation may escalate, never grant', () => {
     });
   });
 
+  it('does not turn a simulation that never answered into a chain that said no', () => {
+    // A10, and the shape of the risk-fallback bug this repository already fixed: a node that
+    // did not reply arrives as `{available: false, success: false}`, and an ungated
+    // `!success` check made `allow_advisory` and `deny` the same sentence whenever the
+    // infrastructure was down. Absence is decided by the policy, never by the projection.
+    const decision = decide({ st: state({ simulation: { available: false, success: false, mismatch: false, warningCount: 0 } }) });
+    expect(decision.reasonCodes).not.toContain('SIMULATION_FAILED');
+    expect(decision.outcome).not.toBe('DENY');
+  });
+
   it('refuses to read an absent simulation as a passing one when the policy says deny', () => {
     deniedWith('SIMULATION_UNAVAILABLE', {
       policy: compiled({

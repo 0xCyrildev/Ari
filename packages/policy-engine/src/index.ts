@@ -423,7 +423,12 @@ export function evaluate(input: {
     ) {
       return deny(['SIMULATION_UNAVAILABLE'], 'fallback.onSimulationUnavailable');
     }
-    if (state.simulation !== null && !state.simulation.success) {
+    // `available` first, and that ordering is the whole of A10. A node that did not answer
+    // arrives as `{available: false, success: false}`, so an ungated check here reads an
+    // absent answer as a chain that said no — which makes `onSimulationUnavailable:
+    // allow_advisory` and `deny` the same sentence, and is the same shape as the risk
+    // fallback bug the Phase 5 gate is named for.
+    if (state.simulation !== null && state.simulation.available && !state.simulation.success) {
       return deny(['SIMULATION_FAILED'], 'simulation.success');
     }
 

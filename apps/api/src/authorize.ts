@@ -46,6 +46,7 @@ import { loadVersion, type StoredVersion } from '@ari/policies';
 import { CanonicalDigest, Decision, type AuthorizationTicket, type CandidateTransaction, type ReasonCode } from '@ari/schemas';
 import { TicketKey, claimsFor, sealTicket, TICKET_TTL_MS } from '@ari/signing';
 import type { RiskProvider } from '@ari/risk-engine';
+import { kernelProjection, unavailable, type SimulationProvider, type SimulationResult } from '@ari/simulation';
 import { canTransition, canonicalize, computeDigest, LifecycleState } from '@ari/transaction-engine';
 
 export interface PipelineDeps {
@@ -70,6 +71,18 @@ export interface PipelineDeps {
    * provider, which needs no external service: it aggregates Ari's own history.
    */
   readonly risk: RiskProvider;
+  /**
+   * Nullable, and that is a different answer from `risk` being mandatory.
+   *
+   * The risk plane reads Ari's own database, so "no risk engine is configured" is not a
+   * state that can honestly exist. Simulation asks a *chain*, and a deployment with no node
+   * configured is a real configuration — with no chain to ask, there is no answer to
+   * invent, and A10 says an absent feature beats a fake one. What is not available is
+   * guessing: a policy that names `onSimulationUnavailable: deny` and gets a null provider
+   * is a policy that denies everything, and that is the composition root's decision to make
+   * at startup, in the open.
+   */
+  readonly simulation: SimulationProvider | null;
 }
 
 export interface AuthorizeInput {
@@ -243,11 +256,37 @@ function denied(codes: readonly ReasonCode[], requestId: string): AuthorizeOutco
   return { status: 'DENIED', requestId, codes };
 }
 
+/**
+ * What the kernel may know about a simulation, which is four booleans and no chain facts.
+ *
+ * The binding check is the Phase 7 gate and it is a refusal, not a footnote: an answer
+ * carries the digest it was derived from, and if that is not the digest this request is
+ * being decided on, the two halves were not asked about the same transaction. Simulating
+ * bytes A and signing bytes B is T10 with a network call in the middle, and the only safe
+ * reading of a mismatch nobody can explain is `SIMULATION_MISMATCH` — a denial — rather
+ * than the answer the node actually gave.
+ *
+ * A null `digest` on an *unavailable* answer is not a mismatch: nothing was run, so
+ * nothing was bound, and the policy's own `onSimulationUnavailable` is the right arm.
+ */
+function simulationFor(
+  digest: CanonicalDigest,
+  result: SimulationResult | null,
+): EvaluationState['simulation'] {
+  if (result === null) return null;
+  if (result.digest !== null && result.digest !== digest) {
+    return { available: true, success: false, mismatch: true, warningCount: result.warningCount };
+  }
+  return kernelProjection(result);
+}
+
 async function within(
   deps: PipelineDeps,
   tx: TenantTx,
   orgId: string,
   input: AuthorizeInput,
+  /** Asked and answered before this transaction opened. See `authorize`. */
+  simulation: SimulationResult | null,
 ): Promise<AuthorizeOutcome> {
   const requestId = input.candidate.requestId;
   const grant = await resolveGrant(tx, { agentId: input.agentId, walletId: input.candidate.walletId });
@@ -262,7 +301,7 @@ async function within(
   }
   const policy = version.compiled;
 
-  return evaluateAndIssue(deps, tx, orgId, input, version, policy);
+  return evaluateAndIssue(deps, tx, orgId, input, version, policy, simulation);
 }
 
 /**
@@ -280,6 +319,8 @@ async function evaluateAndIssue(
   input: AuthorizeInput,
   version: StoredVersion,
   policy: CompiledPolicy,
+  /** Computed by `authorize`, before the tenant transaction existed. */
+  simulation: SimulationResult | null,
 ): Promise<AuthorizeOutcome> {
   const nowMs = deps.nowMs();
   const context = { policyVersionId: version.id };
@@ -356,7 +397,7 @@ async function evaluateAndIssue(
     usage,
     history,
     risk,
-    simulation: null,
+    simulation: simulationFor(digest, simulation),
   });
 
   if (input.dryRun === true) {
@@ -438,6 +479,32 @@ async function evaluateAndIssue(
         }
       : { severity: 'warning' as const, reasonCodes: ['RISK_ENGINE_UNAVAILABLE'], metadata: { code: riskOutcome.code, detail: riskOutcome.detail } }),
   });
+
+  if (simulation !== null) {
+    // Written before the decision is read, so a denial that *cited* the simulation cannot
+    // be the one event that explains it. `trustworthy` is metadata on purpose: the field
+    // that separates a mock's answer from a node's must be in the trail an auditor reads,
+    // not only in the type a compiler checks (A10, S12).
+    await appendEvent(tx, {
+      orgId,
+      actor: 'system',
+      actorType: 'system',
+      eventType: simulation.available ? 'simulation.evaluated' : 'simulation.unavailable',
+      resource: 'transaction_request',
+      resourceId: requestId,
+      policyVersionId: version.id,
+      metadata: {
+        simProvider: simulation.provider,
+        simStatus: simulation.status,
+        ...(simulation.revert === null ? {} : { simRevert: simulation.revert }),
+        ...(simulation.reason === null ? {} : { simReason: simulation.reason }),
+        simTrustworthy: String(simulation.trustworthy),
+        ...(simulation.chainId === null ? {} : { simChainId: simulation.chainId }),
+        ...(simulation.blockNumber === null ? {} : { simBlock: simulation.blockNumber }),
+        simBound: String(simulation.digest !== null && simulation.digest === digest),
+      },
+    });
+  }
 
   const decision = evaluate({
     policy,
@@ -948,7 +1015,58 @@ export async function authorize(
   orgId: string,
   input: AuthorizeInput,
 ): Promise<AuthorizeOutcome> {
-  return asTenant(deps.pool, orgId, (tx) => within(deps, tx, orgId, input));
+  const simulation = await simulateFirst(deps, orgId, input);
+  return asTenant(deps.pool, orgId, (tx) => within(deps, tx, orgId, input, simulation));
+}
+
+/**
+ * Ask the chain, before the decision transaction exists.
+ *
+ * An `eth_call` is a network round trip to something that is not this database, and
+ * `asTenant` holds the organisation's advisory lock from its first statement to its commit
+ * — which is what makes the audit chain and the head cache sound, and what would make a
+ * slow node stall every other payment this tenant asks for. The signing delivery learned
+ * the same lesson and went into its own transaction; this goes outside the first one,
+ * because unlike a signature it is an input to the decision and not an output of it.
+ *
+ * Two reads happen here that also happen inside: the grant, for the wallet's address and
+ * the policy version the digest is derived with. That is one extra statement per simulated
+ * request and no more, and the digest binding in `simulationFor` is what makes the second
+ * read's answer the one that counts — if the version moved underneath us, the digests
+ * part and the request is refused rather than decided against a stale policy.
+ */
+async function simulateFirst(
+  deps: PipelineDeps,
+  orgId: string,
+  input: AuthorizeInput,
+): Promise<SimulationResult | null> {
+  const provider = deps.simulation;
+  if (provider === null) return null;
+  if (!provider.supports(input.candidate)) {
+    // An answer, not a shrug. The provider has told us it cannot speak about this
+    // candidate, which is precisely what a policy's `onSimulationUnavailable` is a decision
+    // *about* — and returning null here would let that field mean nothing on a bitcoin
+    // tenant, so a policy written to refuse what cannot be checked would quietly approve
+    // it instead. Constructed here rather than by calling `simulate`, because the whole
+    // point of `supports` is that no wallet row is read and no socket is opened to learn it.
+    return unavailable({
+      provider: provider.name,
+      digest: null,
+      reason: 'NOT_SUPPORTED_BY_PROVIDER',
+      warnings: ['no encoding for this candidate on this provider'],
+    });
+  }
+
+  const grant = await asTenant(deps.pool, orgId, (tx) =>
+    resolveGrant(tx, { agentId: input.agentId, walletId: input.candidate.walletId }),
+  );
+  if (grant === null) return null;
+
+  return provider.simulate({
+    candidate: input.candidate,
+    policyVersionId: grant.policyVersionId,
+    walletAddress: grant.walletAddress,
+  });
 }
 
 /** The other half of the boundary, for the composition root and the tests that walk it. */

@@ -577,7 +577,21 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
 
   app.post('/v1/wallets', async (request, reply) =>
     asOperator('wallet:manage')(request, reply, async (tx, principal) => {
-      const body = request.body as { displayName?: unknown; mode?: unknown; signatureTriple?: unknown; provider?: unknown };
+      const body = request.body as {
+        displayName?: unknown;
+        mode?: unknown;
+        signatureTriple?: unknown;
+        provider?: unknown;
+        address?: unknown;
+      };
+      // Optional, and validated by `createWallet` rather than here: the same grammar the
+      // candidate's recipient is parsed with, because an address stored with one character
+      // transposed makes every simulation of this wallet a question about an account that
+      // holds nothing.
+      const address = body.address === undefined || body.address === null ? null : body.address;
+      if (address !== null && typeof address !== 'string') {
+        return { status: 400, body: { code: 'INVALID_REQUEST', detail: 'address must be a string or absent' } };
+      }
       if (
         typeof body.displayName !== 'string' ||
         unusable(body.displayName.trim(), 200) ||
@@ -601,8 +615,9 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
         signatureTriple: body.signatureTriple,
         provider: body.provider,
         actor: principal.userId,
+        ...(address === null ? {} : { address }),
       });
-      return { status: 201, body: { walletId, mode: body.mode } };
+      return { status: 201, body: { walletId, mode: body.mode, address } };
     }),
   );
 

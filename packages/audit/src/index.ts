@@ -72,6 +72,12 @@ export const AuditEventType = [
   'transaction.state_changed',
   'transaction.rejected_unparseable',
   'risk.assessed',
+  // The pair the simulation plane needs, and the reason it is two names: "the node said
+  // this would revert" and "nobody answered" are different facts with different policy
+  // consequences, and an audit trail that records both as one event cannot be read by
+  // someone asking why a payment was refused.
+  'simulation.evaluated',
+  'simulation.unavailable',
   'risk.unavailable',
   'simulation.completed',
   'policy.evaluated',
@@ -138,6 +144,22 @@ export interface SafeLogFields {
    * never the explanation, which is prose an engine generates rather than a field Ari
    * controls, and has no place in a typed log line.
    */
+  /**
+   * The simulation plane's answer, as the closed codes Ari names — never the node's own
+   * sentence. `simRevert` is a selector from a table in `@ari/simulation`, `simReason` is
+   * one of the `UnavailableReason` values, and `simTrustworthy` is the field that separates
+   * a mock's answer from a chain fact (A10). Adding to this set is the designed way to
+   * record a new decision; a blob is not, because the runtime key check below is what stops
+   * `metadata: someJsonBlob` from carrying a credential into a hashed, exported trail.
+   */
+  readonly simProvider?: string;
+  readonly simStatus?: string;
+  readonly simRevert?: string;
+  readonly simReason?: string;
+  readonly simTrustworthy?: string;
+  readonly simChainId?: string;
+  readonly simBlock?: string;
+  readonly simBound?: string;
   readonly riskScore?: string;
   readonly riskLevel?: string;
   readonly riskSignals?: readonly string[];
@@ -168,6 +190,14 @@ const ALLOWED_FIELDS: readonly string[] = Object.keys({
   toState: 0,
   versionFrom: 0,
   versionTo: 0,
+  simProvider: 0,
+  simStatus: 0,
+  simRevert: 0,
+  simReason: 0,
+  simTrustworthy: 0,
+  simChainId: 0,
+  simBlock: 0,
+  simBound: 0,
   riskScore: 0,
   riskLevel: 0,
   riskSignals: 0,
