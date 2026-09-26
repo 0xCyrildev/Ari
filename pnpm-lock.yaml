@@ -21,6 +21,9 @@ importers:
       '@ari/ledger':
         specifier: workspace:*
         version: link:packages/ledger
+      '@ari/policies':
+        specifier: workspace:*
+        version: link:packages/policies
       '@ari/policy-engine':
         specifier: workspace:*
         version: link:packages/policy-engine
@@ -147,6 +150,37 @@ importers:
       zod:
         specifier: 4.6.5
         version: 4.6.5
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.1
+        version: 5.0.1(@types/node@24.10.1)(@vitest/coverage-v8@5.0.1)(vite@8.3.1(@types/node@24.10.1)(jiti@2.7.0))
+
+  packages/policies:
+    dependencies:
+      '@ari/audit':
+        specifier: workspace:*
+        version: link:../audit
+      '@ari/identity':
+        specifier: workspace:*
+        version: link:../identity
+      '@ari/policy-engine':
+        specifier: workspace:*
+        version: link:../policy-engine
+      '@ari/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+      pg:
+        specifier: 8.23.0
+        version: 8.23.0
     devDependencies:
       '@types/node':
         specifier: 24.10.1

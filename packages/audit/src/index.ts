@@ -52,6 +52,7 @@ export const AuditEventType = [
   'policy.activated',
   'policy.broadened',
   'policy.downgrade_attempted',
+  'policy.activation_refused',
   'intent.received',
   'intent.interpreted',
   'intent.clarification_requested',
