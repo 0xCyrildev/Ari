@@ -14,7 +14,7 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | Phase | Status | Evidence |
 |---|---|---|
 | 0 discovery | done | four docs, 1,750 lines, every claim labelled VERIFIED / DOC-ONLY / ASSUMED / NOT-FOUND |
-| 1 core domain | **nearly** | migrations `001–005`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table. **Missing: `apps/api`, and the Prisma question below.** |
+| 1 core domain | **nearly** | migrations `001–005`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table. **Missing: `apps/api`.** |
 | 2 policy engine | done | 76 tests + `tests/security/` on real Postgres; 98.75 % branch on the kernel |
 | 3 signing boundary | done | `packages/signing`, `apps/signer`, `002` ALLOW-before-ticket trigger |
 | 3.5 policy lifecycle | done | `@ari/policies`: draft→activate, breadth comparison, owner-only widening, justification on rollback |
@@ -61,12 +61,10 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
 
 1. **No `apps/api` yet.** Nothing in here has been run as a service: no routes, no gateway, no composition
    root wiring `evaluate → reserve → mintTicket → signer`. Every building block is tested at the layer below.
-2. **Prisma is still a declared-but-unused devDependency.** Phase 1's text says "Prisma schema + first
-   migration" and T8 says "Prisma, no string SQL on any auth path" — but the schema is hand-written SQL
-   (`migrations/001–005`) with a `pg` repository layer, because constraint ownership (triggers, RLS, role
-   grants) is what these gates test and a generator adds a step without adding a guarantee. `allowBuilds`
-   still refuses prisma's install scripts. **Decide deliberately: adopt Prisma on top of these migrations,
-   or amend the two doc lines and drop the dependency.** Do not let it sit half-adopted.
+2. **Prisma is gone, by ADR-10.** The schema is hand-written SQL in `migrations/` and the three doc lines
+   that named Prisma now say so with the reason. Do not reintroduce an ORM schema without settling that ADR:
+   the gates here are row-security policies, refusal triggers and role grants, none of which a generated
+   client expresses.
 3. **Phase 6 human approvals** — the bound-token flow (`§8`: HMAC over digest ‖ policy version ‖ agent ‖
    wallet ‖ amount ‖ expiry ‖ nonce), quorum enforced by Ari's database, `approval_reuse_attempted` as a
    first-class event, and an actor who cannot second-approve a change to their own authority (T19). It

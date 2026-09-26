@@ -66,6 +66,7 @@ export const AuditEventType = [
   'approval.granted',
   'approval.rejected',
   'approval.expired',
+  'approval.claim_refused',
   'approval_reuse_attempted',
   'approval_digest_mismatch',
   'ticket.minted',

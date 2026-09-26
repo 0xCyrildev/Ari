@@ -71,6 +71,7 @@ export const ReasonCode = z.enum([
   'APPROVAL_EXPIRED',
   'APPROVAL_ALREADY_CONSUMED',
   'APPROVAL_DIGEST_MISMATCH',
+  'APPROVAL_NOT_FOUND',
   'APPROVER_NOT_AUTHORISED',
   'QUORUM_NOT_REACHED',
   'JUSTIFICATION_REQUIRED',
@@ -291,6 +292,19 @@ export type TicketClaims = z.infer<typeof TicketClaims>;
  */
 export const AuthorizationTicket = z.string().min(40).brand('AuthorizationTicket');
 export type AuthorizationTicket = z.infer<typeof AuthorizationTicket>;
+
+/**
+ * A bound approval token, presented by a human's client when they decide.
+ *
+ * Branded for the same reason as `AuthorizationTicket` and with the opposite
+ * direction of trust: a ticket is minted by the decision plane and spent by the
+ * signer, whereas a token is minted by Ari, *shown to a human*, and spent back at
+ * Ari. It is therefore a bearer secret with a short life, which is why the
+ * approval's own record stores the digest it committed to and never the token
+ * (§8, §11's redaction rule).
+ */
+export const ApprovalToken = z.string().min(40).brand('ApprovalToken');
+export type ApprovalToken = z.infer<typeof ApprovalToken>;
 
 /** What a caller must present to the SDK's money-moving method. Nothing else is accepted. */
 export const AgentTransactionRequest = z

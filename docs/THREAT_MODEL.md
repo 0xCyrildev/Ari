@@ -80,7 +80,7 @@ Cross-cutting controls referenced repeatedly:
 - **Impact:** mass targeted attacks against the weakest policy in the fleet rather than one agent.
 - **Mitigation:** **[B]** 256-bit secrets make offline cracking moot at that entropy; **[B]** credentials
   hash-per-request with an org-scoped pepper held outside the DB, so a stolen table is not a usable table;
-  **[T]** injection suite (parameterised queries everywhere, Prisma, no string SQL on any auth path);
+  **[T]** injection suite (parameterised queries everywhere; `tests/unit/sql-hygiene.test.ts` fails the build on any SQL string in `packages/*/src` or `apps/*/src` that interpolates something other than an upper-case module constant, so an identifier cannot be a value and a value must be a placeholder);
   **[B]** stale-credential report: an agent that has not authenticated in N days still holding capability is
   surfaced, not silently retained.
 - **Residual:** a DB-reading attacker can also *write*; T18 covers the case where they try to become an

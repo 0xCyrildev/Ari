@@ -430,7 +430,7 @@ ari/
     audit/            append-only writer, hash chain, typed redaction
     sdk/              @ari/sdk
     cli/              ari …
-  prisma/  docs/  tests/{unit,integration,security}
+  migrations/  docs/  tests/{unit,integration,security}
 ```
 
 Dependency rule, enforced by lint: `policy-engine` and `transaction-engine` import nothing from
@@ -539,3 +539,4 @@ Not-yet, each with the reason, so the absence is visible rather than mistaken fo
 | 7 | `unknown` is a transaction *kind*, not an exception | throw | Failing closed must be the ordinary path, not a handler someone remembers |
 | 8 | Hash-chained audit + DB-level insert-only role | app-level "please don't update" | T18/T20 need detectable tampering, not polite refusal |
 | 9 | `@ika.xyz/sdk` pinned + adapter isolated + real localnet available | write against a hand-imagined API | The SDK is on this machine at a pinned version (§2); guessing when the source is present is not acceptable |
+| 10 | Hand-written SQL migrations under `migrations/`, applied in order; a thin `pg` repository layer | Prisma schema + generate, as the brief's Phase 1 text said | The Phase 1 and Phase 2 gates are about things an ORM cannot express: row-security policies, a `BEFORE INSERT` trigger that refuses a ticket without an `ALLOW` behind it, a role that lacks `UPDATE` on the audit table. Prisma adds a generated second source of truth for a schema those rules live in, and would still need raw SQL for every one of them. Its own value — a typed client — is worth less than the invariant that the database, not the client library, is where the invariants are enforced. Revisit if a migration ever needs to be reversible across environments where the SQL is not the contract. |

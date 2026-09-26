@@ -43,7 +43,7 @@ immune to the unresolved questions in §6.
 Entities: `Organization`, `User`, `Agent`, `AgentCredential`, `Wallet`, `Policy`, `PolicyVersion`,
 `TransactionRequest`, `AuditEvent`.
 
-- Prisma schema + first migration; DB constraints carry the invariants, not app validation alone.
+- Migrations under `migrations/`, applied in order (ADR-10: hand-written SQL, not an ORM schema); DB constraints carry the invariants, not app validation alone.
 - UUIDv7 prefixed identifiers everywhere externally visible (A8). No sequential public ids.
 - Credentials: Argon2id, scopes, expiry, revocation, rotation; **hashed-per-request lookup** with an
   org-scoped pepper (T8); no endpoint ever returns a secret.
