@@ -53,5 +53,9 @@
     "tests/**/*.ts",
     "vitest.config.ts",
     "scripts/**/*.mts"
+  ],
+  "exclude": [
+    "apps/dashboard",
+    "node_modules"
   ]
 }

@@ -1,0 +1,311 @@
+@import 'tailwindcss';
+
+/* ==========================================================================
+   ARI design tokens
+   --------------------------------------------------------------------------
+   Every colour, radius and space value in this application comes from here.
+   A component that hardcodes a hex is a bug, not a style choice.
+
+   The palette is derived from the mark in ./public/ari-logo.svg, which is used
+   exactly as supplied — no redraw, no reinterpretation. That file contains three
+   colours and nothing else:
+
+     #07111A  ink      hue 208°, the pine canopy and stem
+     #020305  ground   near-black, the base stroke
+     #9D9EA2  stone    a warm-neutral grey
+
+   The mark is drawn for a light surface, so on a dark interface it would be
+   invisible. It is therefore rendered through a CSS mask (see .ari-mark in
+   base.css): the geometry stays byte-identical to the supplied SVG and only the
+   paint comes from a token. That is a colour decision, not a redesign.
+
+   The same applies to the accent. The mark has no bright colour to borrow, so the
+   brand accent is the mark's own hue — 208° — lifted to a lightness that survives
+   a near-black background at a contrast ratio that passes AA for text. It is a
+   desaturated steel blue, deliberately not a neon cyan or a violet: those are the
+   two colours that make a product look like an AI startup rather than a payments
+   control plane.
+   ========================================================================== */
+
+@theme {
+  /* ---- Surfaces: near-black, with a shallow ramp ----------------------- */
+  --color-base: #07090c; /* page */
+  --color-sunken: #050709; /* behind the page, modals */
+  --color-surface: #0b0e12; /* panels, sidebar */
+  --color-raised: #101419; /* cards, table headers, inputs */
+  --color-hover: #161b21; /* interactive background */
+  --color-active: #1c222a; /* selected row / pressed */
+
+  /* ---- Lines ----------------------------------------------------------- */
+  --color-hair: #1a1f26; /* default 1px boundary */
+  --color-hair-strong: #262d36; /* emphasis, focus-adjacent */
+  --color-hair-faint: #12161b; /* inner dividers only */
+
+  /* ---- Type ------------------------------------------------------------ */
+  --color-ink: #e9e7e4; /* warm off-white, body */
+  --color-ink-dim: #a4a8ad; /* secondary metadata — the mark's stone, lifted */
+  --color-ink-mute: #6f767e; /* tertiary, timestamps, keys */
+  --color-ink-faint: #4b5158; /* disabled, decorative rules */
+
+  /* ---- Brand (hue 208, the mark's ink) --------------------------------- */
+  --color-brand: #6ea3d4;
+  --color-brand-strong: #92bde4; /* links on hover, emphasis */
+  --color-brand-dim: #3d5f80; /* borders of selected things */
+  --color-brand-wash: #12202e; /* selected background */
+
+  /* ---- Semantics: state, not decoration -------------------------------- */
+  /* Green is the colour of a decision that has already been made, so it is
+     quieter than the amber: authorized states outnumber everything else and a
+     screen full of vivid green reads as a status board, not a control plane. */
+  --color-allow: #46b58a;
+  --color-allow-wash: #0e2119;
+  --color-allow-line: #1e4536;
+
+  --color-caution: #d09a3e; /* approval required, elevated risk */
+  --color-caution-wash: #241a09;
+  --color-caution-line: #4d3a15;
+
+  --color-deny: #d2605e; /* refused, anomalous, dangerous */
+  --color-deny-wash: #251213;
+  --color-deny-line: #4d2424;
+
+  --color-neutral: #7d848c; /* informational, revoked, expired */
+  --color-neutral-wash: #14181d;
+  --color-neutral-line: #262d36;
+
+  /* ---- Shape ----------------------------------------------------------- */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
+  --radius-lg: 10px;
+  /* Nothing in this product is a pill or a 24px card. Radius stops at `lg`. */
+
+  /* ---- Type scale ------------------------------------------------------ */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'Noto Sans', 'Liberation Sans', sans-serif;
+  --font-mono:
+    ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace;
+  --text-2xs: 0.625rem; /* 10px — technical labels, uppercase */
+  --tracking-2xs: 0.08em;
+  --text-xs: 0.6875rem; /* 11px */
+  --text-sm: 0.75rem; /* 12px — dense tables */
+  --text-doc: 0.8125rem; /* 13px — the default body size in a dense app */
+  --text-base: 0.875rem; /* 14px */
+  --text-lg: 1rem;
+  --text-xl: 1.125rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 2rem;
+  --text-hero: clamp(2.25rem, 1.4rem + 3.6vw, 3.75rem);
+
+  /* ---- Motion ---------------------------------------------------------- */
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur-fast: 110ms;
+  --dur: 180ms;
+  --dur-slow: 260ms;
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+
+@layer base {
+  * {
+    border-color: var(--color-hair);
+  }
+
+  html {
+    background: var(--color-base);
+    color-scheme: dark;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-base);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-doc);
+    line-height: 1.5;
+    font-feature-settings: 'cv05' 1;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Numbers must be comparable at a glance in a ledger. Every amount, count,
+     percentage and identifier in this app carries .num. */
+  .num {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+
+  code,
+  pre,
+  .mono {
+    font-family: var(--font-mono);
+    font-variant-ligatures: none;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-weight: 550;
+    letter-spacing: -0.011em;
+    color: var(--color-ink);
+  }
+
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 1px;
+    border-radius: var(--radius-xs);
+  }
+
+  ::selection {
+    background: var(--color-brand-wash);
+    color: var(--color-brand-strong);
+  }
+
+  /* Scrollbars are part of a dense interface; the default overlay ones hide
+     structure that a reviewer needs to see. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-hair-strong);
+    border: 3px solid var(--color-base);
+    border-radius: 8px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #384252;
+  }
+}
+
+/* ==========================================================================
+   The mark
+   ========================================================================== */
+
+@layer components {
+  /* Geometry from the supplied SVG, paint from a token. `mask-size: contain`
+     keeps the aspect ratio exactly as authored. */
+  .ari-mark {
+    display: block;
+    background: currentColor;
+    -webkit-mask-image: url('/ari-logo.svg');
+    mask-image: url('/ari-logo.svg');
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
+    -webkit-mask-size: contain;
+    mask-size: contain;
+  }
+
+  /* Uppercase technical label. Used for column heads, stage names and field
+     keys — never for body copy. */
+  .eyebrow {
+    font-size: var(--text-2xs);
+    letter-spacing: var(--tracking-2xs);
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--color-ink-mute);
+  }
+
+  .hair-x {
+    border-inline: 1px solid var(--color-hair);
+  }
+
+  /* A hairline rule that fades rather than ending — used under page titles. */
+  .rule-fade {
+    height: 1px;
+    background: linear-gradient(90deg, var(--color-hair-strong), transparent 70%);
+  }
+}
+
+/* ==========================================================================
+   Motion
+   --------------------------------------------------------------------------
+   Animation is for state changes that carry meaning: a pipeline stage
+   advancing, a drawer arriving, a status changing. Nothing floats, nothing
+   loops, and with `prefers-reduced-motion` the interface must lose information
+   in no way at all — so every animation here is decoration on top of a state
+   that is already visible.
+   ========================================================================== */
+
+@keyframes ari-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes ari-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ari-trace {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes ari-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.anim-rise {
+  animation: ari-rise var(--dur-slow) var(--ease-out) both;
+}
+.anim-fade {
+  animation: ari-fade var(--dur) var(--ease-out) both;
+}
+.anim-trace {
+  transform-origin: top;
+  animation: ari-trace var(--dur-slow) var(--ease-out) both;
+}
+.anim-live {
+  animation: ari-pulse 2.4s var(--ease-out) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

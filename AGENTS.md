@@ -25,7 +25,8 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | agent SDK | partial | `packages/client`: the outbound half of the decimal-string rule, three methods (evaluate, authorize, status), 19 tests, and 2 contract tests that run the client's transport against the real routes. The `agents.*`/`policies.*` half of `ROADMAP`'s Phase 9 is **not** in it, and is not planned to be: those became operator HTTP routes driven by `ari`, because an agent that could create an agent or activate a policy would be a second decision plane with a bearer secret |
 | 7 simulation | done | `packages/simulation`: `eth_call` against a real anvil, advisory by A10, and the digest binding asserted from both sides — see "Ran against a chain" below |
 | 9 CLI | done | `apps/cli`: the operator's and the approver's tool, 16 commands, `policy validate` against a 23-case corpus, and its own socket-level suite |
-| 4, 8, 10–11 | not started | intent, Ika (blocked on §6), dashboard, security review |
+| 4, 8, 11 | not started | intent, Ika (blocked on §6), security review |
+| 10 dashboard | started | `apps/dashboard`: React 19 + Vite 8 + Tailwind 4, 23 source files, landing page and ten control-center screens. The vocabulary is the engine's own — every status, reason code, signal and event type is copied from a named package — and the data is one labelled sample tenant. No route is wired to `ari-api` yet. |
 
 `pnpm test` is **536 tests / 30 files**, in two halves that add up to it: `pnpm test:unit` is the
 **305** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **231** that
@@ -464,6 +465,29 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   signing delivery is its own transaction. `resolveGrant` therefore also returns `address` (the row it
   already joins), and the pre-read costs one statement on the simulated path only. The digest binding is what
   makes the second, authoritative read's answer the one that counts.
+
+- **The dashboard's vocabulary is imported from the engine, and its data is labelled as a fixture.**
+  `apps/dashboard/src/domain/types.ts` names the file each union came from (`ReasonCode`, `RiskSignal`,
+  `LifecycleState`, the audit event types, `PolicyDocument`), because a screen that displays a status the
+  engine cannot produce teaches its users a false model of their own controls. The sample tenant is
+  announced by a banner on every page and by a sidebar that reads *API not connected*, and the actions
+  that would need a deployment — approve, revoke, activate, create an agent — refuse and say so rather
+  than mutating local state and showing a success. A demo that pretends a button worked is not a demo, it
+  is a false test of the contract. `src/api/client.ts` is the seam: one `AriApi` interface, each method
+  naming the real route it maps to, two marked `no route yet`.
+- **`apps/dashboard` is outside the pnpm workspace on purpose, and the reason is this machine.** This box
+  cannot reach the npm registry from Node (raw TCP connects, `curl` returns 200, `fetch` and pnpm's
+  resolver time out), so leaving the app in `packages/*`/`apps/*` would make a root `pnpm install` try to
+  resolve React from the network and fail — breaking the first command every other gate here starts from.
+  It is excluded in `pnpm-workspace.yaml` with that reason written out, its `node_modules` is materialised
+  from the local store, and two consequences follow: no `@vitejs/plugin-react` (Vite 8's own pipeline
+  handles `.tsx`; Fast Refresh is gone), and no icon package or web font (icons are hand-drawn on a 16px
+  grid, type is the system stack with tabular numerals).
+- **The mark is used as supplied, and painted through a mask.** `docs/assets/ari-logo.svg` is copied, not
+  redrawn; because it is ink drawn for a light surface, the dark interface renders it with
+  `mask-image` + a token colour so the geometry is byte-identical and only the paint is ours. The brand
+  accent is the mark's own hue (208°) lifted to pass AA on near-black — not a new colour system, and not
+  the violet every AI-adjacent product reaches for.
 
 ## Ran for real (2026-09-26)
 `pnpm --filter @ari/api start` and `pnpm --filter @ari/signer start`, both against Postgres on 5435, seeded

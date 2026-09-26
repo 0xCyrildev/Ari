@@ -1,6 +1,13 @@
 packages:
   - 'packages/*'
   - 'apps/*'
+  # The dashboard is excluded on purpose, and it is a constraint of this machine rather than
+  # an architectural preference: `apps/dashboard` is a Vite/React app whose dependencies are
+  # materialised from the local pnpm store, and this box cannot reach the registry from Node.
+  # Left in the workspace, a root `pnpm install` would try to resolve react/@types/* against
+  # registry.npmjs.org and fail the install of the whole repository — breaking the one command
+  # every other gate in this repo starts from. Its own `node_modules` lives inside it.
+  - '!apps/dashboard'
 
 # No dependency is permitted to run code at install time. A package that needs a
 # build step gets named here deliberately, with the reason, rather than approved by

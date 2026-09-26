@@ -19,7 +19,9 @@
     "clean": "rm -rf packages/*/dist node_modules/.vite",
     "test:coverage": "vitest run --coverage.enabled --coverage.include='packages/*/src/**' --coverage.reporters=text",
     "seed": "node --import tsx --env-file-if-exists=.env scripts/seed-tenant.mts",
-    "ari": "node --import tsx --env-file-if-exists=.env apps/cli/src/main.ts"
+    "ari": "node --import tsx --env-file-if-exists=.env apps/cli/src/main.ts",
+    "typecheck:ui": "pnpm --dir apps/dashboard typecheck",
+    "ui:dev": "pnpm --dir apps/dashboard dev"
   },
   "devDependencies": {
     "@ari/api": "workspace:*",

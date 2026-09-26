@@ -108,6 +108,16 @@ pnpm --filter @ari/api start        # ari-api  → 127.0.0.1:4000
 pnpm --filter @ari/signer start     # ari-signer → 127.0.0.1:4100
 ```
 
+```bash
+cd apps/dashboard && pnpm dev        # the control center → 127.0.0.1:5173
+```
+
+`apps/dashboard` is the operator's, approver's and auditor's screen — and it is deliberately outside
+the pnpm workspace, because this box cannot reach the npm registry from Node and a root install that
+tried to resolve React would break the command above. Its README says what is real (the vocabulary,
+every status and reason code, copied from the packages that produce them) and what is not (the data:
+one sample tenant, labelled as such on every screen).
+
 `pnpm seed` is the one-command version of what `pnpm ari` now does route by route: an
 empty database to the two credentials a working tenant needs — one an agent can ask for
 money with, one a human can say yes with — through the same packages, as the same
