@@ -28,6 +28,12 @@ const ID_PREFIXES = [
   'usr',
   'agt',
   'crd',
+  // A human's credential, and its own prefix because the prefix is how the two gates
+  // tell them apart before hashing anything: `013` separates the subject that proposes a
+  // payment from the subject that approves it, and a bearer string that could be
+  // presented at either one would make that a property of the route table instead of a
+  // property of the secret.
+  'ucrd',
   'wal',
   'pol',
   'ppv',

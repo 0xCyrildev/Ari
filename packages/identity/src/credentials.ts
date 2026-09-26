@@ -80,11 +80,11 @@ function salted(master: string, orgId: string, secret: string): string {
   return `${pepperFor(master, orgId)}:${secret}`;
 }
 
-export function parsePresented(value: string): PresentedCredential | null {
+export function parsePresented(value: string, keyPrefix = 'crd_'): PresentedCredential | null {
   const parts = value.split('.');
   if (parts.length !== 3) return null;
   const [orgId, keyId, secret] = parts as [string, string, string];
-  if (!orgId.startsWith('org_') || !keyId.startsWith('crd_') || secret.length < 20) return null;
+  if (!orgId.startsWith('org_') || !keyId.startsWith(keyPrefix) || secret.length < 20) return null;
   return { orgId, keyId, secret };
 }
 
@@ -315,4 +315,191 @@ export async function rotateCredential(
     throw new Error(`credential ${input.supersedeId} could not be superseded`);
   }
   return minted;
+}
+
+/**
+ * The human half: an approver's credential.
+ *
+ * Same three separations as the agent half — identity from secret, pepper from the
+ * database, a tenant named in the presentation that authorises nothing — and one
+ * addition that only exists because there are now two kinds of subject: the key id
+ * carries the kind. `ucrd_` will not parse as an agent credential and `crd_` will not
+ * parse as a user one, so a human secret presented at the agent gate and an agent secret
+ * presented at the approver gate both fail the same way a wrong secret does, without
+ * either endpoint having to know which kind it was hoping for.
+ *
+ * What it is *for* is the boundary the product is made of: the subject that proposes a
+ * payment and the subject that approves it are different, and `013` puts that in a CHECK
+ * rather than in this file's good intentions. The refusal below is the same rule stated
+ * where it can produce a sentence a caller can read.
+ */
+export type UserCredentialFailure =
+  | 'USER_NOT_FOUND'
+  | 'CREDENTIAL_EXPIRED'
+  | 'CREDENTIAL_REVOKED'
+  | 'USER_SUSPENDED'
+  | 'ORGANIZATION_MISMATCH';
+
+export type UserCredentialResult =
+  | {
+      readonly ok: true;
+      readonly orgId: string;
+      readonly userId: string;
+      readonly credentialId: string;
+      readonly scopes: readonly Scope[];
+    }
+  | { readonly ok: false; readonly reason: UserCredentialFailure };
+
+interface UserCredentialRow {
+  readonly id: string;
+  readonly org_id: string;
+  readonly user_id: string;
+  readonly secret_hash: string;
+  readonly scopes: string[];
+  readonly expires_at: Date;
+  readonly revoked_at: Date | null;
+  readonly user_status: string;
+}
+
+export async function issueUserCredential(
+  tx: TenantTx,
+  input: {
+    readonly userId: string;
+    readonly scopes: readonly Scope[];
+    readonly ttlMs: bigint;
+    readonly masterPepper: string;
+    readonly actor: string;
+    readonly rotationOf?: string;
+  },
+): Promise<IssuedCredential> {
+  if (input.scopes.length === 0) {
+    throw new RangeError('a credential with no scopes is not a credential, it is a typo');
+  }
+  if (input.scopes.includes('transaction:request')) {
+    throw new RangeError('a human credential cannot carry transaction:request — the subject that proposes is not the subject that approves');
+  }
+  if (input.ttlMs <= 0n) {
+    throw new RangeError('credentials expire; pass a positive ttl');
+  }
+  const keyId = newId('ucrd');
+  const secret = randomBytes(32).toString('base64url');
+  const secretHash = await hash(salted(input.masterPepper, tx.orgId, secret));
+  const expiresAt = new Date(Number(tx.startedAtMs) + Number(input.ttlMs)).toISOString();
+
+  await tx.client.query(
+    `INSERT INTO ari.user_credentials
+       (id, org_id, user_id, key_id, secret_hash, scopes, expires_at, rotation_of)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [keyId, tx.orgId, input.userId, keyId, secretHash, [...input.scopes], expiresAt, input.rotationOf ?? null],
+  );
+
+  await appendEvent(tx, {
+    orgId: tx.orgId,
+    actor: input.actor,
+    actorType: 'human',
+    eventType: input.rotationOf === undefined ? 'credential.issued' : 'credential.rotated',
+    resource: 'credential',
+    resourceId: keyId,
+    severity: 'notice',
+    metadata: {
+      credentialId: keyId,
+      ...(input.rotationOf === undefined ? {} : { keyId: input.rotationOf }),
+    },
+  });
+
+  return { credentialId: keyId, presented: `${tx.orgId}.${keyId}.${secret}`, scopes: input.scopes, expiresAt };
+}
+
+/**
+ * Verify a presented user credential.
+ *
+ * Identical in shape to `verifyCredential`, including the part that looks
+ * redundant: the pepper for a *claimed* organisation is hashed even when no row
+ * matched, so a miss does not answer faster than a hit, and every failure at this
+ * boundary is one code and one shape for the same reason (T8).
+ */
+export async function verifyUserCredential(
+  pool: Connector,
+  presented: string,
+  masterPepper: string,
+  nowMs: () => bigint,
+): Promise<UserCredentialResult> {
+  const parsed = parsePresented(presented, 'ucrd_');
+  if (parsed === null) return { ok: false, reason: 'USER_NOT_FOUND' };
+
+  const client = await pool.connect();
+  let row: UserCredentialRow | undefined;
+  try {
+    const found = await client.query<UserCredentialRow>(
+      `SELECT id, org_id, user_id, secret_hash, scopes, expires_at, revoked_at, user_status
+         FROM ari.user_credential_lookup
+        WHERE key_id = $1`,
+      [parsed.keyId],
+    );
+    row = found.rows[0];
+  } finally {
+    client.release();
+  }
+
+  if (row === undefined || row.org_id !== parsed.orgId) {
+    await hash(salted(masterPepper, parsed.orgId, parsed.secret));
+    return { ok: false, reason: 'USER_NOT_FOUND' };
+  }
+
+  const secretMatches = await verify(row.secret_hash, salted(masterPepper, row.org_id, parsed.secret)).catch(() => false);
+  if (!secretMatches) return { ok: false, reason: 'USER_NOT_FOUND' };
+
+  // `users.status` had no reader at all before this line: `004` gave it a CHECK on its
+  // values and nothing ever consulted them, so suspending a person was a database write
+  // with no security consequence and an operator who believed they had stopped someone.
+  if (row.user_status === 'SUSPENDED') return { ok: false, reason: 'USER_SUSPENDED' };
+  if (row.revoked_at !== null && row.revoked_at.getTime() <= Number(nowMs())) {
+    return { ok: false, reason: 'CREDENTIAL_REVOKED' };
+  }
+  if (row.expires_at.getTime() <= Number(nowMs())) return { ok: false, reason: 'CREDENTIAL_EXPIRED' };
+
+  return {
+    ok: true,
+    orgId: row.org_id,
+    userId: row.user_id,
+    credentialId: row.id,
+    scopes: row.scopes as Scope[],
+  };
+}
+
+export async function revokeUserCredential(
+  pool: Connector,
+  orgId: string,
+  credentialId: string,
+): Promise<{ readonly revoked: boolean; readonly remainingActive: number }> {
+  return asTenant(pool, orgId, async (tx) => {
+    const updated = await tx.client.query(
+      `UPDATE ari.user_credentials SET revoked_at = now()
+        WHERE id = $1 AND revoked_at IS NULL
+        RETURNING id, user_id`,
+      [credentialId],
+    );
+    const target = updated.rows[0] as { id: string; user_id: string } | undefined;
+    if (target !== undefined) {
+      await appendEvent(tx, {
+        orgId,
+        actor: 'system',
+        actorType: 'system',
+        eventType: 'credential.revoked',
+        resource: 'credential',
+        resourceId: credentialId,
+        severity: 'warning',
+        metadata: { credentialId },
+      });
+    }
+    const remaining = await tx.client.query<{ count: string }>(
+      `SELECT count(*) AS count FROM ari.user_credentials
+        WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()`,
+      [target?.user_id ?? credentialId],
+    );
+    return {
+      revoked: target !== undefined,
+      remainingActive: Number(remaining.rows[0]?.count ?? '0'),
+    };
+  });
 }

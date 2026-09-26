@@ -25,6 +25,7 @@
 import { appendEvent } from '@ari/audit';
 import { asTenant, type Connector, type TenantTx } from '@ari/identity';
 import { newId, type CanonicalDigest, type ReasonCode } from '@ari/schemas';
+import { randomBytes } from 'node:crypto';
 import { ApprovalKey, openApproval, sealApproval, type ApprovalClaims } from './token.js';
 
 export type ApprovalSubject = 'transaction' | 'policy_activation';
@@ -378,3 +379,226 @@ export async function spendApproval(
 }
 
 export { ApprovalKey, openApproval, sealApproval, type ApprovalClaims } from './token.js';
+
+/**
+ * Seal the token for an approval that has reached quorum, from the row.
+ *
+ * The pipeline hands back `requestApproval`'s token to nobody — the escalation response
+ * goes to the agent, and the agent is the subject being restricted — so a granted
+ * approval had no way to become spendable by anything but the operator's own process.
+ * This is the other half: called from the approver's request, *after* the vote that
+ * reached quorum, and the token goes to the human whose decision it records.
+ *
+ * Sealed from the row rather than from the caller, for the reason that governs every
+ * digest in this system: the fields a token binds are the fields that make it a
+ * capability, and a caller that could state them could present any approval it liked as
+ * one it held. `requestApproval`'s own return value stays exactly as it was — this is
+ * not a second way to mint an approval, it is the one way to collect a decision that was
+ * already made.
+ *
+ * Returns null when the row is not `GRANTED`, so a race between two approvers reaching
+ * quorum at the same instant cannot produce a token for the loser of it: the row's
+ * status is read under the same lock `recordDecision` took to count the vote.
+ */
+export async function sealGrantedApproval(
+  tx: TenantTx,
+  approvalId: string,
+  key: ApprovalKey,
+): Promise<string | null> {
+  const row = await tx.client.query<{
+    subject_kind: ApprovalSubject;
+    subject_id: string;
+    digest: string;
+    policy_version_id: string;
+    agent_id: string;
+    wallet_id: string;
+    amount_raw: string | null;
+    currency_unit: string;
+    expires_at: Date;
+    status: ApprovalStatus;
+  }>(
+    `SELECT subject_kind, subject_id, digest, policy_version_id, agent_id, wallet_id,
+            amount_raw, currency_unit, expires_at, status
+       FROM ari.approval_requests
+      WHERE id = $1 AND org_id = $2
+      FOR UPDATE`,
+    [approvalId, tx.orgId],
+  );
+  const granted = row.rows[0];
+  if (granted === undefined || granted.status !== 'GRANTED') return null;
+
+  // `randomBytes` rather than a counter: the nonce exists so that two seals of one
+  // set of claims are different strings, and a predictable one would make the token a
+  // sequence number an attacker could guess into an unrelated approval.
+  const claims: ApprovalClaims = {
+    approvalId,
+    requestId: granted.subject_id,
+    digest: granted.digest as CanonicalDigest,
+    policyVersionId: granted.policy_version_id,
+    agentId: granted.agent_id,
+    walletId: granted.wallet_id,
+    // The same rule as the row: `null` is "no amount is involved", which the token cannot
+    // carry, so it binds zero — and the digest is what a presentation is actually checked
+    // against, not this field.
+    amountRaw: granted.amount_raw === null ? 0n : BigInt(granted.amount_raw),
+    currencyUnit: granted.currency_unit,
+    expiresAtMs: BigInt(granted.expires_at.getTime()),
+    nonce: randomBytes(12).toString('base64url'),
+  };
+  return sealApproval(claims, key);
+}
+
+/**
+ * What one approver has outstanding.
+ *
+ * The filter is the authority, expressed once: a pending request whose window is still
+ * open, whose `allowed_roles` name this person's role, and — for the one subject kind
+ * where it bites — not a change this person proposed. That last clause is T19 in a
+ * `SELECT`, and it belongs here rather than only in `recordDecision` because showing an
+ * approver a request they are forbidden to approve invites them to try, and a queue that
+ * contains work nobody can do is not a queue.
+ *
+ * `allowed_roles` is matched against the role the *membership* holds today, not against
+ * what a credential claimed at issue time: authority is read from the row that is
+ * authoritative when the question is asked.
+ */
+export interface ApprovalSummary {
+  readonly approvalId: string;
+  readonly subjectKind: ApprovalSubject;
+  readonly subjectId: string;
+  readonly digest: string;
+  readonly amountRaw: string | null;
+  readonly currencyUnit: string;
+  readonly agentId: string;
+  readonly walletId: string;
+  readonly policyVersionId: string;
+  readonly quorumNeeded: number;
+  readonly approved: number;
+  readonly expiresAt: string;
+  readonly requestedBy: string;
+}
+
+export async function listApprovals(
+  tx: TenantTx,
+  input: { readonly userId: string; readonly limit?: number },
+): Promise<readonly ApprovalSummary[]> {
+  const role = await roleOf(tx, input.userId);
+  if (role === null) return [];
+  const rows = await tx.client.query<{
+    id: string;
+    subject_kind: ApprovalSubject;
+    subject_id: string;
+    digest: string;
+    amount_raw: string | null;
+    currency_unit: string;
+    agent_id: string;
+    wallet_id: string;
+    policy_version_id: string;
+    quorum_needed: number;
+    approved: number;
+    expires_at: Date;
+    requested_by: string;
+  }>(
+    `SELECT r.id, r.subject_kind, r.subject_id, r.digest, r.amount_raw, r.currency_unit,
+            r.agent_id, r.wallet_id, r.policy_version_id, r.quorum_needed, r.expires_at,
+            r.requested_by,
+            (SELECT count(*)::int FROM ari.approvals a
+              WHERE a.approval_request_id = r.id AND a.decision = 'APPROVED') AS approved
+       FROM ari.approval_requests r
+      WHERE r.org_id = $1
+        AND r.status = 'PENDING'
+        AND r.expires_at > now()
+        AND $2 = ANY (r.allowed_roles)
+        AND NOT (r.subject_kind = 'policy_activation' AND r.requested_by = $3)
+      ORDER BY r.expires_at, r.created_at
+      LIMIT $4`,
+    [tx.orgId, role, input.userId, input.limit ?? 50],
+  );
+  return rows.rows.map((row) => ({
+    approvalId: row.id,
+    subjectKind: row.subject_kind,
+    subjectId: row.subject_id,
+    digest: row.digest,
+    amountRaw: row.amount_raw,
+    currencyUnit: row.currency_unit,
+    agentId: row.agent_id,
+    walletId: row.wallet_id,
+    policyVersionId: row.policy_version_id,
+    quorumNeeded: row.quorum_needed,
+    approved: row.approved,
+    expiresAt: row.expires_at.toISOString(),
+    requestedBy: row.requested_by,
+  }));
+}
+
+/**
+ * One approval, with its votes.
+ *
+ * The votes are returned because an approver deciding without seeing who else decided is
+ * guessing at quorum, and because the roster is the artifact a support thread needs:
+ * "who said yes to this" is answerable from the API, not from a database session.
+ */
+export interface ApprovalDetail extends ApprovalSummary {
+  readonly status: ApprovalStatus;
+  readonly votes: readonly { readonly approver: string; readonly role: string; readonly decision: string; readonly at: string }[];
+}
+
+export async function approvalDetail(tx: TenantTx, approvalId: string): Promise<ApprovalDetail | null> {
+  const head = await tx.client.query<{
+    id: string;
+    subject_kind: ApprovalSubject;
+    subject_id: string;
+    digest: string;
+    amount_raw: string | null;
+    currency_unit: string;
+    agent_id: string;
+    wallet_id: string;
+    policy_version_id: string;
+    quorum_needed: number;
+    expires_at: Date;
+    requested_by: string;
+    status: ApprovalStatus;
+  }>(
+    `SELECT id, subject_kind, subject_id, digest, amount_raw, currency_unit, agent_id, wallet_id,
+            policy_version_id, quorum_needed, expires_at, requested_by, status
+       FROM ari.approval_requests
+      WHERE id = $1 AND org_id = $2`,
+    [approvalId, tx.orgId],
+  );
+  const row = head.rows[0];
+  if (row === undefined) return null;
+
+  const votes = await tx.client.query<{
+    approver_user_id: string;
+    role: string;
+    decision: string;
+    decided_at: Date;
+  }>(
+    `SELECT approver_user_id, role, decision, decided_at FROM ari.approvals
+      WHERE approval_request_id = $1 AND org_id = $2 ORDER BY decided_at`,
+    [approvalId, tx.orgId],
+  );
+
+  return {
+    approvalId: row.id,
+    subjectKind: row.subject_kind,
+    subjectId: row.subject_id,
+    digest: row.digest,
+    amountRaw: row.amount_raw,
+    currencyUnit: row.currency_unit,
+    agentId: row.agent_id,
+    walletId: row.wallet_id,
+    policyVersionId: row.policy_version_id,
+    quorumNeeded: row.quorum_needed,
+    approved: votes.rows.filter((v) => v.decision === 'APPROVED').length,
+    expiresAt: row.expires_at.toISOString(),
+    requestedBy: row.requested_by,
+    status: row.status,
+    votes: votes.rows.map((v) => ({
+      approver: v.approver_user_id,
+      role: v.role,
+      decision: v.decision,
+      at: v.decided_at.toISOString(),
+    })),
+  };
+}

@@ -1,12 +1,13 @@
 /**
  * Seed a working tenant, from nothing.
  *
- * This exists because Ari has no human-facing API yet: there is no route that creates an
- * agent, no route that issues its credential, no route that activates a policy — all of
- * them need a user session, and Ari does not have one. Until that decision is made on
- * purpose rather than by accretion, an operator (or a developer, or the next session)
- * needs *some* way to get from an empty database to a bearer token that can ask for
- * money. This is that way, and it is the thing the Phase 9 CLI replaces.
+ * This exists because Ari has an operator token but no operator *surface*: the routes
+ * that create an agent, activate a policy or mint a credential for one do not exist
+ * outside `POST /v1/users` and `POST /v1/users/:id/credentials`, and those take the
+ * deployment's bootstrap token rather than a person's session. So an operator — or a
+ * developer, or the next session — still needs a way to get from an empty database to a
+ * bearer token that can ask for money *and one that can say yes*. This is that way, and
+ * it is the thing the Phase 9 CLI replaces.
  *
  * It runs as the application role through the same packages the decision plane uses, so
  * what it writes is what the service writes: the same grants, the same audit events, the
@@ -22,6 +23,7 @@ import {
   createWallet,
   grantWalletToAgent,
   issueCredential,
+  issueUserCredential,
   type Connector,
   type Scope,
 } from '@ari/identity';
@@ -127,7 +129,20 @@ const seeded = await asTenant(app, orgId, async (tx) => {
     actor: owner,
   });
 
-  return { agentId, walletId, policyVersionId: policy.versionId, credential };
+  // The approver's half. Without it, a policy that escalates above `escalate-above`
+  // produces an `APPROVAL_PENDING` that nobody outside this process can answer, which is
+  // the difference between a control and a pause. Same pepper, same Argon2id, a different
+  // table — and `013`'s CHECK means this credential cannot also propose a payment, so
+  // the two bearers printed below are genuinely two different subjects.
+  const approver = await issueUserCredential(tx, {
+    userId: owner,
+    scopes: ['approval:decide'],
+    ttlMs: BigInt(flag('ttl-hours', '24')) * 3_600_000n,
+    masterPepper: pepper,
+    actor: owner,
+  });
+
+  return { agentId, walletId, policyVersionId: policy.versionId, credential, approver };
 });
 
 console.log(
@@ -146,6 +161,9 @@ console.log(
       // which is why the script prints it and then has nothing to print.
       bearerCredential: seeded.credential.presented,
       credentialId: seeded.credential.credentialId,
+      approverCredential: seeded.approver.presented,
+      approverCredentialId: seeded.approver.credentialId,
+      approverUserId: owner,
     },
     null,
     2,

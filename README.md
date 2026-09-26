@@ -98,16 +98,44 @@ pnpm test:coverage
 
 ```bash
 cp .env.example .env  # then fill in the secrets it names
-pnpm seed             # org + owner + agent + wallet + policy, and one bearer credential
+pnpm seed             # org + owner + agent + wallet + policy, and two bearer credentials
 pnpm --filter @ari/api start        # ari-api  → 127.0.0.1:4000
 pnpm --filter @ari/signer start     # ari-signer → 127.0.0.1:4100
 ```
 
-`pnpm seed` exists because Ari has no human-facing API yet: it is the operator's route
-from an empty database to a credential an agent can use, and it goes through the same
-packages, as the same unprivileged role, as the service itself. It prints the secret once.
-It is hashed with Argon2id under a pepper that does not live in the database, so nothing
-— including Ari — can read it back afterwards.
+`pnpm seed` exists because Ari has an operator token but no operator surface yet: it is
+the route from an empty database to the two credentials a working tenant needs — one an
+agent can ask for money with, one a human can say yes with — and it goes through the same
+packages, as the same unprivileged role, as the service itself. Each prints its secret
+once. Both are hashed with Argon2id under a pepper that does not live in the database, so
+nothing — including Ari — can read them back afterwards.
+
+The two are different kinds of secret on purpose. `013` puts the separation in a CHECK: a
+human credential cannot carry `transaction:request` and an agent credential cannot carry
+`approval:decide`, so the subject that proposes a payment and the subject that approves it
+are distinct in the row rather than in a route handler's good intentions. The live loop,
+with both processes up:
+
+```bash
+# a $2,000 ask against a policy that escalates above $1,000
+curl -X POST localhost:4000/v1/transactions/authorize -H "authorization: Bearer $AGENT" \
+     -d '{"candidate":{…},"idempotencyKey":"live-2000"}'
+# → {"state":"APPROVAL_PENDING","requestId":"txr_…","approvalId":"apr_…}
+
+curl localhost:4000/v1/approvals -H "authorization: Bearer $APPROVER"
+# → apr_…  2000000000 usdc-6dp  votes 0/1  digest canon/v1:7ff418…
+
+curl -X POST localhost:4000/v1/approvals/apr_…/decisions -H "authorization: Bearer $APPROVER" \
+     -d '{"decision":"APPROVED"}'
+# → {"state":"GRANTED","votes":1,"approvalToken":"eyJ…"}     the seal goes to the human
+
+# the same ask, once more, carrying that seal
+# → {"state":"COMPLETE","requestId":"txr_…"}   same request id; nothing was re-decided
+```
+
+The agent's own credential gets `401` at the approver gate, and the token appears in no
+response the agent can read: it authorises a signature, so it arrives from the person who
+decided or not at all.
 
 `ari-api` opens its database pool as the `ari_app` role (`DATABASE_ROLE`, which
 defaults to it) and refuses to start if the connection does not come up as that

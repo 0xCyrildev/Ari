@@ -759,3 +759,347 @@ async function approvalToken(approvalId: string): Promise<string> {
     API.approvalKey,
   );
 }
+
+/**
+ * An approver, created the way an operator would create one today: the bootstrap token,
+ * then a user, then that user's credential — all over HTTP.
+ *
+ * Deliberately not a fixture that writes rows directly. The point of these routes is
+ * that a person outside the process can be given authority, so the test has to be
+ * incapable of passing if that path is broken.
+ */
+async function approver(
+  t: Tenant,
+  input: { readonly role: 'owner' | 'admin' | 'approver' | 'viewer'; readonly scopes: readonly string[] },
+): Promise<{ readonly userId: string; readonly bearer: string }> {
+  const email = `${input.role}-${newId('req').slice(4, 12)}@x.test`;
+  const made = await api.app.inject({
+    method: 'POST',
+    url: '/v1/users',
+    headers: bearer('bootstrap-token-for-tests'),
+    payload: { organizationId: t.orgId, email, displayName: 'A Approver', role: input.role },
+  });
+  if (made.statusCode !== 201) throw new Error(`user creation refused: ${made.statusCode} ${made.body}`);
+  const userId = (made.json() as { userId: string }).userId;
+
+  const credential = await api.app.inject({
+    method: 'POST',
+    url: `/v1/users/${userId}/credentials`,
+    headers: bearer('bootstrap-token-for-tests'),
+    payload: { organizationId: t.orgId, scopes: [...input.scopes], ttlMs: '3600000' },
+  });
+  if (credential.statusCode !== 201) {
+    throw new Error(`credential issuance refused: ${credential.statusCode} ${credential.body}`);
+  }
+  return { userId, bearer: (credential.json() as { bearer: string }).bearer };
+}
+
+const DECIDE = ['approval:decide'];
+
+describe('the approver’s surface', () => {
+  it('will not mint an approver credential that could also propose a payment', async () => {
+    const t = await tenant();
+    const proposed = await api.app.inject({
+      method: 'POST',
+      url: '/v1/users',
+      headers: bearer('bootstrap-token-for-tests'),
+      payload: { organizationId: t.orgId, email: 'both@x.test', displayName: 'Both', role: 'admin' },
+    });
+    const userId = (proposed.json() as { userId: string }).userId;
+    const refused = await api.app.inject({
+      method: 'POST',
+      url: `/v1/users/${userId}/credentials`,
+      headers: bearer('bootstrap-token-for-tests'),
+      payload: { organizationId: t.orgId, scopes: ['transaction:request', 'approval:decide'], ttlMs: '3600000' },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect((refused.json() as { detail: string }).detail).toMatch(/transaction:request/);
+  });
+
+  it('refuses the operator routes without the bootstrap token', async () => {
+    const t = await tenant();
+    const closed = await api.app.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: { organizationId: t.orgId, email: 'no@x.test', displayName: 'No', role: 'approver' },
+    });
+    expect(closed.statusCode).toBe(403);
+    expect(closed.json()).toEqual({ code: 'BOOTSTRAP_REQUIRED' });
+  });
+
+  it('will not let an agent decide, because the secret is not that kind of secret', async () => {
+    const t = await tenant();
+    const held = candidate(t.walletId, t.agentId, RECIPIENT, usd(2_000n));
+    const pending = (await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: held, idempotencyKey: 'agent-tries' },
+    })).json() as { approvalId: string };
+
+    const selfApproved = await api.app.inject({
+      method: 'POST',
+      url: `/v1/approvals/${pending.approvalId}/decisions`,
+      headers: bearer(t.presented),
+      payload: { decision: 'APPROVED' },
+    });
+    // 401, not 403: a `crd_` secret does not parse at the approver gate, which is the
+    // same answer a wrong secret gives. The agent learns nothing about whether an
+    // approval of its own exists that it could not otherwise have found.
+    expect(selfApproved.statusCode).toBe(401);
+    expect(selfApproved.json()).toEqual({ code: 'UNAUTHENTICATED', detail: 'the credential was not accepted' });
+  });
+
+  it('refuses a credential that has the scope in name only, and reads it from the row', async () => {
+    const t = await tenant();
+    const read = await approver(t, { role: 'approver', scopes: ['transaction:read'] });
+    const held = candidate(t.walletId, t.agentId, RECIPIENT, usd(2_000n));
+    const pending = (await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: held, idempotencyKey: 'wrong-scope' },
+    })).json() as { approvalId: string };
+
+    const refused = await api.app.inject({
+      method: 'POST',
+      url: `/v1/approvals/${pending.approvalId}/decisions`,
+      headers: bearer(read.bearer),
+      payload: { decision: 'APPROVED' },
+    });
+    expect(refused.statusCode).toBe(403);
+    expect((refused.json() as { code: string }).code).toBe('SCOPE_REFUSED');
+  });
+
+  it('refuses an approver whose role the policy did not name', async () => {
+    const t = await tenant();
+    // A viewer with the scope: the credential says this person may decide approvals, the
+    // membership says they are not one of the roles this policy asked for. Both have to
+    // be true, and the second is what `allowed_roles` is for.
+    const viewer = await approver(t, { role: 'viewer', scopes: DECIDE });
+    const held = candidate(t.walletId, t.agentId, RECIPIENT, usd(2_000n));
+    const pending = (await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: held, idempotencyKey: 'wrong-role' },
+    })).json() as { approvalId: string };
+
+    const refused = await api.app.inject({
+      method: 'POST',
+      url: `/v1/approvals/${pending.approvalId}/decisions`,
+      headers: bearer(viewer.bearer),
+      payload: { decision: 'APPROVED' },
+    });
+    expect(refused.statusCode).toBe(409);
+    expect((refused.json() as { code: string }).code).toBe('APPROVER_NOT_AUTHORISED');
+    // And the refusal is a record, not just a status: an approver turned away for the
+    // wrong reason and one turned away for the right one must be distinguishable
+    // afterwards by someone who was not in the room.
+    const events = await pool.query<{ event_type: string }>(
+      `SELECT event_type FROM ari.audit_events WHERE resource_id = $1 AND event_type = 'approval.claim_refused'`,
+      [pending.approvalId],
+    );
+    expect(events.rowCount).toBe(1);
+  });
+
+  it('answers one human, one vote', async () => {
+    const t = await tenant();
+    const owner = await approver(t, { role: 'owner', scopes: DECIDE });
+    const held = candidate(t.walletId, t.agentId, RECIPIENT, usd(2_000n));
+    const pending = (await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: held, idempotencyKey: 'twice' },
+    })).json() as { approvalId: string };
+
+    const first = await api.app.inject({
+      method: 'POST',
+      url: `/v1/approvals/${pending.approvalId}/decisions`,
+      headers: bearer(owner.bearer),
+      payload: { decision: 'APPROVED' },
+    });
+    expect(first.statusCode).toBe(200);
+    expect((first.json() as { state: string }).state).toBe('GRANTED');
+
+    const again = await api.app.inject({
+      method: 'POST',
+      url: `/v1/approvals/${pending.approvalId}/decisions`,
+      headers: bearer(owner.bearer),
+      payload: { decision: 'APPROVED' },
+    });
+    expect(again.statusCode).toBe(409);
+    expect((again.json() as { code: string }).code).toBe('APPROVAL_ALREADY_CONSUMED');
+  });
+
+  it('shows a pending approval to the role it is waiting on, and to nobody else', async () => {
+    const mine = await tenant();
+    const theirs = await tenant();
+    const holder = await approver(mine, { role: 'owner', scopes: DECIDE });
+    const outsider = await approver(theirs, { role: 'owner', scopes: DECIDE });
+
+    const held = candidate(mine.walletId, mine.agentId, RECIPIENT, usd(2_000n));
+    const pending = (await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(mine.presented),
+      payload: { candidate: held, idempotencyKey: 'queue' },
+    })).json() as { approvalId: string };
+
+    const queue = await api.app.inject({ method: 'GET', url: '/v1/approvals', headers: bearer(holder.bearer) });
+    const listed = (queue.json() as { approvals: { approvalId: string }[] }).approvals;
+    expect(listed.map((a) => a.approvalId)).toContain(pending.approvalId);
+    // Every entry is this tenant's, checked against the database rather than against
+    // another tenant's id: the queue is the one place where a filter that silently
+    // returned *everything* would look like a working feature.
+    const mineInDb = await pool.query<{ id: string }>(
+      `SELECT id FROM ari.approval_requests WHERE org_id = $1`,
+      [mine.orgId],
+    );
+    const mineIds = new Set(mineInDb.rows.map((r) => r.id));
+    expect(listed.every((a) => mineIds.has(a.approvalId))).toBe(true);
+
+    const elsewhere = await api.app.inject({ method: 'GET', url: '/v1/approvals', headers: bearer(outsider.bearer) });
+    const otherList = (elsewhere.json() as { approvals: { approvalId: string }[] }).approvals;
+    expect(otherList.map((a) => a.approvalId)).not.toContain(pending.approvalId);
+
+    // And reading it directly answers the same as if it did not exist.
+    const stolen = await api.app.inject({
+      method: 'GET',
+      url: `/v1/approvals/${pending.approvalId}`,
+      headers: bearer(outsider.bearer),
+    });
+    expect(stolen.statusCode).toBe(404);
+    expect(stolen.json()).toEqual({ code: 'NOT_FOUND' });
+  });
+
+  it('loses the right to decide the moment the person is suspended', async () => {
+    // `users.status` had no reader at all before `013` gave the credential lookup a join
+    // on it: suspending someone wrote a column and changed nothing else. This is the
+    // test that makes the column mean something.
+    const t = await tenant();
+    const owner = await approver(t, { role: 'owner', scopes: DECIDE });
+    const held = candidate(t.walletId, t.agentId, RECIPIENT, usd(2_000n));
+    const pending = (await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: held, idempotencyKey: 'suspended' },
+    })).json() as { approvalId: string };
+
+    await pool.query(`UPDATE ari.users SET status = 'SUSPENDED' WHERE id = $1`, [owner.userId]);
+
+    const refused = await api.app.inject({
+      method: 'POST',
+      url: `/v1/approvals/${pending.approvalId}/decisions`,
+      headers: bearer(owner.bearer),
+      payload: { decision: 'APPROVED' },
+    });
+    expect(refused.statusCode).toBe(401);
+    // Unsuspend, and the same credential works: the suspension is the refusal, not the
+    // credential having been burned by presenting it while suspended.
+    await pool.query(`UPDATE ari.users SET status = 'ACTIVE' WHERE id = $1`, [owner.userId]);
+    const allowed = await api.app.inject({
+      method: 'POST',
+      url: `/v1/approvals/${pending.approvalId}/decisions`,
+      headers: bearer(owner.bearer),
+      payload: { decision: 'APPROVED' },
+    });
+    expect(allowed.statusCode).toBe(200);
+  });
+
+  it('refuses one no, and records it as the end of the request rather than a vote', async () => {
+    const t = await tenant();
+    const owner = await approver(t, { role: 'owner', scopes: DECIDE });
+    const held = candidate(t.walletId, t.agentId, RECIPIENT, usd(2_000n));
+    const pending = (await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: held, idempotencyKey: 'one-no' },
+    })).json() as { approvalId: string };
+
+    const rejected = await api.app.inject({
+      method: 'POST',
+      url: `/v1/approvals/${pending.approvalId}/decisions`,
+      headers: bearer(owner.bearer),
+      payload: { decision: 'REJECTED' },
+    });
+    const body = rejected.json() as { state: string; approvalToken?: string };
+    expect(body.state).toBe('REJECTED');
+    expect(body.approvalToken).toBeUndefined();
+    // A rejected approval is not a spendable one, whoever presents it afterwards.
+    const detail = await api.app.inject({
+      method: 'GET',
+      url: `/v1/approvals/${pending.approvalId}`,
+      headers: bearer(owner.bearer),
+    });
+    expect((detail.json() as { approval: { status: string } }).approval.status).toBe('REJECTED');
+  });
+
+  it('hands the sealed token to the human who earned it, and nowhere else', async () => {
+    const t = await tenant();
+    const owner = await approver(t, { role: 'owner', scopes: DECIDE });
+    const held = candidate(t.walletId, t.agentId, RECIPIENT, usd(2_000n));
+    const pending = (await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: held, idempotencyKey: 'who-gets-it' },
+    })).json() as { approvalId: string; requestId: string };
+
+    const granted = await api.app.inject({
+      method: 'POST',
+      url: `/v1/approvals/${pending.approvalId}/decisions`,
+      headers: bearer(owner.bearer),
+      payload: { decision: 'APPROVED' },
+    });
+    const token = (granted.json() as { approvalToken?: string }).approvalToken;
+    expect(token).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+
+    // The agent's own view of the same request never carries it. The token authorises a
+    // signature, so the subject being restricted must not be able to read it out of an
+    // API it is allowed to call — it arrives from the human, or the operator, or nowhere.
+    const status = await api.app.inject({
+      method: 'GET',
+      url: `/v1/transactions/${pending.requestId}`,
+      headers: bearer(t.presented),
+    });
+    expect(status.statusCode).toBe(200);
+    expect(JSON.stringify(status.json())).not.toMatch(/approvalToken/);
+    // And the human who decided does hold it: same response, opposite expectation, so
+    // the assertion above cannot be satisfied by a route that never returns one.
+    expect(JSON.stringify(granted.json())).toContain(token ?? 'absent');
+  });
+
+  it('takes the whole round trip over sockets, with no test-side minting', async () => {
+    const t = await tenant();
+    const owner = await approver(t, { role: 'owner', scopes: DECIDE });
+    const held = candidate(t.walletId, t.agentId, RECIPIENT, usd(2_000n));
+
+    const pending = (await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: held, idempotencyKey: 'closed-loop' },
+    })).json() as { state: string; approvalId: string; requestId: string };
+    expect(pending.state).toBe('APPROVAL_PENDING');
+
+    const granted = (await api.app.inject({
+      method: 'POST',
+      url: `/v1/approvals/${pending.approvalId}/decisions`,
+      headers: bearer(owner.bearer),
+      payload: { decision: 'APPROVED' },
+    })).json() as { state: string; approvalToken: string };
+
+    const completed = (await api.app.inject({
+      method: 'POST',
+      url: '/v1/transactions/authorize',
+      headers: bearer(t.presented),
+      payload: { candidate: held, idempotencyKey: 'closed-loop', approvalToken: granted.approvalToken },
+    })).json() as { state: string; requestId: string };
+    expect(completed.state).toBe('SIGNING_PENDING');
+    expect(completed.requestId).toBe(pending.requestId);
+  });
+});

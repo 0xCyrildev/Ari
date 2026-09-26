@@ -13,7 +13,7 @@
  * hands anyone the ability to mint tenant boundaries.
  */
 
-import { verifyCredential, type Connector } from '@ari/identity';
+import { verifyCredential, verifyUserCredential, type Connector } from '@ari/identity';
 import { timingSafeEqual } from 'node:crypto';
 
 export interface Principal {
@@ -80,4 +80,43 @@ export function acceptsBootstrapToken(configured: string, header: string | undef
   const a = Buffer.from(configured, 'utf8');
   const b = Buffer.from(presented, 'utf8');
   return a.byteLength === b.byteLength && timingSafeEqual(a, b);
+}
+
+/**
+ * An approver is a different kind of caller, and it is a different function because the
+ * two must not be able to be confused.
+ *
+ * The shape is deliberately the same as `authenticateAgent`, including what it does not
+ * carry: no scopes on the principal. `verifyUserCredential` reads them outside any
+ * tenant transaction, and a scope list that a request ten seconds after a revocation
+ * could still be carrying is not an authority — the route re-reads them inside its own
+ * transaction from the row that is authoritative at that moment.
+ *
+ * What differs is only which table answers and which refusal names are returned. An
+ * `ucrd_` secret cannot reach the agent gate at all — it does not parse there — and
+ * every failure at either gate looks the same from outside, for T8's enumeration half.
+ */
+export interface ApproverPrincipal {
+  readonly orgId: string;
+  readonly userId: string;
+  readonly credentialId: string;
+}
+
+export type ApproverAuthResult =
+  | { readonly ok: true; readonly principal: ApproverPrincipal }
+  | AuthFailure;
+
+export async function authenticateApprover(deps: GatewayDeps, header: string | undefined): Promise<ApproverAuthResult> {
+  const presented = bearer(header);
+  if (presented === null) {
+    return { ok: false, status: 401, code: 'CREDENTIAL_MISSING', detail: 'expected a bearer credential' };
+  }
+  const verified = await verifyUserCredential(deps.pool, presented, deps.masterPepper, deps.nowMs);
+  if (!verified.ok) {
+    return { ok: false, status: 401, code: 'UNAUTHENTICATED', detail: 'the credential was not accepted' };
+  }
+  return {
+    ok: true,
+    principal: { orgId: verified.orgId, userId: verified.userId, credentialId: verified.credentialId },
+  };
 }

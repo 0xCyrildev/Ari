@@ -111,6 +111,14 @@ first-class event. The approval UI contract: show **exactly** the fields inside 
 an actor cannot be the second approver on a change that widens their own authority (T19) · `evaluate` cannot
 produce a signed outcome by any path.
 
+**Status — ✅ package and surface.** `pnpm test:security` (`approvals`, `api`). The half this section was
+missing until `013` was not the token but the *person*: `APPROVAL_PENDING` returned an id that nobody outside
+the process could answer, because a human had no credential to present. Approver credentials, the queue, the
+decision route and the seal-returned-to-the-decider are now HTTP, and the separation is a database CHECK —
+`transaction:request` cannot be issued to a human, `approval:decide` cannot be issued to an agent. Still open
+here: a real session model (a person signing in rather than presenting a bearer secret), which is Phase 10's
+question and stays Phase 10's question.
+
 ---
 
 ## Phase 4 — Intent engine  *(the model finally appears)*

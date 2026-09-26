@@ -18,15 +18,15 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | 2 policy engine | done | 76 tests + `tests/security/` on real Postgres; 98.75 % branch on the kernel |
 | 3 signing boundary | done | `packages/signing`, `apps/signer`, `002` ALLOW-before-ticket trigger |
 | 3.5 policy lifecycle | done | `@ari/policies`: draft→activate, breadth comparison, owner-only widening, justification on rollback |
-| 6 approvals | done | `@ari/approvals` + `006`/`009`; 21 DB tests on the bound token, quorum, replay and T19 |
+| 6 approvals | done | `@ari/approvals` + `006`/`009`/`013`; 21 DB tests on the bound token, quorum, replay and T19, and the approver's half over HTTP — queue, decision, seal — in `tests/security/api.test.ts` |
 | 5 risk engine | done | `packages/risk-engine`: deterministic baselines over `transaction_requests`, nine signals, 10 property/unit tests + 17 DB tests including both halves of the Phase 5 gate |
 | spine | done | `apps/api/src/authorize.ts` + `tests/security/pipeline.test.ts`: evaluate→reserve→decide→ticket→sign, 11 tests walking the brief's own scenarios |
 | HTTP edge | done | `apps/api/src/{gateway,routes,signer-client,server}.ts` + `tests/security/api.test.ts`: 22 tests through `inject`, and both processes run for real (see "Ran for real" below) |
 | agent SDK | started | `packages/client`: the outbound half of the decimal-string rule, three methods, 19 tests, and 2 contract tests that run the client's transport against the real routes |
 | 4–5, 7–11 | not started | intent, risk, simulation, the CLI, Ika, dashboard |
 
-`pnpm test` is **412 tests / 25 files**, in two halves that add up to it: `pnpm test:unit` is the
-**235** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **177** that
+`pnpm test` is **423 tests / 25 files**, in two halves that add up to it: `pnpm test:unit` is the
+**235** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **188** that
 need Postgres and do not skip without it. They did not always add up: `test:security` was
 `vitest run --dir tests/security`, which on vitest 5 matches **no files** at all. Positional filters are
 used now, and the two numbers are written down because "the security gate is green" has to mean the
@@ -333,6 +333,32 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   the CHECK cannot silently become spendable. `SETTLED → PENDING` and `HELD → PENDING` both still
   raise, and both are tested.
 
+- **An approver is a credential, not a session — and the two subjects are separated in the schema.**
+  Phase 6 was "done" for several migrations while nothing could actually reach it: `authorize` returned an
+  `approvalId`, `recordDecision` counted a vote from a user id, and no person outside the process had any way
+  to present one, so `REQUIRE_HUMAN_APPROVAL` — the outcome the whole escalation vocabulary exists to produce
+  — resolved to "stuck". `013` adds `ari.user_credentials`, and the decision worth recording is the one that
+  got here instead of a login flow: no cookies, no browser state, no session model invented to fill out a
+  route table. A bearer credential bound to a user, verified by the same Argon2id-over-pepper path agents
+  already use, carries every property that makes the agent half defensible (expiry, revocation, rotation by
+  superseding, one shape of refusal at the boundary) and nothing that a session would have had to be trusted
+  for. Phase 10's dashboard will *mint* one of these on a signed-in person's behalf; it will not replace this.
+  Two consequences a later session must not undo:
+  - **The separation is a CHECK.** A user credential cannot carry `transaction:request` and an agent
+    credential cannot carry `approval:decide`. The subject that proposes a payment and the subject that
+    approves it are different *rows*, not different branches in a handler. `ucrd_` and `crd_` prefixes mean an
+    agent secret does not parse at the approver gate and vice versa, so both refusals look exactly like a
+    wrong secret (T8).
+  - **The sealed token is minted from the row and handed to the human who decided.** Not stored
+    (`requestApproval`'s own token was always discarded on the way out, deliberately — it would have reached
+    the subject being restricted), and not present in any response the agent can read. `sealGrantedApproval`
+    reads every field it binds from `approval_requests` under the same lock that counted the vote, so a caller
+    cannot state the amount, the wallet or the digest it is claiming to have approved.
+  - One thing this made visible on the way: `users.status` had no reader anywhere in the codebase.
+    `004` gave it a CHECK on its values and nothing consulted them, so suspending a person was a database
+    write with no security consequence and an operator who believed they had stopped someone. The credential
+    lookup now joins on it, and a test proves both halves — suspended refuses, unsuspended works again.
+
 ## Ran for real (2026-09-26)
 `pnpm --filter @ari/api start` and `pnpm --filter @ari/signer start`, both against Postgres on 5435, seeded
 a tenant through the packages (there is no HTTP route for it yet), and every state was observed over a real
@@ -363,18 +389,43 @@ The same run replayed a completed request and got `REFUSED: request is already i
 retry gets the original answer, not a new attempt` rather than a second signature or a 500, and the
 reservation stayed SETTLED through it.
 
+**Third run, after `013` — the approval loop, over two processes, with no test harness in the middle.**
+`pnpm seed` printed an agent credential and an approver credential; `ari-signer` was started with
+`SIGNER_WALLETS` holding only the seeded wallet; a $2,000 ask went against a policy that escalates above
+$1,000 and caps the day at $5,000:
+
+```
+1. agent → authorize        {"state":"APPROVAL_PENDING","requestId":"txr_01a0de9b-ea6b…",
+                             "approvalId":"apr_01a0de9b-ea80…","expiresAt":"…T17:00:55.160Z"}
+2. agent → its own decision  http 401 {"code":"UNAUTHENTICATED"}          ← a crd_ secret does not parse there
+3. approver → GET /v1/approvals   apr_01a0de9b-ea80…  2000000000 usdc-6dp  votes 0/1  digest canon/v1:7ff418df12a3ddc
+4. approver → POST decision        {"state":"GRANTED","votes":1,"approvalToken":"eyJyZXF1ZXN0SWQiOiJ0eHJfMD…"}
+5. agent → authorize + that seal   {"state":"COMPLETE","requestId":"txr_01a0de9b-ea6b…"}   ← the same id
+6. in the database:
+     request     SIGNING_COMPLETE        approval  CONSUMED  votes=1/1
+     ticket      redeemed (single use)   reservation SETTLED 2000000000 daily_usdc-6dp
+     audit       approval.requested/system=1  approval.granted/human=1  approval.granted/system=1
+                 ticket.minted/agent=1  reservation.settled/system=1  transaction.state_changed/system=7
+7. the token in any response the agent can read: 0 occurrences
+```
+
+`approval.granted/human=1` is the line to look at: the vote is witnessed as a *person's* act, in the
+transaction that recorded it, and the seal the agent needed afterwards came from the row that row's quorum
+set — not from the test process, which is what the previous version of this loop had to fake.
+
 ## Open threads
 
-1. **The agent-facing surface exists; the human-facing one does not.** `POST /v1/organizations` (bootstrap
-   token) and the four agent routes are built and tested. Creating an agent, issuing its credential, deciding
-   an approval, activating a policy — all of those need a *user session*, Ari has no session model, and
-   inventing one inside a route handler is a security decision taken as a side effect. Until it is taken
-   deliberately, operators work through `@ari/identity` and `@ari/policies` directly, which is what the test
-   suites do. `scripts/seed-tenant.mts` is that path today (`pnpm seed`, prints one bearer credential and
-   cannot read it back), which is also why `ROADMAP` moved the CLI (Phase 9) up: the CLI's first command is
-   the same question that script answers. `approvalId` is returned by `APPROVAL_PENDING` but nothing can
-   consume it over HTTP — the approval token has to be minted by whoever holds `APPROVAL_KEY`, which today
-   means the operator's own process, not an approver's device.
+1. **The agent-facing and approver-facing surfaces exist; the operator's does not.** `POST
+   /v1/organizations`, `POST /v1/users`, `POST /v1/users/:id/credentials` (all three bootstrap-gated), the
+   four agent routes and the approver's three — `GET /v1/approvals`, `GET /v1/approvals/:id`, `POST
+   /v1/approvals/:id/decisions` — are built and tested, and the escalation loop closes end to end over real
+   sockets (see "Ran for real"). Still missing: creating an agent, issuing *its* credential, and activating a
+   policy over HTTP. Those need the same treatment `013` gave approvals — a user credential with the right
+   scope and a route that reads it from the row — not a session, and Phase 10's dashboard is where a signed-in
+   person should be minting credentials rather than being handed one by an operator. `scripts/seed-tenant.mts`
+   remains the path today: `pnpm seed` prints an agent bearer credential *and* an approver's, and can read
+   neither back, which is also why `ROADMAP` moved the CLI (Phase 9) up — the CLI's first command is the same
+   question that script answers.
 2. **A randomised test that has never failed is not evidence.** `properties.test.ts`'s "a HIGH threshold is
    never looser than a CRITICAL one" asserted that the stricter policy escalates on *every* input where the
    looser one allowed — false at once for any input below the threshold, and it had passed every run so far on

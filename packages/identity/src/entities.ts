@@ -531,3 +531,21 @@ export async function requestStateOf(
     ? null
     : { id: row.id, lifecycleState: row.lifecycle_state, createdAt: row.created_at.toISOString() };
 }
+
+/**
+ * The live scopes on a *human's* credential, read inside the tenant transaction.
+ *
+ * The separate function is the point, not an accident of the two tables: an approver's
+ * authority is checked against `user_credentials` and an agent's against
+ * `agent_credentials`, and a lookup that could answer for either would make the
+ * separation `013` put in a CHECK — the subject that proposes is not the subject that
+ * approves — a matter of which function a route handler happened to call.
+ */
+export async function activeUserScopes(tx: TenantTx, credentialId: string): Promise<readonly string[]> {
+  const rows = await tx.client.query<{ scopes: string[] }>(
+    `SELECT scopes FROM ari.user_credentials
+      WHERE id = $1 AND org_id = $2 AND revoked_at IS NULL AND expires_at > now()`,
+    [credentialId, tx.orgId],
+  );
+  return rows.rows[0]?.scopes ?? [];
+}
