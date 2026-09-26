@@ -20,11 +20,12 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | 3.5 policy lifecycle | done | `@ari/policies`: draft→activate, breadth comparison, owner-only widening, justification on rollback |
 | 6 approvals | done | `@ari/approvals` + `006`/`009`; 21 DB tests on the bound token, quorum, replay and T19 |
 | spine | done | `apps/api/src/authorize.ts` + `tests/security/pipeline.test.ts`: evaluate→reserve→decide→ticket→sign, 11 tests walking the brief's own scenarios |
-| HTTP edge | done | `apps/api/src/{gateway,routes,signer-client,server}.ts` + `tests/security/api.test.ts`: 16 tests through `inject`, and both processes run for real (see "Ran for real" below) |
-| 4–5, 7–11 | not started | intent, risk, simulation, SDK/CLI, Ika, dashboard |
+| HTTP edge | done | `apps/api/src/{gateway,routes,signer-client,server}.ts` + `tests/security/api.test.ts`: 18 tests through `inject`, and both processes run for real (see "Ran for real" below) |
+| agent SDK | started | `packages/client`: the outbound half of the decimal-string rule, three methods, 19 tests, and 2 contract tests that run the client's transport against the real routes |
+| 4–5, 7–11 | not started | intent, risk, simulation, the CLI, Ika, dashboard |
 
-`pnpm test` is **318 tests / 19 files**; `pnpm test:unit` is the 184 that need no
-database; `pnpm test:security` is the 134 that need Postgres and do not skip without it.
+`pnpm test` is **339 tests / 21 files**; `pnpm test:unit` is the 203 that need no
+database; `pnpm test:security` is the 136 that need Postgres and do not skip without it.
 
 `pnpm typecheck && pnpm test` — needs no database for the unit half. `test:security` needs
 `pnpm db:up` (Postgres on **127.0.0.1:5435**, Redis 6381; 5432/5433/6380 belong to other projects on this
@@ -97,6 +98,30 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   (`--experimental-strip-types` → `ERR_NO_TYPESCRIPT`); `--env-file-if-exists` means a missing `.env` is a
   `readConfig` refusal rather than a crash about a file.
 
+- **`@ari/client` parses every response with a `.strict()` schema, and the shapes live in
+  `packages/client/src/client.ts`.** A 200 that carries a field the contract does not describe —
+  a ticket, a signature, a provider reference — is `CONTRACT_MISMATCH`, not an ignored extra key.
+  That is the same invariant as S16 read from the receiving end: the edge strips before it answers
+  *and* the client refuses to be the place a capability finally lands. The refusal detail quotes the
+  schema's complaint, never the body, so the failure path cannot echo a ticket into a log. Two tests
+  in `tests/security/api.test.ts` run the client's `fetchImpl` through `app.inject()` against the real
+  routes: that pair is where the two halves of the contract meet, and it is the only thing that will
+  notice if either side drifts. `Delivered.state` is an enum for the same reason — an open `string`
+  makes the union un-narrowable, so `if (value.state === 'DENIED')` would still not give a caller
+  `reasonCodes`; the cost is that a provider inventing a fourth terminal state reads as a mismatch,
+  which is the direction a payment system should fail in.
+- **`toWire` in `@ari/client` is the outbound half of the decimal-string rule, and it is not a
+  replacer.** `RawBigInt` turns a string into a `bigint` at the parser; a parsed candidate therefore
+  *cannot* be `JSON.stringify`ed, and the first SDK call discovered that as a thrown TypeError
+  inside `light-my-request`. The walk reports the path that went wrong (`$.amount.raw`), refuses
+  floats and unsafe integers rather than rounding them, refuses a `Date` or a class instance rather
+  than sending `{}`, and distinguishes an absent optional property (dropped, which is what
+  `exactOptionalPropertyTypes` means) from a bare `undefined` (refused — `JSON.stringify(undefined)`
+  is not a string, so the body would have gone out as the word `undefined`).
+- There is **no `sign` on `AriClient`,** and `packages/client/test/client.test.ts` asserts it with
+  `@ts-expect-error` lines that fail the build the day someone adds one. A gate that says "the SDK
+  has no bypass method" is worth as much as the mechanism checking it.
+
 ## Ran for real (2026-09-26)
 
 `pnpm --filter @ari/api start` and `pnpm --filter @ari/signer start`, both against Postgres on 5435, seeded
@@ -116,9 +141,10 @@ version of it worth keeping.
    an approval, activating a policy — all of those need a *user session*, Ari has no session model, and
    inventing one inside a route handler is a security decision taken as a side effect. Until it is taken
    deliberately, operators work through `@ari/identity` and `@ari/policies` directly, which is what the test
-   suites do. Consequence worth knowing: there is currently no way to seed a working tenant without writing a
-   script against the packages. `approvalId` is returned by `APPROVAL_PENDING` but nothing can consume it over
-   HTTP.
+   suites do. Consequence worth knowing: there is no way to seed a working tenant without writing a
+   script against the packages — which is why `ROADMAP` moved the CLI (Phase 9) up, and why the CLI's
+   first command is the same question that script answers. `approvalId` is returned by
+   `APPROVAL_PENDING` but nothing can consume it over HTTP.
 2. **A randomised test that has never failed is not evidence.** `properties.test.ts`'s "a HIGH threshold is
    never looser than a CRITICAL one" asserted that the stricter policy escalates on *every* input where the
    looser one allowed — false at once for any input below the threshold, and it had passed every run so far on

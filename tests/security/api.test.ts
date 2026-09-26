@@ -13,6 +13,7 @@
  */
 
 import { readConfig, startApi, type DeliveryResult, type RunningApi, type SignerClient } from '@ari/api';
+import { createClient } from '@ari/client';
 import {
   asTenant,
   createAgent,
@@ -494,6 +495,73 @@ describe('status', () => {
     });
     expect(response.statusCode).toBe(400);
     expect((response.json() as { code: string }).code).toBe('INVALID_REQUEST');
+  });
+});
+
+describe('the SDK and the edge, with no socket between them', () => {
+  /**
+   * The client's transport pointed at the router.
+   *
+   * This is the only place the two halves of the wire contract meet. `routes.ts` builds
+   * a response, `@ari/client` parses one, and each is `.strict()` about the other's
+   * shape — so a field added on either side without a decision on it fails here rather
+   * than in someone's integration test three weeks later. It also proves the serialiser
+   * against the real object graph: a parsed candidate holds `bigint`s, and a client
+   * that could not send them would come back as `NETWORK` from its own catch.
+   */
+  function sdk(token: string) {
+    return createClient({
+      baseUrl: 'http://api.test',
+      credential: token,
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        const response = await api.app.inject({
+          method: (init?.method ?? 'GET') as 'GET' | 'POST',
+          url: new URL(String(url)).pathname,
+          headers: Object.fromEntries(new Headers(init?.headers ?? {})),
+          ...(typeof init?.body === 'string' ? { payload: init.body } : {}),
+        });
+        return new Response(response.body, { status: response.statusCode });
+      }) as typeof fetch,
+    });
+  }
+
+  it('reads a preview, a decision and a status without a shape complaint', async () => {
+    const t = await tenant();
+    const client = sdk(t.presented);
+    const held = CandidateTransaction.parse(candidate(t.walletId, t.agentId, RECIPIENT, usd(500n)));
+
+    const preview = await client.evaluate(held);
+    expect(preview.ok && preview.value.reserves).toBe(false);
+    expect(preview.ok && preview.value.decision.outcome).toBe('ALLOW');
+
+    const issued = await client.authorize({ candidate: held, idempotencyKey: 'sdk-500' });
+    if (!issued.ok) throw new Error(`the client refused the server's shape: ${issued.code} ${issued.detail}`);
+    expect(issued.value.state).toBe('SIGNING_PENDING');
+
+    const status = await client.status(issued.value.requestId);
+    expect(status.ok && status.value.state).toBe('TICKET_MINTED');
+  });
+
+  it('reports a refusal as the server named it', async () => {
+    const t = await tenant();
+    const denied = await sdk(t.presented).authorize({
+      candidate: CandidateTransaction.parse(candidate(t.walletId, t.agentId, NOVEL, usd(50_000n))),
+      idempotencyKey: 'sdk-denied',
+    });
+    if (!denied.ok || denied.value.state !== 'DENIED') {
+      throw new Error(`expected a denial, got ${JSON.stringify(denied)}`);
+    }
+    // Narrowing is the point of the assertion, not a detail: `reasonCodes` exists on
+    // this arm alone, which is the client's type system saying a denial and an
+    // accepted request are different answers rather than two spellings of one.
+    expect(denied.value.reasonCodes).toContain('RECIPIENT_NOT_IN_ALLOWLIST');
+
+    const refused = await sdk(`${t.orgId}.${t.credentialId}.${'x'.repeat(43)}`).evaluate(
+      CandidateTransaction.parse(candidate(t.walletId, t.agentId, RECIPIENT, usd(500n))),
+    );
+    expect(refused.ok).toBe(false);
+    expect(refused.ok === false && refused.status).toBe(401);
+    expect(refused.ok === false && refused.code).toBe('UNAUTHENTICATED');
   });
 });
 

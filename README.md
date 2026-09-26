@@ -43,16 +43,30 @@ key, its own clock and its own record of what has already been spent.
 
 Built and tested: the policy engine, canonicalisation, the ledger's atomic
 limit reservations, the ticket and the signer, policy versioning with the
-broadening guard, human approvals, the pipeline that joins them, and the HTTP
-edge in front of it — organisation bootstrap behind a deployment token, bearer
-credential authentication, `authorize`, an `evaluate` preview that writes
-nothing, and request status.
+broadening guard, human approvals, the pipeline that joins them, the HTTP edge in
+front of it — organisation bootstrap behind a deployment token, bearer credential
+authentication, `authorize`, an `evaluate` preview that writes nothing, and
+request status — and the agent-side client that calls it.
 
-Not built: the SDK and CLI, the intent and risk engines, simulation, the
-dashboard, and any real chain integration. The endpoints a *human* needs — create
-an agent, issue a credential, decide an approval, activate a policy — are not
-there either, because Ari has no user-session model yet and inventing one inside
-a route handler would be a security decision made as a side effect. Until then
+```ts
+import { CandidateTransaction, createClient } from '@ari/client';
+
+const ari = createClient({ baseUrl: 'http://127.0.0.1:4000', credential: agentCredential });
+const candidate = CandidateTransaction.parse(/* … */);
+
+const preview = await ari.evaluate(candidate);            // a preview: nothing is reserved
+if (preview.ok && preview.value.decision.outcome === 'ALLOW') {
+  const result = await ari.authorize({ candidate, idempotencyKey: 'invoice-42' });
+  // 'COMPLETE' | 'SIGNING_PENDING' | 'DENIED' | 'APPROVAL_PENDING' | …
+  // There is no `ari.sign()`, and no answer carries a ticket.
+}
+```
+
+Not built: the CLI, the intent and risk engines, simulation, the dashboard, and
+any real chain integration. The endpoints a *human* needs — create an agent,
+issue its credential, decide an approval, activate a policy — are not there
+either, because Ari has no user-session model yet and inventing one inside a
+route handler would be a security decision made as a side effect. Until then
 those are performed against the packages directly, which is what the test suites
 do.
 
@@ -113,7 +127,7 @@ apps/
   signer/     the authority plane: verifies tickets independently
 packages/
   schemas/  policy-engine/  transaction-engine/  ledger/
-  signing/  audit/  identity/  policies/  approvals/
+  signing/  audit/  identity/  policies/  approvals/  client/
 migrations/ numbered SQL, applied in order
 tests/
   security/   suites that require real Postgres and do not skip without it

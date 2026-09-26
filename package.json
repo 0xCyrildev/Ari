@@ -23,6 +23,7 @@
     "@ari/api": "workspace:*",
     "@ari/approvals": "workspace:*",
     "@ari/audit": "workspace:*",
+    "@ari/client": "workspace:*",
     "@ari/identity": "workspace:*",
     "@ari/ledger": "workspace:*",
     "@ari/policies": "workspace:*",
