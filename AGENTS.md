@@ -14,15 +14,16 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | Phase | Status | Evidence |
 |---|---|---|
 | 0 discovery | done | four docs, 1,750 lines, every claim labelled VERIFIED / DOC-ONLY / ASSUMED / NOT-FOUND |
-| 1 core domain | **nearly** | migrations `001–005`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table. **Missing: `apps/api`.** |
+| 1 core domain | done | migrations `001–009`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table |
 | 2 policy engine | done | 76 tests + `tests/security/` on real Postgres; 98.75 % branch on the kernel |
 | 3 signing boundary | done | `packages/signing`, `apps/signer`, `002` ALLOW-before-ticket trigger |
 | 3.5 policy lifecycle | done | `@ari/policies`: draft→activate, breadth comparison, owner-only widening, justification on rollback |
-| 6 approvals | done | `@ari/approvals` + `006_approvals.sql`; 21 DB tests on the bound token, quorum, replay and T19 |
-| 4–5, 7–11 | not started | intent, risk, simulation, SDK/CLI, Ika, dashboard |
+| 6 approvals | done | `@ari/approvals` + `006`/`009`; 21 DB tests on the bound token, quorum, replay and T19 |
+| spine | done | `apps/api/src/authorize.ts` + `tests/security/pipeline.test.ts`: evaluate→reserve→decide→ticket→sign, 11 tests walking the brief's own scenarios |
+| 4–5, 7–11 | not started | intent, risk, simulation, HTTP routes + SDK/CLI, Ika, dashboard |
 
-`pnpm test` is **291 tests / 16 files**; `pnpm test:unit` runs the no-database half;
-`pnpm test:security` is the 97 tests that need Postgres and do not skip without it.
+`pnpm test` is **302 tests / 18 files**; `pnpm test:unit` runs the no-database half;
+`pnpm test:security` is the 108 tests that need Postgres and do not skip without it.
 
 `pnpm typecheck && pnpm test` — needs no database for the unit half. `test:security` needs
 `pnpm db:up` (Postgres on **127.0.0.1:5435**, Redis 6381; 5432/5433/6380 belong to other projects on this
@@ -67,8 +68,9 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
 
 ## Open threads
 
-1. **No `apps/api` yet.** Nothing in here has been run as a service: no routes, no gateway, no composition
-   root wiring `evaluate → reserve → mintTicket → signer`. Every building block is tested at the layer below.
+1. **No HTTP surface yet.** `apps/api` holds the authorization pipeline and nothing else: no Fastify
+   routes, no gateway auth middleware, no `POST /v1/organizations` behind the bootstrap token (§5.6), no
+   SDK. The pipeline is reachable only as a function today, and it is fully tested as one.
 2. **Prisma is gone, by ADR-10.** The schema is hand-written SQL in `migrations/` and the three doc lines
    that named Prisma now say so with the reason. Do not reintroduce an ORM schema without settling that ADR:
    the gates here are row-security policies, refusal triggers and role grants, none of which a generated
