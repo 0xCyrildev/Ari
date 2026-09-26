@@ -51,6 +51,7 @@
     "apps/*/src/**/*.ts",
     "apps/*/test/**/*.ts",
     "tests/**/*.ts",
-    "vitest.config.ts"
+    "vitest.config.ts",
+    "scripts/**/*.mts"
   ]
 }

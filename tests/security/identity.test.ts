@@ -34,7 +34,7 @@ import {
 } from '@ari/identity';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { connect } from './database.js';
+import { connect, DATABASE_URL } from './database.js';
 
 const PEPPER = 'test-master-pepper-0123456789abcdef';
 const SCOPES: readonly Scope[] = ['transaction:request'];
@@ -64,7 +64,7 @@ beforeAll(async () => {
   const shared = await connect();
   pool = shared;
   appPool = new Pool({
-    connectionString: process.env.DATABASE_URL ?? 'postgresql://ari:ari@127.0.0.1:5435/ari',
+    connectionString: DATABASE_URL,
     max: 4,
   });
 });

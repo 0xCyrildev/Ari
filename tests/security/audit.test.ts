@@ -21,7 +21,7 @@ import {
 import { recordDecision, withTransaction } from '@ari/ledger';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { connect } from './database.js';
+import { connect, DATABASE_URL } from './database.js';
 
 let pool: Awaited<ReturnType<typeof connect>>;
 let privileged: Pool;
@@ -32,7 +32,7 @@ beforeAll(async () => {
   // the pool, and a session still running as `ari_app` would quietly change the
   // privileges of whichever test borrowed it next.
   privileged = new Pool({
-    connectionString: process.env.DATABASE_URL ?? 'postgresql://ari:ari@127.0.0.1:5435/ari',
+    connectionString: DATABASE_URL,
     max: 1,
   });
 });

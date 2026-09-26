@@ -15,6 +15,7 @@
 
 import { beginTransaction, type LedgerTx } from '@ari/ledger';
 import { newId } from '@ari/schemas';
+import type { ChainCursor } from '@ari/audit';
 import type { Pool, PoolClient } from 'pg';
 
 export interface TenantTx extends LedgerTx {
@@ -29,6 +30,13 @@ export interface TenantTx extends LedgerTx {
    * that disagree is a bug nobody can reproduce afterwards.
    */
   readonly startedAtMs: bigint;
+  /**
+   * The audit chain's position within this transaction. Present because the
+   * organisation's advisory lock is taken as the transaction's first statement, which is
+   * what lets `@ari/audit` remember the head it wrote instead of reading it back before
+   * every event; typed here so the trust is declared rather than smuggled through a cast.
+   */
+  readonly chain: ChainCursor;
 }
 
 /** Anything that can open a connection, so a pool and a transaction are both fine. */
@@ -79,7 +87,14 @@ async function runOnce<T>(pool: Connector, orgId: string, fn: (tx: TenantTx) => 
     // left to each caller. Advisory transaction locks are re-entrant, so
     // `appendEvent` asking again is free.
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [orgId]);
-    const tx = Object.assign(ledgerTx, { orgId, startedAtMs: BigInt(Date.now()) }) as TenantTx;
+    // The lock is held from here to commit, so the audit writer inside this transaction
+    // may take the chain's head on trust — its own last write — instead of reading it
+    // back before every event. See `ChainCursor` in `@ari/audit`.
+    const tx = Object.assign(ledgerTx, {
+      orgId,
+      startedAtMs: BigInt(Date.now()),
+      chain: { lockHeld: true } as ChainCursor,
+    }) as TenantTx;
     return fn(tx);
   });
 }

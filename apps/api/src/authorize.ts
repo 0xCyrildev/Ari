@@ -23,19 +23,20 @@ import {
   activeScopes,
   asTenant,
   recordRequest,
-  recipientHistory,
+  recipientFirstSeenAt,
+  requestStateOf,
   resolveGrant,
   setRequestState,
   type Connector,
   type TenantTx,
 } from '@ari/identity';
-import { claimTicket, mintTicket, readCounter, recordDecision, reserve } from '@ari/ledger';
+import { claimTicket, mintTicket, readCounter, recordDecision, release, releaseForRequest, reserve, settleForRequest } from '@ari/ledger';
 import { evaluate, type CompiledPolicy, type EvaluationState } from '@ari/policy-engine';
 import { loadVersion, type StoredVersion } from '@ari/policies';
 import { Decision, type AuthorizationTicket, type CandidateTransaction, type ReasonCode } from '@ari/schemas';
 import { TicketKey, claimsFor, sealTicket } from '@ari/signing';
 import type { RiskProvider } from '@ari/risk-engine';
-import { canonicalize, computeDigest } from '@ari/transaction-engine';
+import { canTransition, canonicalize, computeDigest, LifecycleState } from '@ari/transaction-engine';
 
 export interface PipelineDeps {
   readonly pool: Connector;
@@ -116,8 +117,22 @@ function dayWindow(nowMs: bigint): string {
  * up sharing one counter — the same class of bug §7.1's unit-qualified limits exist
  * to prevent, arriving from the storage side.
  */
+/**
+ * The month's window key, stated the same way: a UTC calendar month, not a rolling
+ * thirty days. A monthly limit that reset on a sliding window would be a different
+ * promise from the one the policy sentence makes, and an operator comparing this
+ * month's spend to `perMonth` would be reading two different clocks.
+ */
+function monthWindow(nowMs: bigint): string {
+  return new Date(Number(nowMs)).toISOString().slice(0, 7);
+}
+
 function dimensionFor(policy: CompiledPolicy): string {
   return `daily_${policy.transfers.amountUnit}`;
+}
+
+function monthDimensionFor(policy: CompiledPolicy): string {
+  return `monthly_${policy.transfers.amountUnit}`;
 }
 
 /**
@@ -132,23 +147,18 @@ async function historyOf(
   tx: TenantTx,
   walletId: string,
   policy: CompiledPolicy,
+  recipientAddress: string | null,
 ): Promise<EvaluationState['history']> {
-  const seen = await recipientHistory(tx, walletId);
+  // Read only when a rule in this policy could ask. A tenant that has never written
+  // `recipient_first_seen_within_days` should not pay one query per request for it, and
+  // the check is over the compiled policy rather than a flag someone may forget to set.
+  const asked = policy.escalation.some((condition) => condition.op === 'recipient_first_seen_within_days');
   return {
-    knownRecipientAddresses: seen.known,
     baselineAssets: policy.transfers.assets,
     baselineChains: policy.transfers.chains,
-    firstSeenWithinDays: seen.firstSeenWithinDays,
+    recipientFirstSeenAtMs:
+      asked && recipientAddress !== null ? await recipientFirstSeenAt(tx, { walletId, address: recipientAddress }) : null,
   };
-}
-
-/** Where a request stands, so a retry resumes instead of restarting. */
-async function lifecycleOf(tx: TenantTx, requestId: string): Promise<string> {
-  const rows = await tx.client.query<{ lifecycle_state: string }>(
-    `SELECT lifecycle_state FROM ari.transaction_requests WHERE id = $1 AND org_id = $2`,
-    [requestId, tx.orgId],
-  );
-  return rows.rows[0]?.lifecycle_state ?? 'DRAFT';
 }
 
 /** The approval already open on this request, if one is. */
@@ -173,14 +183,32 @@ async function usageOf(tx: TenantTx, orgId: string, policy: CompiledPolicy, agen
     windowKey: dayWindow(nowMs),
     dimension: dimensionFor(policy),
   });
+  // Only read when the policy actually has a monthly ceiling. The alternative was a
+  // `reservedMonthRaw: 0n` constant that the kernel dutifully compared against
+  // `perMonth`, which made every monthly limit in the schema a field a human could write
+  // that did nothing.
+  const month =
+    policy.transfers.perMonthRaw === null
+      ? null
+      : await readCounter(tx.client, {
+          orgId,
+          agentId,
+          windowKey: monthWindow(nowMs),
+          dimension: monthDimensionFor(policy),
+        });
   const recent = await tx.client.query<{ count: string }>(
     `SELECT count(*) AS count FROM ari.transaction_requests
       WHERE agent_id = $1 AND org_id = $2 AND created_at > to_timestamp($3 / 1000.0)`,
     [agentId, orgId, Number(nowMs - 3_600_000n)],
   );
+  // `settled` is added to each window because settled money has *left* the account: it
+  // is no longer in `current_reserved`, and a daily cap that forgot it would reset
+  // itself every time a payment completed. `ikaSpentTodayRaw` stays zero — there is no
+  // Ika provider yet, so there is no protocol-fee ledger to read; see AGENTS.md, and do
+  // not let a policy come to depend on a number that is a placeholder.
   return {
-    reservedDayRaw: counter?.reservedRaw ?? 0n,
-    reservedMonthRaw: 0n,
+    reservedDayRaw: (counter?.reservedRaw ?? 0n) + (counter?.settledRaw ?? 0n),
+    reservedMonthRaw: month === null ? 0n : month.reservedRaw + month.settledRaw,
     transactionsLastHour: Number(recent.rows[0]?.count ?? '0'),
     ikaSpentTodayRaw: 0n,
   } satisfies EvaluationState['usage'];
@@ -236,7 +264,12 @@ async function evaluateAndIssue(
   const amountRaw = isTransfer && input.candidate.kind === 'transfer' ? input.candidate.amount.raw : 0n;
   const scopes = await activeScopes(tx, input.credentialId);
   const usage = await usageOf(tx, orgId, policy, input.agentId, nowMs);
-  const history = await historyOf(tx, input.candidate.walletId, policy);
+  const history = await historyOf(
+    tx,
+    input.candidate.walletId,
+    policy,
+    input.candidate.kind === 'transfer' ? input.candidate.recipient.address : null,
+  );
 
   /**
    * The subject the risk plane reads, and the request id the kernel echoes.
@@ -321,8 +354,10 @@ async function evaluateAndIssue(
 
   // The lifecycle is walked, never teleported to. A retry arrives on a row that is
   // already partway along — `APPROVAL_PENDING`, usually — and re-running the early
-  // transitions would fail on it, so the state is read and the walk starts there.
-  const current = await lifecycleOf(tx, requestId);
+  // transitions would fail on it, so the walk starts where the row already is. That
+  // state came back with the row: `recordRequest` knows whether it inserted or found,
+  // and reading it again was a query for something already in hand.
+  const current = stored.lifecycleState;
   let from = current;
   if (current === 'DRAFT') {
     await setRequestState(tx, { requestId, from: 'DRAFT', to: 'VALIDATED', actor: input.agentId });
@@ -490,6 +525,49 @@ async function issue(
     idempotencyKey: input.idempotencyKey,
     policyVersionId: args.version.id,
   });
+
+  // The month window is taken after the day and released back if it refuses, rather
+  // than the other way round: the two guards are the same statement shape, and a
+  // monthly refusal must not leave a daily hold parked behind it. This is the ledger's
+  // own check — the kernel already refused an over-month request a moment earlier — so
+  // reaching it means two requests raced into the same window.
+  const dailyHold = held.status === 'HELD' ? held.reservationId : null;
+  const monthly =
+    dailyHold !== null && args.policy.transfers.perMonthRaw !== null
+      ? await reserve(tx, {
+          orgId,
+          agentId: input.agentId,
+          windowKey: monthWindow(deps.nowMs()),
+          dimension: monthDimensionFor(args.policy),
+          amountRaw: args.amountRaw,
+          maxRaw: args.policy.transfers.perMonthRaw,
+          requestId: args.requestId,
+          idempotencyKey: `${input.idempotencyKey}:month`,
+          policyVersionId: args.version.id,
+        })
+      : null;
+
+  if (monthly !== null && monthly.status === 'LIMIT_EXCEEDED' && dailyHold !== null) {
+    await release(tx, dailyHold, 'monthly window refused the hold');
+    await appendEvent(tx, {
+      orgId,
+      actor: input.agentId,
+      actorType: 'agent',
+      eventType: 'policy.evaluated',
+      resource: 'transaction_request',
+      resourceId: args.requestId,
+      policyVersionId: args.version.id,
+      decision: 'DENY',
+      reasonCodes: ['LIMIT_RESERVATION_FAILED'],
+      severity: 'warning',
+      metadata: {
+        code: 'LIMIT_RESERVATION_FAILED',
+        detail: `monthly: reserved ${monthly.reservedRaw} + ${monthly.requestedRaw} > ${monthly.maxRaw}`,
+      },
+    });
+    await setRequestState(tx, { requestId: args.requestId, from: args.from, to: 'DENIED', actor: 'system' });
+    return denied(['LIMIT_RESERVATION_FAILED'], args.requestId);
+  }
 
   if (held.status === 'LIMIT_EXCEEDED') {
     // The engine said yes a moment ago and the ledger said no: that gap is the race
@@ -674,6 +752,104 @@ async function replay(
     reason: `request is already in ${state}; a retry gets the original answer, not a new attempt`,
   };
 }
+
+/**
+ * What the delivery step did, after the decision transaction committed.
+ *
+ * A second transaction, because the signing attempt is an outside event: the money is
+ * committed in the first one (hold, decision, ticket, audit) and the signer's answer
+ * arrives after it. Collapsing the two would mean holding a tenant's advisory lock and
+ * an open transaction across a network call to another process, and a slow signer would
+ * then serialize *requests* behind a *signature*.
+ *
+ * Three answers, and only one of them is final:
+ * - `COMPLETE` settles the holds. This is "the authority plane says it signed", which
+ *   for the mock provider is not chain truth (S12) — but it is the point at which the
+ *   cap must stop counting the money as parked, and reconciliation owns whatever comes
+ *   after.
+ * - A state still in flight (`SIGNING_PENDING`, `PENDING`, and every `user_gated`
+ *   handoff) leaves the holds exactly as they are. Nothing has been signed yet, and
+ *   settling on an intention would be the same overclaim in the other direction.
+ * - A terminal refusal (`TICKET_ALREADY_USED`, a digest or key mismatch) releases them,
+ *   because no later attempt can honour this request either, and a refusal that eats
+ *   the agent's daily capacity is T13 with our own hand on the lever.
+ *
+ * A transient failure (`SIGNING_PROVIDER_ERROR`, nothing answering at all) also leaves
+ * the holds: the retry path re-seals the same ticket and re-delivers it, and releasing
+ * on a network hiccup would let an agent spend twice on the day the signer blipped.
+ */
+export async function recordDeliveryOutcome(
+  deps: PipelineDeps,
+  orgId: string,
+  requestId: string,
+  delivered: { readonly accepted: boolean; readonly state?: string; readonly code?: string },
+): Promise<'SETTLED' | 'RELEASED' | 'HELD'> {
+  const terminal =
+    !delivered.accepted &&
+    delivered.code !== undefined &&
+    TERMINAL_REFUSALS.has(delivered.code);
+
+  if (delivered.accepted && delivered.state !== 'COMPLETE') return 'HELD';
+  if (!delivered.accepted && !terminal) return 'HELD';
+
+  return asTenant(deps.pool, orgId, async (tx) => {
+    if (delivered.accepted) {
+      const settled = await settleForRequest(tx, requestId);
+      await appendEvent(tx, {
+        orgId,
+        actor: 'system',
+        actorType: 'system',
+        eventType: 'reservation.settled',
+        resource: 'transaction_request',
+        resourceId: requestId,
+        metadata: { amountRaw: settled.settledRaw.toString(), provider: delivered.state ?? 'COMPLETE' },
+      });
+      // Walked, not teleported: `TICKET_MINTED → SIGNING_COMPLETE` is not an edge in the
+      // state machine, and the missing stop is the honest one — the handoff to the
+      // authority plane happened, and then it completed.
+      await advance(tx, requestId, 'SIGNING_PENDING');
+      await advance(tx, requestId, 'SIGNING_COMPLETE');
+      return 'SETTLED';
+    }
+    const released = await releaseForRequest(tx, requestId, `signer refused: ${delivered.code ?? 'unknown'}`);
+    await appendEvent(tx, {
+      orgId,
+      actor: 'system',
+      actorType: 'system',
+      eventType: 'reservation.released',
+      resource: 'transaction_request',
+      resourceId: requestId,
+      severity: 'warning',
+      reasonCodes: [delivered.code ?? 'TICKET_INVALID'],
+      metadata: { amountRaw: released.releasedRaw.toString(), code: delivered.code ?? 'TICKET_INVALID' },
+    });
+    await advance(tx, requestId, 'SIGNING_PENDING');
+    await advance(tx, requestId, 'SIGNING_FAILED');
+    return 'RELEASED';
+  });
+}
+
+/**
+ * Move a request one step along its lifecycle if — and only if — that step exists.
+ *
+ * `setRequestState` is a compare-and-set and refuses anything else, which is right for
+ * the decision path and wrong here: this runs after the fact, on a request another
+ * attempt may already have advanced, and a duplicate delivery answer must not turn into
+ * a 500 over a state that is already where it belongs.
+ */
+async function advance(tx: TenantTx, requestId: string, to: LifecycleState): Promise<void> {
+  const current = await requestStateOf(tx, requestId);
+  if (current === null) return;
+  const from = LifecycleState.safeParse(current.lifecycleState);
+  // A state this build does not recognise is not something to walk on from: it came
+  // from a later migration or a different deployment, and the honest answer is to leave
+  // the row where it is rather than guess the next edge.
+  if (!from.success || !canTransition(from.data, to)) return;
+  await setRequestState(tx, { requestId, from: from.data, to, actor: 'system' });
+}
+
+/** Refusals that no retry can turn into a signature. */
+const TERMINAL_REFUSALS = new Set(['TICKET_ALREADY_USED', 'TICKET_DIGEST_MISMATCH', 'SIGNER_KEY_MISMATCH', 'TICKET_INVALID']);
 
 export async function authorize(
   deps: PipelineDeps,

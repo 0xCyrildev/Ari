@@ -271,14 +271,16 @@ export async function recordRequest(
     readonly amountRaw?: bigint;
     readonly currencyUnit?: string;
   },
-): Promise<{ readonly id: string; readonly reused: boolean }> {
-  const inserted = await tx.client.query<{ id: string }>(
+): Promise<{ readonly id: string; readonly reused: boolean; readonly lifecycleState: string }> {
+  // `lifecycle_state` comes back with the row because the caller needs it and it is not
+  // worth a second statement to learn the state this same transaction just set.
+  const inserted = await tx.client.query<{ id: string; lifecycle_state: string }>(
     `INSERT INTO ari.transaction_requests
        (id, org_id, agent_id, wallet_id, idempotency_key, canonical, digest,
         recipient_address, amount_raw, currency_unit)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (agent_id, idempotency_key) DO NOTHING
-     RETURNING id`,
+     RETURNING id, lifecycle_state`,
     [
       newId('txr'),
       tx.orgId,
@@ -293,10 +295,30 @@ export async function recordRequest(
     ],
   );
   const fresh = inserted.rows[0];
-  if (fresh !== undefined) return { id: fresh.id, reused: false };
+  if (fresh === undefined) {
+    // fall through to the reuse lookup below
+  } else {
+    // A proposal is its own event, on the one path where something was actually
+    // proposed: a retry finds the existing row and writes nothing.
+    await audit(tx, {
+      eventType: 'transaction.proposed',
+      actor: input.agentId,
+      actorType: 'agent',
+      resource: 'transaction_request',
+      resourceId: fresh.id,
+      metadata: {
+        digestRef: input.digest.slice(0, 24),
+        ...(input.amountRaw === undefined ? {} : { amountRaw: input.amountRaw.toString() }),
+        ...(input.currencyUnit === undefined ? {} : { assetUnit: input.currencyUnit }),
+        ...(input.recipientAddress === undefined ? {} : { recipientAddress: input.recipientAddress }),
+      },
+    });
+    // A row this transaction just wrote is `DRAFT` by column default.
+    return { id: fresh.id, reused: false, lifecycleState: fresh.lifecycle_state };
+  }
 
-  const existing = await tx.client.query<{ id: string; digest: string }>(
-    `SELECT id, digest FROM ari.transaction_requests WHERE agent_id = $1 AND idempotency_key = $2`,
+  const existing = await tx.client.query<{ id: string; digest: string; lifecycle_state: string }>(
+    `SELECT id, digest, lifecycle_state FROM ari.transaction_requests WHERE agent_id = $1 AND idempotency_key = $2`,
     [input.agentId, input.idempotencyKey],
   );
   const row = existing.rows[0];
@@ -308,7 +330,7 @@ export async function recordRequest(
     // best-effort answer.
     throw new Error('idempotency conflict: same key, different transaction');
   }
-  return { id: row.id, reused: true };
+  return { id: row.id, reused: true, lifecycleState: row.lifecycle_state };
 }
 
 export async function setRequestState(
@@ -326,9 +348,16 @@ export async function setRequestState(
     // request is how a denied transaction gets signed by the loser of a race.
     throw new Error(`request ${input.requestId} is not in ${input.from}`);
   }
+  // `transaction.state_changed`, not `transaction.proposed`. The lifecycle writer used
+  // to label every step — DRAFT→VALIDATED, EVALUATING→RESERVED, RESERVED→TICKET_MINTED —
+  // as a proposal, so four rows in the trail per payment all said the same untrue thing:
+  // that an agent had proposed a transaction. An auditor reading the trail afterwards is
+  // looking for *when what happened*; a mislabelled event type is worse than a missing
+  // one, because it reads as evidence.
   await audit(tx, {
-    eventType: 'transaction.proposed',
+    eventType: 'transaction.state_changed',
     actor: input.actor,
+    actorType: input.actor === 'system' ? 'system' : 'agent',
     resource: 'transaction_request',
     resourceId: input.requestId,
     metadata: { fromState: input.from, toState: input.to },
@@ -373,7 +402,6 @@ export interface ResolvedGrant {
   readonly walletMode: WalletMode;
   readonly signatureTriple: string;
   readonly policyVersionId: string;
-  readonly scopes: readonly string[];
 }
 
 /**
@@ -413,7 +441,6 @@ export async function resolveGrant(
     walletMode: row.wallet_mode,
     signatureTriple: row.signature_triple,
     policyVersionId: row.policy_version_id,
-    scopes: [],
   };
 }
 
@@ -428,47 +455,33 @@ export async function activeScopes(tx: TenantTx, credentialId: string): Promise<
 }
 
 /**
- * The behavioural history the escalation rules ask about.
+ * When this wallet first paid this address, in settled money — or never.
  *
- * Recipients are derived from what has already *settled* — a recipient a policy
- * approved once is no longer novel — and `firstSeenWithinDays` is a real window
- * rather than a boolean, because `recipient_first_seen_within_days` says days and
- * answering it with "have we ever paid them" is a different question.
+ * One indexed probe on the recipient index, for one address. It used to be
+ * `recipientHistory`, which grouped every recipient the wallet had ever paid into a Set
+ * and a Map so the caller could ask about one of them, and the set it built was read by
+ * nothing: the kernel asks `recipient_first_seen_within_days` about the candidate's
+ * recipient and nothing else. An unbounded scan per request, to answer a question about
+ * a single address, was the kind of cost that looks free until the tenant is a year old.
+ *
+ * "Settled" is the definition novelty is measured against — a recipient a policy approved
+ * once but whose payment never landed is not familiar. The risk plane counts a *different*
+ * population (anything it authorised), and says so in its own module comment; two
+ * questions, two answers.
  */
-export async function recipientHistory(
+export async function recipientFirstSeenAt(
   tx: TenantTx,
-  walletId: string,
-): Promise<{ readonly known: ReadonlySet<string>; readonly firstSeenWithinDays: (address: string, days: number) => boolean }> {
-  const rows = await tx.client.query<{ address: string; first_seen: Date }>(
-    `SELECT recipient_address AS address, min(created_at) AS first_seen FROM ari.transaction_requests
-      WHERE wallet_id = $1 AND org_id = $2 AND recipient_address IS NOT NULL
-        AND lifecycle_state IN ('SIGNING_COMPLETE', 'BROADCAST', 'BROADCAST_CONFIRMED')
-      GROUP BY recipient_address`,
-    [walletId, tx.orgId],
+  input: { readonly walletId: string; readonly address: string },
+): Promise<bigint | null> {
+  const rows = await tx.client.query<{ first_seen: Date | null }>(
+    `SELECT min(created_at) AS first_seen FROM ari.transaction_requests
+      WHERE wallet_id = $1 AND org_id = $2 AND recipient_address = $3
+        AND lifecycle_state IN ('SIGNING_COMPLETE', 'BROADCAST', 'BROADCAST_CONFIRMED')`,
+    [input.walletId, tx.orgId, input.address],
   );
-  const seen = new Map<string, number>();
-  for (const row of rows.rows) {
-    const at = row.first_seen.getTime();
-    const prior = seen.get(row.address);
-    if (prior === undefined || at < prior) seen.set(row.address, at);
-  }
-  const now = Number(tx.startedAtMs);
-  return {
-    known: new Set(seen.keys()),
-    firstSeenWithinDays: (address, days) => {
-      const at = seen.get(address);
-      return at !== undefined && now - at <= days * 86_400_000;
-    },
-  };
+  return BigInt(rows.rows[0]?.first_seen?.getTime() ?? 'NaN') || null;
 }
 
-/**
- * Where a request stands, for the status endpoint and the reconciliation worker.
- *
- * Deliberately not the canonical blob or the digest: a caller that already holds
- * those submitted the request, and a caller that does not should not be able to read
- * them back.
- */
 export async function requestStateOf(
   tx: TenantTx,
   requestId: string,

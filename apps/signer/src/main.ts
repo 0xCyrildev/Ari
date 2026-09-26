@@ -11,7 +11,6 @@
 
 import { claimTicket, withTransaction } from '@ari/ledger';
 import {
-  InMemoryTicketStore,
   MockSigningProvider,
   TicketKey,
   redeemAndSign,
@@ -102,8 +101,9 @@ export async function startSigner(config: SignerConfig): Promise<RunningSigner> 
     store: guardStore(store),
     provider,
     // The signer's own clock, deliberately: its expiry check is not the decision
-    // plane's, and agreement between the two is what the boundary is for.
-    nowMs: BigInt(Date.now()),
+    // plane's, and agreement between the two is what the boundary is for. Read per
+    // attempt rather than per process — the type will not accept the other form.
+    nowMs: () => BigInt(Date.now()),
     wallets: config.wallets,
   };
 
@@ -126,7 +126,6 @@ export async function startSigner(config: SignerConfig): Promise<RunningSigner> 
 
 /** Turns a thrown store into a spent ticket: fail closed, and fail quietly. */
 export function guardStore(inner: TicketStore): TicketStore {
-  const fallback = new InMemoryTicketStore();
   return {
     async redeem(ticketId, digest) {
       try {
@@ -136,14 +135,45 @@ export function guardStore(inner: TicketStore): TicketStore {
         // spent". A store that cannot be written to cannot authorise a second
         // signature, and the alternative — signing anyway — is a double spend
         // dressed as an availability fix.
-        await fallback.redeem(ticketId, digest);
         return false;
       }
     },
   };
 }
 
+/**
+ * Answer, whatever happens.
+ *
+ * The body read and `handle` were both outside any `try`, and the caller discards this
+ * promise (`void route(...)`). An aborted upload mid-body, or a provider that throws
+ * instead of returning a refusal, therefore did two things at once: left `res` unwritten,
+ * so the decision plane sat on its own timeout with no answer to read, and produced an
+ * unhandled rejection, which on Node's default kills `ari-signer` outright. A signing
+ * outage caused by a client hanging up is the availability half of T13's shape, and the
+ * refusal this answers with is the same one the guard store already makes for a failed
+ * database — nothing is signed, and the ticket is treated as spent.
+ */
 async function route(
+  handle: ReturnType<typeof createSignHandler>,
+  req: import('node:http').IncomingMessage,
+  res: import('node:http').ServerResponse,
+): Promise<void> {
+  try {
+    await respond(handle, req, res);
+  } catch (error) {
+    if (!res.headersSent) {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      // The provider may have been reached before it threw, so the ticket must not be
+      // re-presentable: the message says as much rather than pretending nothing happened.
+      res.end(JSON.stringify({ state: 'REJECTED', code: 'SIGNING_PROVIDER_ERROR', detail: 'the signer could not complete the attempt' }));
+    } else {
+      res.destroy();
+    }
+    console.error(`ari-signer: attempt failed: ${(error as Error).name}`);
+  }
+}
+
+async function respond(
   handle: ReturnType<typeof createSignHandler>,
   req: import('node:http').IncomingMessage,
   res: import('node:http').ServerResponse,

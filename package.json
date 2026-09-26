@@ -12,12 +12,13 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:unit": "vitest run packages",
-    "test:security": "vitest run --dir tests/security",
+    "test:unit": "vitest run packages tests/unit apps",
+    "test:security": "vitest run tests/security",
     "db:up": "docker compose up -d postgres redis",
     "db:down": "docker compose down",
     "clean": "rm -rf packages/*/dist node_modules/.vite",
-    "test:coverage": "vitest run --coverage.enabled --coverage.include='packages/*/src/**' --coverage.reporters=text"
+    "test:coverage": "vitest run --coverage.enabled --coverage.include='packages/*/src/**' --coverage.reporters=text",
+    "seed": "node --import tsx --env-file-if-exists=.env scripts/seed-tenant.mts"
   },
   "devDependencies": {
     "@ari/api": "workspace:*",

@@ -135,34 +135,27 @@ export async function withTransaction<T>(
 }
 
 /**
- * Take the row lock, creating the counter if this is the first request against
- * this window.
+ * Make sure a counter row exists for this window, so the guarded update below has
+ * something to lock.
  *
- * The `INSERT … DO NOTHING` before the `SELECT … FOR UPDATE` is what makes the
- * first two concurrent requests serialise rather than deadlock: without it they
- * both try to insert the same primary key, one waits on the other's index
- * entry, and the loser of that race is the transaction that then has to decide
- * whether the cap still holds.
+ * The `INSERT … DO NOTHING` is what makes the first two concurrent requests serialise
+ * rather than deadlock: without it they both try to insert the same primary key, one
+ * waits on the other's index entry, and the loser of that race is the transaction that
+ * then has to decide whether the cap still holds.
+ *
+ * It does not also `SELECT … FOR UPDATE`. That read used to sit here, and it bought a
+ * round trip on every single reservation to take a lock the very next statement takes
+ * anyway: an `UPDATE` on a row another transaction is writing blocks until that one
+ * commits, and under READ COMMITTED it then re-reads the *committed* value and
+ * re-evaluates its own `WHERE`. The check-and-mutate is one statement, and one lock.
  */
-async function lockCounter(client: PoolClient, key: WindowKey): Promise<bigint> {
+async function ensureCounter(client: PoolClient, key: WindowKey): Promise<void> {
   await client.query(
     `INSERT INTO ${TABLE_COUNTERS} (org_id, agent_id, window_key, dimension, current_reserved)
      VALUES ($1, $2, $3, $4, 0)
      ON CONFLICT (org_id, agent_id, window_key, dimension) DO NOTHING`,
     [key.orgId, key.agentId, key.windowKey, key.dimension],
   );
-
-  const locked = await client.query<{ current_reserved: string }>(
-    `SELECT current_reserved FROM ${TABLE_COUNTERS}
-      WHERE org_id = $1 AND agent_id = $2 AND window_key = $3 AND dimension = $4
-      FOR UPDATE`,
-    [key.orgId, key.agentId, key.windowKey, key.dimension],
-  );
-  const row = locked.rows[0];
-  if (row === undefined) {
-    throw new Error(`counter row vanished while being locked for ${key.agentId}/${key.windowKey}`);
-  }
-  return BigInt(row.current_reserved);
 }
 
 /**
@@ -180,49 +173,77 @@ async function lockCounter(client: PoolClient, key: WindowKey): Promise<bigint> 
  */
 export async function reserve(tx: LedgerTx, input: ReserveInput): Promise<ReservationResult> {
   const { client } = tx;
-  const reservationId = newId('rsv');
 
-  // Claim the idempotency key first. A retry then returns the hold it already
-  // made instead of consuming capacity a second time, and a rolled-back attempt
-  // leaves no claim behind to confuse the next one.
-  const claimed = await client.query<{ id: string }>(
-    `INSERT INTO ${TABLE_RESERVATIONS}
-       (id, org_id, agent_id, request_id, idempotency_key, window_key, dimension,
-        amount_raw, policy_version_id, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'HELD')
-     ON CONFLICT (agent_id, idempotency_key) DO NOTHING
-     RETURNING id`,
-    [
-      reservationId,
-      input.orgId,
-      input.agentId,
-      input.requestId,
-      input.idempotencyKey,
-      input.windowKey,
-      input.dimension,
-      input.amountRaw.toString(),
-      input.policyVersionId,
-    ],
-  );
+  // Claim the idempotency key first, and claim it `PENDING`.
+  //
+  // The claim and the capacity are two different facts and they need to survive
+  // separately. This used to insert the row as `HELD` and `DELETE` it when the cap
+  // refused — and `008` gives `ari_app` no DELETE on this table, on purpose ("a role
+  // that could remove a row could remove the evidence"), so the over-limit race threw
+  // `permission denied` instead of returning a refusal: a 500, a rolled-back audit row,
+  // and no `LIMIT_RESERVATION_FAILED` for a refusal that did happen.
+  const claimSql = `
+    INSERT INTO ${TABLE_RESERVATIONS}
+      (id, org_id, agent_id, request_id, idempotency_key, window_key, dimension,
+       amount_raw, policy_version_id, status)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PENDING')
+    ON CONFLICT (agent_id, idempotency_key, dimension) DO NOTHING
+    RETURNING id`;
 
-  if (claimed.rowCount === 0) {
-    const existing = await client.query<{ id: string; amount_raw: string }>(
-      `SELECT id, amount_raw FROM ${TABLE_RESERVATIONS}
-        WHERE agent_id = $1 AND idempotency_key = $2`,
-      [input.agentId, input.idempotencyKey],
+  let holdId = (await client.query<{ id: string }>(claimSql, [
+    newId('rsv'),
+    input.orgId,
+    input.agentId,
+    input.requestId,
+    input.idempotencyKey,
+    input.windowKey,
+    input.dimension,
+    input.amountRaw.toString(),
+    input.policyVersionId,
+  ])).rows[0]?.id;
+
+  if (holdId === undefined) {
+    const existing = await client.query<{ id: string; status: string; amount_raw: string }>(
+      `SELECT id, status, amount_raw FROM ${TABLE_RESERVATIONS}
+        WHERE agent_id = $1 AND idempotency_key = $2 AND dimension = $3
+        FOR UPDATE`,
+      [input.agentId, input.idempotencyKey, input.dimension],
     );
     const row = existing.rows[0];
     if (row === undefined) throw new Error('idempotency claim exists but its reservation does not');
-    return { status: 'ALREADY_HELD', reservationId: row.id, reservedRaw: BigInt(row.amount_raw) };
+    if (row.status === 'HELD' || row.status === 'SETTLED') {
+      return { status: 'ALREADY_HELD', reservationId: row.id, reservedRaw: BigInt(row.amount_raw) };
+    }
+    // A dead claim — `ABANDONED` by an attempt the cap refused, or `RELEASED` by a
+    // signature that never landed — is re-claimed rather than duplicated. The unique
+    // key is the request's identity, so there is exactly one row per (key, dimension)
+    // and the history of an attempt that failed twice stays one row.
+    await client.query(
+      `UPDATE ${TABLE_RESERVATIONS}
+          SET status = 'PENDING', amount_raw = $2, request_id = $3, policy_version_id = $4,
+              window_key = $5, resolved_at = NULL, release_reason = NULL
+        WHERE id = $1`,
+      [row.id, input.amountRaw.toString(), input.requestId, input.policyVersionId, input.windowKey],
+    );
+    holdId = row.id;
   }
 
-  await lockCounter(client, input);
+  await ensureCounter(client, input);
 
+  // The check and the increment are one statement on purpose, and the number it checks
+  // against is `current_reserved + settled`.
+  //
+  // Settled money leaves `current_reserved` when a hold is settled, so a daily cap
+  // checked against outstanding holds alone resets itself every time a payment
+  // completes: five $1,000 payments against a $5,000 ceiling, each settling before the
+  // next is asked for, and the ceiling never binding once. A limit is a promise about
+  // what left the account in this window, not about what is currently parked.
   const held = await client.query<{ current_reserved: string }>(
     `UPDATE ${TABLE_COUNTERS}
-        SET current_reserved = current_reserved + $5
+        SET current_reserved = current_reserved + $5,
+            reserved_requests = reserved_requests + 1
       WHERE org_id = $1 AND agent_id = $2 AND window_key = $3 AND dimension = $4
-        AND current_reserved + $5 <= $6
+        AND current_reserved + settled + $5 <= $6
       RETURNING current_reserved`,
     [
       input.orgId,
@@ -235,24 +256,33 @@ export async function reserve(tx: LedgerTx, input: ReserveInput): Promise<Reserv
   );
 
   if (held.rowCount === 0) {
-    const current = await client.query<{ current_reserved: string }>(
-      `SELECT current_reserved FROM ${TABLE_COUNTERS}
+    const current = await client.query<{ current_reserved: string; settled: string }>(
+      `SELECT current_reserved, settled FROM ${TABLE_COUNTERS}
         WHERE org_id = $1 AND agent_id = $2 AND window_key = $3 AND dimension = $4`,
       [input.orgId, input.agentId, input.windowKey, input.dimension],
     );
-    // Hand the idempotency claim back. A denial is not a spend: if the claim
-    // survived, the key would report a hold that was never taken, and the caller
-    // could not commit its audit row for the refusal in this same transaction.
-    await client.query(`DELETE FROM ${TABLE_RESERVATIONS} WHERE id = $1`, [reservationId]);
+    const counter = current.rows[0];
+    const committed = BigInt(counter?.current_reserved ?? '0') + BigInt(counter?.settled ?? '0');
+    // The claim goes to `ABANDONED` rather than away. It is not a spend and nothing
+    // downstream may read it as one — the counter was not touched — but it is a record
+    // that this key was tried, which is what a reconciliation pass needs to see.
+    await client.query(
+      `UPDATE ${TABLE_RESERVATIONS} SET status = 'ABANDONED', resolved_at = now() WHERE id = $1`,
+      [holdId],
+    );
     return {
       status: 'LIMIT_EXCEEDED',
-      reservedRaw: BigInt(current.rows[0]?.current_reserved ?? '0'),
+      // `reservedRaw` here is everything already committed against the window: the
+      // outstanding holds *and* the settled total. The refusal message an operator reads
+      // has to add up to the same number the guard compared.
+      reservedRaw: committed,
       requestedRaw: input.amountRaw,
       maxRaw: input.maxRaw,
     };
   }
 
-  return { status: 'HELD', reservationId, reservedRaw: input.amountRaw };
+  await client.query(`UPDATE ${TABLE_RESERVATIONS} SET status = 'HELD' WHERE id = $1`, [holdId]);
+  return { status: 'HELD', reservationId: holdId, reservedRaw: input.amountRaw };
 }
 
 /**
@@ -295,6 +325,55 @@ export async function release(
   );
 
   return { status: 'RELEASED', releasedRaw: BigInt(row.amount_raw) };
+}
+
+/**
+ * Every hold this request has outstanding — one per window it is bounded by, so a
+ * policy with both a daily and a monthly ceiling produces two rows for one payment.
+ *
+ * The delivery step works in request ids rather than reservation ids because the
+ * decision plane hands a `requestId` to the edge and does not hand it a list of holds:
+ * a capability-shaped identifier for something outside the transaction is exactly the
+ * thing this boundary keeps from the caller.
+ */
+async function heldForRequest(
+  client: PoolClient,
+  requestId: string,
+): Promise<readonly string[]> {
+  const rows = await client.query<{ id: string }>(
+    `SELECT id FROM ${TABLE_RESERVATIONS} WHERE request_id = $1 AND status = 'HELD' ORDER BY dimension`,
+    [requestId],
+  );
+  return rows.rows.map((row) => row.id);
+}
+
+/** Settle every hold a request took. Returns the raw total moved, and the rows it moved. */
+export async function settleForRequest(
+  tx: LedgerTx,
+  requestId: string,
+): Promise<{ readonly settledRaw: bigint; readonly rows: number }> {
+  const ids = await heldForRequest(tx.client, requestId);
+  let total = 0n;
+  for (const id of ids) {
+    const settled = await settle(tx, id);
+    if (settled.status === 'SETTLED') total += settled.settledRaw;
+  }
+  return { settledRaw: total, rows: ids.length };
+}
+
+/** Give back every hold a request took, when the request can no longer be honoured. */
+export async function releaseForRequest(
+  tx: LedgerTx,
+  requestId: string,
+  reason: string,
+): Promise<{ readonly releasedRaw: bigint; readonly rows: number }> {
+  const ids = await heldForRequest(tx.client, requestId);
+  let total = 0n;
+  for (const id of ids) {
+    const released = await release(tx, id, reason);
+    if (released.status === 'RELEASED') total += released.releasedRaw;
+  }
+  return { releasedRaw: total, rows: ids.length };
 }
 
 /** Move a hold into the settled totals once the transaction has actually signed. */

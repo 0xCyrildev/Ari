@@ -12,9 +12,11 @@ import {
   type AuthorizedSigningRequest,
   type SignerDeps,
 } from '../src/index.js';
+import { claimsFor } from '../src/index.js';
 import {
   AFTER_TTL,
   GOOD_KEY,
+  ISSUED_AT,
   OTHER_KEY,
   WITHIN_TTL,
   candidate,
@@ -51,7 +53,7 @@ function signer(over: Partial<SignerDeps> = {}) {
   return {
     provider,
     store,
-    deps: { key, store, provider, nowMs: WITHIN_TTL, wallets: new Set([walletId]), ...over } satisfies SignerDeps,
+    deps: { key, store, provider, nowMs: () => WITHIN_TTL, wallets: new Set([walletId]), ...over } satisfies SignerDeps,
   };
 }
 
@@ -153,7 +155,7 @@ describe('the signer', () => {
   });
 
   it('refuses an expired ticket without reaching the provider', async () => {
-    const { deps, provider } = signer({ nowMs: AFTER_TTL });
+    const { deps, provider } = signer({ nowMs: () => AFTER_TTL });
     const outcome = await redeemAndSign(deps, { ticket: sealed(), canonical: candidate().canonical });
     if (outcome.status !== 'REJECTED') throw new Error('expected REJECTED');
     expect(outcome.code).toBe('TICKET_EXPIRED');
@@ -254,5 +256,75 @@ describe('what the boundary will not accept', () => {
     // candidate transaction, so there is no field to put one in.
     const smuggled: AuthorizedSigningRequest = { ...authorised, candidate: candidate().candidate };
     expect(smuggled.ticketId).toBe(authorised.ticketId);
+  });
+});
+
+
+describe('the clock the signer checks against is its own, and is read again each attempt', () => {
+  /**
+   * The regression this file exists for. `SignerDeps.nowMs` used to be a `bigint` and
+   * `ari-signer` filled it with `BigInt(Date.now())` when the process started, so every
+   * ticket the service ever saw was compared against a clock frozen at boot: a ticket
+   * minted an hour later was four minutes from expiry as far as the signer was
+   * concerned, forever. The TTL was enforced in tests and not in the only process that
+   * has to enforce it. Making the field a function is the fix; these two tests are the
+   * evidence, and the type is what stops it from being reintroduced.
+   */
+  it('honours a ticket while the clock is inside the window and refuses it once it is not', async () => {
+    const c = candidate();
+    const claims = claimsFor(request({ digest: c.digest, issuedAtMs: ISSUED_AT }));
+    const sealedTicket = sealTicket(claims, key);
+    if (!sealedTicket.ok) throw new Error(sealedTicket.reason);
+
+    let clock = ISSUED_AT + 1_000n;
+    const deps: SignerDeps = {
+      key,
+      store: new InMemoryTicketStore(),
+      provider: new MockSigningProvider(),
+      nowMs: () => clock,
+      wallets: new Set([walletId]),
+    };
+    const first = await redeemAndSign(deps, { ticket: sealedTicket.ticket, canonical: c.canonical });
+    expect(first.status).toBe('SIGNED');
+
+    // A second ticket, minted the same way, presented after the window closed. The
+    // single-use store and the seal are untouched; only the clock moved, and that is
+    // the whole of what changes the answer.
+    const later = sealTicket(claimsFor(request({ digest: c.digest, issuedAtMs: ISSUED_AT, ticketId: newId('tkt') })), key);
+    if (!later.ok) throw new Error(later.reason);
+    clock = ISSUED_AT + TICKET_TTL_MS + 1n;
+    const second = await redeemAndSign(deps, { ticket: later.ticket, canonical: c.canonical });
+    expect(second.status).toBe('REJECTED');
+    if (second.status !== 'REJECTED') return;
+    expect(second.code).toBe('TICKET_EXPIRED');
+  });
+
+  it('refuses a ticket whose own issue time is ahead of this process, inside its stated lifetime', async () => {
+    // Lifetime is bounded by the seal, and both of its endpoints are the decision
+    // plane's claim. A ticket asserting it was issued a year from now expires a year
+    // and a minute from now — legal on its face, and invisible to an expiry check that
+    // trusts it. The signer's clock is the thing that decides.
+    const year = 365n * 24n * 60n * 60n * 1000n;
+    const claims = claimsFor(request({ issuedAtMs: WITHIN_TTL + year }));
+    const sealedTicket = sealTicket(claims, key);
+    if (!sealedTicket.ok) throw new Error(sealedTicket.reason);
+    const { deps, provider } = signer();
+    const outcome = await redeemAndSign(deps, { ticket: sealedTicket.ticket, canonical: candidate().canonical });
+    expect(outcome.status).toBe('REJECTED');
+    if (outcome.status !== 'REJECTED') return;
+    expect(outcome.detail).toMatch(/ahead of this signer/);
+    expect(provider.invocations).toBe(0);
+  });
+
+  it('allows a few seconds of disagreement between two machines', async () => {
+    // The bound is a tolerance, not a synchronisation promise: a decision plane half a
+    // second fast is a hosting artefact, and refusing for it would take the signer
+    // offline every time a clock slewed.
+    const claims = claimsFor(request({ issuedAtMs: WITHIN_TTL + 500n }));
+    const sealedTicket = sealTicket(claims, key);
+    if (!sealedTicket.ok) throw new Error(sealedTicket.reason);
+    const { deps } = signer();
+    expect((await redeemAndSign(deps, { ticket: sealedTicket.ticket, canonical: candidate().canonical })).status)
+      .toBe('SIGNED');
   });
 });

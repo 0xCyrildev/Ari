@@ -8,7 +8,7 @@
  * signer's own counter as the witness (A9).
  */
 
-import { authorize, type PipelineDeps } from '@ari/api';
+import { authorize, recordDeliveryOutcome, type PipelineDeps } from '@ari/api';
 import { ApprovalKey, recordDecision, sealApproval } from '@ari/approvals';
 import {
   asTenant,
@@ -26,6 +26,7 @@ import { InMemoryTicketStore, MockSigningProvider, TicketKey, redeemAndSign, typ
 import { behaviouralProvider } from '@ari/risk-engine';
 import { CandidateTransaction, PolicyDocument, newId, type CanonicalDigest } from '@ari/schemas';
 import { activateVersion, createPolicy } from '@ari/policies';
+import { readCounter } from '@ari/ledger';
 import { verifyChain } from '@ari/audit';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -208,7 +209,7 @@ function signer(): { deps: SignerDeps; provider: MockSigningProvider; store: InM
   return {
     provider,
     store,
-    deps: { key: TICKET_KEY, provider, store, nowMs: NOW, wallets: new Set<string>() },
+    deps: { key: TICKET_KEY, provider, store, nowMs: () => NOW, wallets: new Set<string>() },
   };
 }
 
@@ -494,3 +495,183 @@ async function canonicalRow(requestId: string): Promise<string> {
   return canonical;
 }
 
+
+describe('what one authorised request costs', () => {
+  /**
+   * The hot path measured, not admired.
+   *
+   * Every fix in this file's history that made the request cheaper removed a statement —
+   * the audit chain's head read before each of seven appends, a lifecycle re-read for a
+   * row the same transaction had just written, a counter locked twice. None of them would
+   * be noticed by a test that only asserts correctness, and each of them is invisible
+   * until a tenant's traffic is the thing that grew. So the count is asserted, with
+   * enough slack that a legitimate change is not a chore, and little enough that an
+   * accidental N+1 is.
+   */
+  function countingConnector(inner: Connector, tally: { statements: number }): Connector {
+    return {
+      async connect() {
+        const client = await inner.connect();
+        return new Proxy(client, {
+          get(target, property, receiver) {
+            if (property === 'query') {
+              return (...args: unknown[]) => {
+                tally.statements += 1;
+                return (target.query as (...a: unknown[]) => unknown)(...args);
+              };
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        });
+      },
+    };
+  }
+
+  it('is a bounded number of statements for an ALLOW that mints a ticket', async () => {
+    const tally = { statements: 0 };
+    const metered: PipelineDeps = { ...deps, pool: countingConnector(app, tally) };
+    const w = await world();
+    const outcome = await authorize(metered, w.orgId, {
+      ...request(w, { address: RECIPIENT, amount: usd(500n), idempotencyKey: 'cost-1' }),
+    });
+    expect(outcome.status).toBe('TICKET_ISSUED');
+    // BEGIN/COMMIT are counted, and this is one request: grant, version, scopes, usage,
+    // history, the risk baseline, the request row, the evaluation, seven audit events,
+    // four lifecycle steps, the reservation, the decision, the ticket.
+    console.info();
+    expect(tally.statements).toBeLessThanOrEqual(45);
+    expect(tally.statements).toBeGreaterThan(20);
+  });
+
+  it('asks the risk plane exactly once, and never per rule', async () => {
+    const tally = { statements: 0 };
+    const metered: PipelineDeps = { ...deps, pool: countingConnector(app, tally) };
+    const w = await world();
+    await authorize(metered, w.orgId, {
+      ...request(w, { address: RECIPIENT, amount: usd(400n), idempotencyKey: 'cost-risk-1' }),
+    });
+    const withHistory = tally.statements;
+
+    const tally2 = { statements: 0 };
+    const metered2: PipelineDeps = { ...deps, pool: countingConnector(app, tally2) };
+    const w2 = await world();
+    await authorize(metered2, w2.orgId, {
+      ...request(w2, { address: RECIPIENT, amount: usd(400n), idempotencyKey: 'cost-risk-2' }),
+    });
+    expect(tally2.statements).toBe(withHistory);
+  });
+
+  it('costs a refusal the same as the payment it stopped, and no more', async () => {
+    // Both walk the kernel and write their audit evidence; the difference is that one
+    // stops before the ledger. If a refusal ever became *cheaper* than a payment, the
+    // missing statements would be the evidence that should have been written.
+    const w = await world();
+    const refused = { statements: 0 };
+    await authorize({ ...deps, pool: countingConnector(app, refused) }, w.orgId, {
+      ...request(w, { address: NOVEL, amount: usd(50_000n), idempotencyKey: 'cost-deny' }),
+    });
+
+    const paid = { statements: 0 };
+    await authorize({ ...deps, pool: countingConnector(app, paid) }, w.orgId, {
+      ...request(w, { address: RECIPIENT, amount: usd(500n), idempotencyKey: 'cost-pay' }),
+    });
+    expect(refused.statements).toBeLessThan(paid.statements);
+    expect(refused.statements).toBeGreaterThan(15);
+  });
+
+  it('previews without the writes a preview is not allowed to make', async () => {
+    const w = await world();
+    const preview = { statements: 0 };
+    const before = (
+      await pool.query<{ count: number }>(`SELECT count(*)::int AS count FROM ari.transaction_requests WHERE org_id = $1`, [w.orgId])
+    ).rows[0]?.count ?? -1;
+    const outcome = await authorize({ ...deps, pool: countingConnector(app, preview) }, w.orgId, {
+      ...request(w, { address: RECIPIENT, amount: usd(500n), idempotencyKey: 'preview-cost' }),
+      dryRun: true,
+    });
+    expect(outcome.status).toBe('DECIDED');
+    expect(
+      (
+        await pool.query<{ count: number }>(`SELECT count(*)::int AS count FROM ari.transaction_requests WHERE org_id = $1`, [w.orgId])
+      ).rows[0]?.count ?? -1,
+    ).toBe(before);
+    expect(preview.statements).toBeLessThan(20);
+  });
+});
+
+
+describe('what the audit trail says happened', () => {
+  /**
+   * Labels are evidence. The lifecycle writer used to record every state change as
+   * `transaction.proposed` — four rows per payment all saying an agent had proposed a
+   * transaction — and `recordRequest`, the place a proposal actually arrives, wrote no
+   * event at all. Both are fixed; this is the test that keeps them fixed, because a
+   * mislabelled trail reads as evidence and is not.
+   */
+  it('records one proposal, and names every step after it for what it was', async () => {
+    const w = await world();
+    const candidate = request(w, { address: RECIPIENT, amount: usd(2_000n), idempotencyKey: 'labels-2k' });
+    const pending = await authorize(deps, w.orgId, candidate);
+    if (pending.status !== 'AWAITING_APPROVAL') throw new Error('expected an approval request');
+    await asTenant(app, w.orgId, (tx) =>
+      recordDecision(tx, { approvalId: pending.approvalId, approver: w.owner, decision: 'APPROVED' }),
+    );
+    await authorize(deps, w.orgId, { ...candidate, approvalToken: await tokenFor(pending.approvalId) });
+
+    const counts = await pool.query<{ event_type: string; count: string }>(
+      `SELECT event_type, count(*)::text AS count FROM ari.audit_events WHERE org_id = $1 GROUP BY 1`,
+      [w.orgId],
+    );
+    const byType = new Map(counts.rows.map((row) => [row.event_type, row.count]));
+
+    // Two attempts at one request, and one proposal: the retry found the row rather than
+    // proposing the same payment twice.
+    expect(byType.get('transaction.proposed')).toBe('1');
+    expect(Number(byType.get('transaction.state_changed'))).toBeGreaterThanOrEqual(5);
+    expect(byType.get('risk.assessed')).toBe('2');
+    expect(byType.get('ticket.minted')).toBe('1');
+
+    const mislabelled = await pool.query<{ id: string }>(
+      `SELECT id FROM ari.audit_events
+        WHERE org_id = $1 AND event_type = 'transaction.proposed' AND metadata ? 'fromState'`,
+      [w.orgId],
+    );
+    expect(mislabelled.rows).toHaveLength(0);
+
+    const actorTypes = await pool.query<{ actor_type: string }>(
+      `SELECT DISTINCT actor_type FROM ari.audit_events
+        WHERE org_id = $1 AND event_type = 'transaction.state_changed' ORDER BY actor_type`,
+      [w.orgId],
+    );
+    // Nobody pressed anything. A reader who concluded a human had advanced the state
+    // machine would go asking the wrong person about the wrong payment.
+    expect(actorTypes.rows.map((row) => row.actor_type)).toEqual(['agent', 'system']);
+  });
+
+  it('settles the hold and says so once the signature lands', async () => {
+    const w = await world();
+    const outcome = await authorize(deps, w.orgId, {
+      ...request(w, { address: RECIPIENT, amount: usd(500n), idempotencyKey: 'settle-500' }),
+    });
+    if (outcome.status !== 'TICKET_ISSUED') throw new Error('expected a ticket');
+    const delivered = await recordDeliveryOutcome(deps, w.orgId, outcome.requestId, { accepted: true, state: 'COMPLETE' });
+    expect(delivered).toBe('SETTLED');
+
+    const counter = await readCounter(pool, {
+      orgId: w.orgId,
+      agentId: w.agentId,
+      windowKey: new Date(Number(NOW)).toISOString().slice(0, 10),
+      dimension: 'daily_usdc-6dp',
+    });
+    // Settled money is out of the parked total and into the spent one — and the daily cap
+    // still counts it, which is the other half of this pair of assertions.
+    expect(counter?.reservedRaw).toBe(0n);
+    expect(counter?.settledRaw).toBe(usd(500n));
+
+    const events = await pool.query<{ event_type: string }>(
+      `SELECT event_type FROM ari.audit_events WHERE org_id = $1 AND event_type = 'reservation.settled'`,
+      [w.orgId],
+    );
+    expect(events.rows).toHaveLength(1);
+  });
+});

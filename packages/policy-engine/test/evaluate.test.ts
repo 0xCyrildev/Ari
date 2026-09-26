@@ -11,7 +11,6 @@ import {
   NOW_MS,
   POLICY_ID,
   PERMITTED,
-  RECIPIENT,
   UNIT,
   USDC,
   VERSION_ID,
@@ -326,7 +325,7 @@ describe('stage 8 — escalation conditions', () => {
   it('escalates on an asset outside the behavioural baseline', () => {
     const decision = decide({
       policy: withCondition({ op: 'asset_not_in_baseline' }),
-      st: state({ history: { knownRecipientAddresses: new Set([RECIPIENT]), baselineAssets: new Set(), baselineChains: new Set(['ethereum']), firstSeenWithinDays: () => false } }),
+      st: state({ history: { baselineAssets: new Set(), baselineChains: new Set(['ethereum']), recipientFirstSeenAtMs: null } }),
     });
     expect(decision.outcome).toBe('REQUIRE_HUMAN_APPROVAL');
   });
@@ -334,9 +333,23 @@ describe('stage 8 — escalation conditions', () => {
   it('escalates on a chain outside the baseline', () => {
     const decision = decide({
       policy: withCondition({ op: 'chain_not_in_baseline' }),
-      st: state({ history: { knownRecipientAddresses: new Set([RECIPIENT]), baselineAssets: new Set(), baselineChains: new Set(), firstSeenWithinDays: () => false } }),
+      st: state({ history: { baselineAssets: new Set(), baselineChains: new Set(), recipientFirstSeenAtMs: null } }),
     });
     expect(decision.outcome).toBe('REQUIRE_HUMAN_APPROVAL');
+  });
+
+  it('leaves a recipient that has never been paid to for the rule that asks about recency', () => {
+    // `null` is "never settled", and a rule about *when they were first seen* cannot be
+    // satisfied by somebody who has not been seen. Novelty is `newRecipients`' question,
+    // and collapsing the two would escalate every first payment through a rule a human
+    // wrote about established recipients.
+    const policy = withCondition(
+      { op: 'recipient_first_seen_within_days', days: 30 },
+      { newRecipients: { allowed: true, requireApproval: false } },
+    );
+    const st = state({ history: { baselineAssets: new Set([`erc20:ethereum:${USDC}`]), baselineChains: new Set(['ethereum']), recipientFirstSeenAtMs: null } });
+    const cand = candidate({ recipient: { chain: 'ethereum', address: NOVEL } });
+    expect(decide({ policy, cand, st }).outcome).toBe('ALLOW');
   });
 
   it('escalates a recipient seen for the first time within the window', () => {
@@ -346,10 +359,9 @@ describe('stage 8 — escalation conditions', () => {
     );
     const st = state({
       history: {
-        knownRecipientAddresses: new Set(),
         baselineAssets: new Set([`erc20:ethereum:${USDC}`]),
         baselineChains: new Set(['ethereum']),
-        firstSeenWithinDays: () => true,
+        recipientFirstSeenAtMs: NOW_MS - 11n * 86_400_000n,
       },
     });
     const cand = candidate({ recipient: { chain: 'ethereum', address: NOVEL } });

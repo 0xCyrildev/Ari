@@ -153,13 +153,15 @@ export async function recordDecision(tx: TenantTx, input: DecisionInput): Promis
   const locked = await tx.client.query<{
     status: ApprovalStatus;
     expires_at: Date;
+    expired: boolean;
     allowed_roles: string[];
     requested_by: string;
     subject_kind: ApprovalSubject;
     quorum_needed: number;
     digest: string;
   }>(
-    `SELECT status, expires_at, allowed_roles, requested_by, subject_kind, quorum_needed, digest
+    `SELECT status, expires_at, allowed_roles, requested_by, subject_kind, quorum_needed, digest,
+            expires_at <= now() AS expired
        FROM ari.approval_requests WHERE id = $1 FOR UPDATE`,
     [input.approvalId],
   );
@@ -169,7 +171,12 @@ export async function recordDecision(tx: TenantTx, input: DecisionInput): Promis
   if (request.status !== 'PENDING') {
     return { ok: false, code: 'APPROVAL_ALREADY_CONSUMED', detail: `approval is ${request.status}` };
   }
-  if (request.expires_at.getTime() <= Number(tx.startedAtMs)) {
+  // `now()`, not the process clock: `expires_at` was stamped by the database from a
+  // request whose TTL it read, and comparing it to a second clock in a second machine is
+  // the same split that used to make revocations undateable. An approver's decision
+  // arriving one second late should be refused by the row's own expiry, not by however
+  // far this API host happens to have drifted.
+  if (request.expired) {
     await tx.client.query(`UPDATE ari.approval_requests SET status = 'EXPIRED' WHERE id = $1`, [input.approvalId]);
     await appendEvent(tx, refusalEvent(tx, input.approvalId, 'approval.claim_refused', 'APPROVAL_EXPIRED', 'the window closed before the decision'));
     return { ok: false, code: 'APPROVAL_EXPIRED', detail: 'expired' };
@@ -310,10 +317,6 @@ export async function spendApproval(
     }
     const claims = opened.claims;
 
-    if (claims.expiresAtMs <= tx.startedAtMs) {
-      await appendEvent(tx, refusalEvent(tx, claims.approvalId, 'approval.claim_refused', 'APPROVAL_EXPIRED', 'presented after its expiry'));
-      return { ok: false, code: 'APPROVAL_EXPIRED', detail: 'expired' };
-    }
     if (claims.digest !== presentedDigest) {
       // The bytes being authorised are not the bytes the human approved. Nothing else
       // in this system matters as much as this line refusing (T11, T12).
@@ -325,6 +328,7 @@ export async function spendApproval(
       `UPDATE ari.approval_requests
           SET status = 'CONSUMED', consumed_at = now()
         WHERE id = $1 AND org_id = $2 AND status = 'GRANTED' AND digest = $3 AND consumed_at IS NULL
+          AND expires_at > now()
         RETURNING digest`,
       [claims.approvalId, tx.orgId, claims.digest],
     );

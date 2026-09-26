@@ -319,6 +319,27 @@ describe('rollback is not a neutral act', () => {
 });
 
 describe('what the database will not do', () => {
+  it('will not walk a published version back into a draft so its content can be edited', async () => {
+    const f = await fixture();
+    // `005` freezes the document of any version that is not DRAFT, and `ari_app` holds
+    // UPDATE on the table — so without a state machine on `status` itself the bypass was
+    // two statements: set it back to DRAFT (the content trigger's WHEN clause then
+    // excludes the row), edit the document, set it forward again. An auditor is told
+    // published content is immutable, so the database has to be the one that says so.
+    await expect(
+      pool.query(`UPDATE ari.policy_versions SET status = 'DRAFT' WHERE id = $1`, [f.versionId]),
+    ).rejects.toThrow(/does not become DRAFT/);
+
+    await expect(
+      asTenant(app, f.orgId, (tx) =>
+        tx.client.query(`UPDATE ari.policy_versions SET status = 'DRAFT' WHERE id = $1`, [f.versionId]),
+      ),
+    ).rejects.toThrow(/does not become DRAFT/);
+
+    const stillActive = await asTenant(app, f.orgId, (tx) => activeVersion(tx, f.policyId));
+    expect(stillActive?.status).toBe('ACTIVE');
+  });
+
   it('refuses to edit a published version’s content', async () => {
     const f = await fixture();
     await expect(

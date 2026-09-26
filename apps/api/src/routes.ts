@@ -19,7 +19,7 @@ import {
   createUser,
   requestStateOf,
 } from '@ari/identity';
-import { authorize, type AuthorizeOutcome, type PipelineDeps } from './authorize.js';
+import { authorize, recordDeliveryOutcome, type AuthorizeOutcome, type PipelineDeps } from './authorize.js';
 import { acceptsBootstrapToken, authenticateAgent } from './gateway.js';
 import type { SignerClient } from './signer-client.js';
 import type { FastifyError, FastifyInstance } from 'fastify';
@@ -40,7 +40,7 @@ function publicDecision(decision: Decision) {
   };
 }
 
-async function handleOutcome(deps: RouteDeps, outcome: AuthorizeOutcome): Promise<Record<string, unknown>> {
+async function handleOutcome(deps: RouteDeps, orgId: string, outcome: AuthorizeOutcome): Promise<Record<string, unknown>> {
   switch (outcome.status) {
     case 'DENIED':
       return { state: 'DENIED', requestId: outcome.requestId, reasonCodes: outcome.codes };
@@ -63,6 +63,10 @@ async function handleOutcome(deps: RouteDeps, outcome: AuthorizeOutcome): Promis
         ticket: outcome.ticket,
         canonical: outcome.canonical,
       });
+      // The books move after the answer is carried, in a transaction of its own: a hold
+      // that became a signature is no longer parked capacity, and a hold the authority
+      // plane can never honour must go back to the agent's daily total (T13).
+      await recordDeliveryOutcome(deps.pipeline, orgId, outcome.requestId, delivered);
       if (!delivered.accepted) {
         return {
           state: 'TICKET_ISSUED_NOT_DELIVERED',
@@ -98,7 +102,10 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     if (
       typeof body.name !== 'string' ||
       typeof body.ownerEmail !== 'string' ||
-      typeof body.ownerDisplayName !== 'string'
+      typeof body.ownerDisplayName !== 'string' ||
+      body.name.length > 200 ||
+      body.ownerEmail.length > 320 ||
+      body.ownerDisplayName.length > 200
     ) {
       return reply.code(400).send({ code: 'INVALID_REQUEST', detail: 'name, ownerEmail and ownerDisplayName are required' });
     }
@@ -135,11 +142,17 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     if (!auth.ok) return reply.code(auth.status).send({ code: auth.code, detail: auth.detail });
     const body = request.body as { candidate?: unknown; idempotencyKey?: unknown; approvalToken?: unknown };
     const parsed = CandidateTransaction.safeParse(body.candidate);
-    if (!parsed.success || typeof body.idempotencyKey !== 'string') {
+    // Bounded here because the column bounds it and a 23-column INSERT is a worse way to
+    // say "too long" than a 400. `idempotency_key` is `BETWEEN 1 AND 200` in `001` and
+    // sits in a unique index; the body limit is 64 KB, so without this a caller can write
+    // a 60 KB "key" straight into Postgres and get a constraint error as a 500.
+    if (!parsed.success || typeof body.idempotencyKey !== 'string' || body.idempotencyKey.length > 200) {
       // A body the parser cannot read is not the same case as `kind: 'unknown'`:
       // that is a *parsed* transaction the policy refuses with a reason code, and
       // this is a request that never reached a decision at all.
-      return reply.code(400).send({ code: 'INVALID_REQUEST', detail: parsed.success ? 'idempotencyKey is required' : parsed.error.message });
+      return reply
+        .code(400)
+        .send({ code: 'INVALID_REQUEST', detail: parsed.success ? 'idempotencyKey is required, and at most 200 characters' : parsed.error.message });
     }
     const outcome = await authorize(deps.pipeline, auth.principal.orgId, {
       credentialId: auth.principal.credentialId,
@@ -148,7 +161,7 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
       idempotencyKey: body.idempotencyKey,
       ...(typeof body.approvalToken === 'string' ? { approvalToken: body.approvalToken } : {}),
     });
-    return reply.code(200).send(await handleOutcome(deps, outcome));
+    return reply.code(200).send(await handleOutcome(deps, auth.principal.orgId, outcome));
   });
 
   app.post('/v1/transactions/evaluate', async (request, reply) => {
@@ -166,7 +179,7 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
       idempotencyKey: `preview:${parsed.data.requestId}`,
       dryRun: true,
     });
-    return reply.code(200).send(await handleOutcome(deps, outcome));
+    return reply.code(200).send(await handleOutcome(deps, auth.principal.orgId, outcome));
   });
 
   app.get('/v1/transactions/:id', async (request, reply) => {

@@ -233,10 +233,11 @@ export function state(overrides: Partial<EvaluationState> = {}): EvaluationState
       ikaSpentTodayRaw: 0n,
     },
     history: {
-      knownRecipientAddresses: new Set([RECIPIENT]),
       baselineAssets: new Set([`erc20:ethereum:${USDC}`]),
       baselineChains: new Set(['ethereum']),
-      firstSeenWithinDays: () => false,
+      // A recipient the wallet has paid for a long time: neither novel nor recently seen,
+      // so `recipient_first_seen_within_days` is quiet unless a test says otherwise.
+      recipientFirstSeenAtMs: NOW_MS - 365n * 86_400_000n,
     },
     // An assessment is the ordinary case now, not an extra: the engine treats a
     // missing one as the fallback the policy named, and the fixture's policy named

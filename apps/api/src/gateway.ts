@@ -20,7 +20,13 @@ export interface Principal {
   readonly orgId: string;
   readonly agentId: string;
   readonly credentialId: string;
-  readonly scopes: readonly string[];
+  /**
+   * Deliberately not the scopes. `verifyCredential` reads them outside any tenant
+   * transaction, and the kernel must not be handed a scope list that a request ten
+   * seconds after a revocation could still be carrying — `authorize` reads them again
+   * inside its own transaction, from the row that is authoritative at that moment. A
+   * field here would be a second source of truth that looks authoritative.
+   */
 }
 
 export type AuthFailure = {
@@ -63,7 +69,6 @@ export async function authenticateAgent(deps: GatewayDeps, header: string | unde
       orgId: verified.orgId,
       agentId: verified.agentId,
       credentialId: verified.credentialId,
-      scopes: verified.scopes,
     },
   };
 }

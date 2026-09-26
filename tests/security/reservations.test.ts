@@ -17,6 +17,7 @@ import { newId } from '@ari/schemas';
 import {
   readCounter,
   release,
+  releaseForRequest,
   reserve,
   settle,
   verifyCounterIntegrity,
@@ -27,14 +28,34 @@ import {
 } from '@ari/ledger';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { connect } from './database.js';
+import type { PoolClient } from 'pg';
 
 let pool: Awaited<ReturnType<typeof connect>>;
+let appPool: Awaited<ReturnType<typeof connect>>;
+
+/**
+ * The role `ari-api` actually holds the connection as.
+ *
+ * Everything above this block runs as `ari`, which owns these tables — and an owner is
+ * outside both the grants and row security, so an entire class of bug is invisible to
+ * it. That is not a hypothetical: the over-limit path deleted its idempotency claim,
+ * `008` grants no DELETE on `reservations`, and every test in this file was green.
+ */
+const app = {
+  async connect(): Promise<PoolClient> {
+    const client = await appPool.connect();
+    await client.query(`SET ROLE ari_app`);
+    return client;
+  },
+};
 
 beforeAll(async () => {
   pool = await connect();
+  appPool = await connect(4);
 });
 
 afterAll(async () => {
+  await appPool?.end();
   await pool?.end();
 });
 
@@ -332,5 +353,111 @@ describe('the boundaries the design has to hold at', () => {
     // cannot elide it, and it cuts both ways: if `reserve` is ever widened to
     // accept a raw client, the now-redundant suppression above becomes the error.
     expect(wrong).toBeDefined();
+  });
+});
+
+
+describe('the role the service actually runs as', () => {
+  it('refuses an over-cap request as a refusal, not as a permission error', async () => {
+    const key = fixture();
+    const cap = usd(5_000n);
+    await withTransaction(app, (tx) =>
+      reserve(tx, { ...key, amountRaw: usd(4_000n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'a-1', policyVersionId: newId('ppv') }),
+    );
+
+    // Before the status machine, this statement threw
+    // `permission denied for table reservations`: the claim row was inserted as HELD and
+    // deleted when the cap refused it, and `ari_app` may not delete. The refusal is a
+    // value the pipeline audits, so a 500 here is a refusal that never got recorded.
+    const second = await withTransaction(app, (tx) =>
+      reserve(tx, { ...key, amountRaw: usd(2_000n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'a-2', policyVersionId: newId('ppv') }),
+    );
+    expect(second.status).toBe('LIMIT_EXCEEDED');
+  });
+
+  it('leaves the refused attempt as a row, because this role cannot delete one', async () => {
+    const key = fixture();
+    const cap = usd(1_000n);
+    const refused = await withTransaction(app, (tx) =>
+      reserve(tx, { ...key, amountRaw: usd(2_000n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'abandon-me', policyVersionId: newId('ppv') }),
+    );
+    expect(refused.status).toBe('LIMIT_EXCEEDED');
+
+    const rows = await appPool.query<{ status: string; count: string }>(
+      `SELECT status, count(*)::text FROM ari.reservations WHERE agent_id = $1 AND idempotency_key = $2 AND dimension = $3 GROUP BY status`,
+      [key.agentId, 'abandon-me', key.dimension],
+    );
+    expect(rows.rows.map((row) => `${row.status}:${row.count}`)).toEqual(['ABANDONED:1']);
+    // Abandoned is not a spend, and the window must not have moved.
+    expect((await readCounter(pool, key))?.reservedRaw).toBe(0n);
+  });
+
+  it('reclaims a dead claim instead of leaving the key parked forever', async () => {
+    const key = fixture();
+    const tooBig = usd(2_000n);
+    const cap = usd(1_000n);
+    const first = await withTransaction(app, (tx) =>
+      reserve(tx, { ...key, amountRaw: tooBig, maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'retry-key', policyVersionId: newId('ppv') }),
+    );
+    expect(first.status).toBe('LIMIT_EXCEEDED');
+
+    // Same key, smaller amount, after the cap had refused it. The claim exists and is
+    // dead; the attempt is allowed to live.
+    const again = await withTransaction(app, (tx) =>
+      reserve(tx, { ...key, amountRaw: usd(600n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'retry-key', policyVersionId: newId('ppv') }),
+    );
+    expect(again.status).toBe('HELD');
+    expect((await readCounter(pool, key))?.reservedRaw).toBe(usd(600n));
+  });
+
+  it('still counts money that has settled against the window it was spent in', async () => {
+    // The money bug this test is the record of. Settling moves an amount out of
+    // `current_reserved` and into `settled`, and the cap guard compared only the first —
+    // so five $1,000 payments against a $5,000 daily ceiling, each settling before the
+    // next was asked for, never touched the ceiling. It was latent only because nothing
+    // called `settle` yet; the delivery step does now.
+    const key = fixture();
+    const cap = usd(2_000n);
+    const held = await withTransaction(app, (tx) =>
+      reserve(tx, { ...key, amountRaw: usd(2_000n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'paid', policyVersionId: newId('ppv') }),
+    );
+    if (held.status !== 'HELD') throw new Error('expected the first hold');
+    await withTransaction(app, (tx) => settle(tx, held.reservationId));
+
+    expect((await readCounter(pool, key))?.reservedRaw).toBe(0n);
+    expect((await readCounter(pool, key))?.settledRaw).toBe(usd(2_000n));
+
+    const next = await withTransaction(app, (tx) =>
+      reserve(tx, { ...key, amountRaw: usd(1n), maxRaw: cap, requestId: newId('txr'), idempotencyKey: 'after-settle', policyVersionId: newId('ppv') }),
+    );
+    expect(next.status).toBe('LIMIT_EXCEEDED');
+    if (next.status !== 'LIMIT_EXCEEDED') return;
+    // The number the refusal reports is the number that bound: what left the account,
+    // not what is parked.
+    expect(next.reservedRaw).toBe(usd(2_000n));
+  });
+
+  it('holds one request against a day and a month as two claims', async () => {
+    const key = fixture();
+    const month: WindowKey = { ...key, windowKey: '2026-09', dimension: 'monthly_raw' };
+    const daily = await withTransaction(app, (tx) =>
+      reserve(tx, { ...key, amountRaw: usd(500n), maxRaw: usd(1_000n), requestId: 'txr_shared', idempotencyKey: 'two-windows', policyVersionId: newId('ppv') }),
+    );
+    const monthly = await withTransaction(app, (tx) =>
+      reserve(tx, { ...month, amountRaw: usd(500n), maxRaw: usd(20_000n), requestId: 'txr_shared', idempotencyKey: 'two-windows', policyVersionId: newId('ppv') }),
+    );
+
+    expect(daily.status).toBe('HELD');
+    expect(monthly.status).toBe('HELD');
+    if (daily.status !== 'HELD' || monthly.status !== 'HELD') return;
+    // The point of the `(agent, key, dimension)` key: one idempotency claim per window,
+    // not one per request, so a monthly limit can exist at all.
+    expect(daily.reservationId).not.toBe(monthly.reservationId);
+
+    const released = await withTransaction(app, (tx) => releaseForRequest(tx, 'txr_shared', 'test'));
+    expect(released.rows).toBe(2);
+    expect(released.releasedRaw).toBe(usd(1_000n));
+    expect((await readCounter(pool, key))?.reservedRaw).toBe(0n);
+    expect((await readCounter(pool, month))?.reservedRaw).toBe(0n);
   });
 });

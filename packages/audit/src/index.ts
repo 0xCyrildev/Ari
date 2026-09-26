@@ -57,6 +57,7 @@ export const AuditEventType = [
   'intent.interpreted',
   'intent.clarification_requested',
   'transaction.proposed',
+  'transaction.state_changed',
   'transaction.rejected_unparseable',
   'risk.assessed',
   'risk.unavailable',
@@ -77,6 +78,7 @@ export const AuditEventType = [
   'signing.failed',
   'broadcast.submitted',
   'broadcast.confirmed',
+  'reservation.settled',
   'reservation.released',
   'budget.exceeded',
   'evaluation.error',
@@ -184,9 +186,29 @@ export interface AuditEvent extends AuditEventInput {
   readonly hash: string;
 }
 
+/**
+ * Where the chain's head is, for the duration of one transaction.
+ *
+ * `appendEvent` used to read it from the table before every insert — three round trips
+ * per event, seven events per authorised request, nearly half the request's statements —
+ * and re-issued the organisation's advisory lock each time even though `asTenant` takes
+ * that lock as the transaction's first statement and holds it to commit.
+ *
+ * The cache is sound *because* of that lock, not in spite of it: while this transaction
+ * holds it, no other transaction can append to this organisation's chain, and the head is
+ * exactly the row this transaction wrote last. Keyed by org so a caller that appends for
+ * two tenants on one client cannot carry a head from one into the other.
+ */
+export interface ChainCursor {
+  readonly lockHeld: boolean;
+  head?: { readonly org: string; readonly hash: string };
+}
+
 /** The structurally-compatible subset of `@ari/ledger`'s transaction handle. */
 export interface AuditTx {
   readonly client: PoolClient;
+  /** Absent on a bare client, where the lock and the head must both be taken per event. */
+  readonly chain?: ChainCursor;
 }
 
 interface HashableParts {
@@ -258,9 +280,16 @@ export async function appendEvent(tx: AuditTx, input: AuditEventInput): Promise<
 
   // Re-entrant when the caller came through `asTenant`, which takes this lock as
   // the first statement of the transaction; necessary for a caller that did not,
-  // such as the bootstrap path that creates an organisation.
-  await tx.client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [input.orgId]);
-  const prevHash = await chainHead(tx.client, input.orgId);
+  // such as the bootstrap path that creates an organisation. When the caller *is*
+  // `asTenant`, asking again buys a round trip and nothing else, so it does not.
+  const cached = tx.chain?.lockHeld === true ? tx.chain.head : undefined;
+  if (tx.chain === undefined || !tx.chain.lockHeld) {
+    await tx.client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [input.orgId]);
+  }
+  const prevHash =
+    cached !== undefined && cached !== null && cached.org === input.orgId
+      ? cached.hash
+      : await chainHead(tx.client, input.orgId);
 
   const parts: HashableParts = {
     id,
@@ -305,6 +334,10 @@ export async function appendEvent(tx: AuditTx, input: AuditEventInput): Promise<
       severity,
     ],
   );
+
+  if (tx.chain !== undefined && tx.chain.lockHeld) {
+    tx.chain.head = { org: input.orgId, hash };
+  }
 
   return { ...input, metadata, reasonCodes, severity, id, prevHash, hash };
 }

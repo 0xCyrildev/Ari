@@ -31,7 +31,7 @@ import { recordDecision, sealApproval } from '@ari/approvals';
 import { CandidateTransaction, PolicyDocument, newId, type CanonicalDigest } from '@ari/schemas';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { connect } from './database.js';
+import { connect, DATABASE_URL } from './database.js';
 
 let pool: Pool;
 let appPool: Pool;
@@ -44,7 +44,12 @@ const app: Connector = {
 };
 
 const API = readConfig({
-  DATABASE_URL: 'postgresql://ari:ari@127.0.0.1:5435/ari',
+  // The same database the fixtures write their tenants into, read from the same place
+  // the rest of the suite reads it. A literal here once made this file pass against a
+  // long-lived database while its fixtures wrote to a fresh one: the API answered 401
+  // because the credentials it looked for were in another database, and nothing about
+  // that was visible in the failure.
+  DATABASE_URL,
   DATABASE_ROLE: 'ari_app',
   CREDENTIAL_PEPPER: 'api-test-pepper-0123456789abcdef',
   TICKET_KEY: 't'.repeat(48),
@@ -562,6 +567,107 @@ describe('the SDK and the edge, with no socket between them', () => {
     expect(refused.ok).toBe(false);
     expect(refused.ok === false && refused.status).toBe(401);
     expect(refused.ok === false && refused.code).toBe('UNAUTHENTICATED');
+  });
+});
+
+describe('what the ledger does with the signer’s answer', () => {
+  /**
+   * The step that used to not exist. The decision plane committed a hold, a decision
+   * and a ticket; the signer answered; and nothing anywhere read that answer. So a
+   * payment that had been signed was still counted as *parked* capacity, a payment the
+   * authority plane could never honour kept the agent’s daily total forever (T13, with
+   * Ari’s own hand on the lever), and `settle`/`release` were functions with no caller.
+   */
+  async function reservedToday(orgId: string, agentId: string): Promise<bigint> {
+    const rows = await pool.query<{ current: string }>(
+      `SELECT current_reserved AS current FROM ari.limit_counters
+        WHERE org_id = $1 AND agent_id = $2 AND dimension LIKE 'daily_%'`,
+      [orgId, agentId],
+    );
+    return BigInt(rows.rows[0]?.current ?? '0');
+  }
+
+  async function reservationState(requestId: string): Promise<string | null> {
+    const rows = await pool.query<{ status: string }>(
+      `SELECT status FROM ari.reservations WHERE request_id = $1 ORDER BY dimension LIMIT 1`,
+      [requestId],
+    );
+    return rows.rows[0]?.status ?? null;
+  }
+
+  async function paidWith(
+    t: Tenant,
+    key: string,
+    signer: SignerClient,
+  ): Promise<{ requestId: string; body: Record<string, unknown> }> {
+    const apiUnderTest = await startApi(API, signer);
+    try {
+      const response = await apiUnderTest.app.inject({
+        method: 'POST',
+        url: '/v1/transactions/authorize',
+        headers: bearer(t.presented),
+        payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(500n)), idempotencyKey: key },
+      });
+      return { requestId: (response.json() as { requestId: string }).requestId, body: response.json() as Record<string, unknown> };
+    } finally {
+      await apiUnderTest.close();
+    }
+  }
+
+  it('settles the hold when the signer reports a signature, and walks the request', async () => {
+    const t = await tenant();
+    expect(await reservedToday(t.orgId, t.agentId)).toBe(0n);
+    const { requestId } = await paidWith(t, 'delivery-complete', {
+      async deliver() {
+        return { accepted: true, state: 'COMPLETE' };
+      },
+    });
+    expect(await reservationState(requestId)).toBe('SETTLED');
+    // Settled money has left the window’s parked total, and the daily cap still binds on
+    // it — which is the half of this that a `current_reserved` of zero would otherwise
+    // make look like a refund.
+    expect(await reservedToday(t.orgId, t.agentId)).toBe(0n);
+
+    const status = await api.app.inject({ method: 'GET', url: `/v1/transactions/${requestId}`, headers: bearer(t.presented) });
+    expect((status.json() as { state: string }).state).toBe('SIGNING_COMPLETE');
+  });
+
+  it('leaves the capacity held while the signature is still in flight', async () => {
+    const t = await tenant();
+    const { requestId } = await paidWith(t, 'delivery-pending', {
+      async deliver() {
+        return { accepted: true, state: 'SIGNING_PENDING' };
+      },
+    });
+    // A `user_gated` handoff is exactly this answer, and settling it would be Ari
+    // claiming a signature it does not have (S12).
+    expect(await reservationState(requestId)).toBe('HELD');
+    expect(await reservedToday(t.orgId, t.agentId)).toBe(usd(500n));
+  });
+
+  it('gives the capacity back when the signer says it can never honour this one', async () => {
+    const t = await tenant();
+    const { requestId } = await paidWith(t, 'delivery-refused', {
+      async deliver() {
+        return { accepted: false, code: 'TICKET_ALREADY_USED', detail: 'spent' };
+      },
+    });
+    expect(await reservationState(requestId)).toBe('RELEASED');
+    expect(await reservedToday(t.orgId, t.agentId)).toBe(0n);
+  });
+
+  it('keeps it when the signer simply did not answer', async () => {
+    const t = await tenant();
+    const { requestId, body } = await paidWith(t, 'delivery-silent', {
+      async deliver() {
+        return { accepted: false, code: 'SIGNING_PROVIDER_ERROR', detail: 'unreachable' };
+      },
+    });
+    // A retry re-seals the same ticket and re-delivers it, so releasing here would let an
+    // agent spend the day’s capacity twice on the afternoon its signer blipped.
+    expect(body.state).toBe('TICKET_ISSUED_NOT_DELIVERED');
+    expect(await reservationState(requestId)).toBe('HELD');
+    expect(await reservedToday(t.orgId, t.agentId)).toBe(usd(500n));
   });
 });
 

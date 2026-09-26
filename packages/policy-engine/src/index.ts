@@ -177,10 +177,15 @@ export interface EvaluationState {
     readonly ikaSpentTodayRaw: bigint;
   };
   readonly history: {
-    readonly knownRecipientAddresses: ReadonlySet<string>;
     readonly baselineAssets: ReadonlySet<string>;
     readonly baselineChains: ReadonlySet<string>;
-    readonly firstSeenWithinDays: (address: string, days: number) => boolean;
+    /**
+     * When the *candidate's* recipient was first settled, or null for one never seen.
+     * Resolved by the caller, because the kernel reads no storage: this is one indexed
+     * probe for the one address a rule can ask about, not a profile of everything the
+     * wallet has ever paid.
+     */
+    readonly recipientFirstSeenAtMs: bigint | null;
   };
   readonly risk: RiskAssessment | null;
   readonly simulation: {
@@ -528,10 +533,11 @@ function matchesCondition(
     }
     case 'recipient_first_seen_within_days': {
       if (candidate.kind !== 'transfer') return false;
-      return state.history.firstSeenWithinDays(
-        candidate.recipient.address,
-        condition.days,
-      );
+      const firstSeen = state.history.recipientFirstSeenAtMs;
+      // Never settled is never "seen recently": the novelty an unknown recipient carries
+      // is `newRecipients`' business, and this rule asks about a *recent first payment*.
+      if (firstSeen === null) return false;
+      return state.nowMs - firstSeen <= BigInt(condition.days) * 86_400_000n;
     }
     case 'asset_not_in_baseline': {
       if (candidate.kind !== 'transfer') return false;

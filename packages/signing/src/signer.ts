@@ -14,6 +14,9 @@ import { createHash } from 'node:crypto';
 import { CANONICAL_VERSION } from '@ari/transaction-engine';
 import type { CanonicalDigest, ReasonCode } from '@ari/schemas';
 import { openTicket, TICKET_TTL_MS, type TicketKey } from './ticket.js';
+
+/** How far ahead of this process's clock a ticket's own issue time may claim to be. */
+export const TICKET_CLOCK_SKEW_MS = 5_000n;
 import type { AuthorizedSigningRequest, SigningProvider, SigningRef, SigningStatus } from './providers.js';
 
 /**
@@ -48,8 +51,16 @@ export interface SignerDeps {
   readonly key: TicketKey;
   readonly store: TicketStore;
   readonly provider: SigningProvider;
-  /** Supplied, never read from a clock, so every refusal below is reproducible. */
-  readonly nowMs: bigint;
+  /**
+   * Read once per attempt, and typed as a function so a process cannot pass a value it
+   * captured at startup. That is exactly the bug this signature exists to prevent: the
+   * signer used to hold a `bigint` taken when `startSigner` ran, so its expiry check
+   * compared every ticket against the clock at process start — a ticket minted an hour
+   * later still looked four minutes old, and the 60-second TTL was not enforced by the
+   * one component that exists to enforce it. Tests still pin time by passing
+   * `() => FIXED`; a deployment passes `() => BigInt(Date.now())`.
+   */
+  readonly nowMs: () => bigint;
   /** Wallets this signer holds capacity for. A ticket for another wallet is not its to honour. */
   readonly wallets: ReadonlySet<string>;
 }
@@ -107,6 +118,7 @@ export async function redeemAndSign(deps: SignerDeps, attempt: SigningAttempt): 
   }
 
   const claims = opened.claims;
+  const now = deps.nowMs();
 
   // A seal is only worth the window it expires in, and the claim is checked
   // rather than trusted: the same key seals tickets in both directions, so a
@@ -114,8 +126,21 @@ export async function redeemAndSign(deps: SignerDeps, attempt: SigningAttempt): 
   if (claims.expiresAtMs - claims.issuedAtMs > TICKET_TTL_MS) {
     return { status: 'REJECTED', code: 'TICKET_INVALID', detail: 'lifetime exceeds the ticket TTL' };
   }
-  if (deps.nowMs >= claims.expiresAtMs) {
-    return { status: 'REJECTED', code: 'TICKET_EXPIRED', detail: `expired at ${claims.expiresAtMs}, presented at ${deps.nowMs}` };
+  // The other half of the same distrust. Lifetime is bounded, but both endpoints are
+  // self-reported by the decision plane, so a ticket claiming to be issued a year from
+  // now expires a year and one minute from now — inside its TTL, and unreadable as
+  // expired by any clock but this one. The bound is how far this process is willing to
+  // believe another machine's clock, and it is not a synchronisation promise: hosts on
+  // NTP are seconds apart, and anything claiming more than that is not a slow clock.
+  if (claims.issuedAtMs > now + TICKET_CLOCK_SKEW_MS) {
+    return {
+      status: 'REJECTED',
+      code: 'TICKET_INVALID',
+      detail: `issued at ${claims.issuedAtMs}, which is more than ${TICKET_CLOCK_SKEW_MS}ms ahead of this signer's ${now}`,
+    };
+  }
+  if (now >= claims.expiresAtMs) {
+    return { status: 'REJECTED', code: 'TICKET_EXPIRED', detail: `expired at ${claims.expiresAtMs}, presented at ${now}` };
   }
   if (!deps.wallets.has(claims.walletId)) {
     return { status: 'REJECTED', code: 'TICKET_INVALID', detail: `wallet ${claims.walletId} is not held by this signer` };

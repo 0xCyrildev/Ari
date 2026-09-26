@@ -86,23 +86,31 @@ proves each one.
 pnpm install
 pnpm db:up            # Postgres on 127.0.0.1:5435, Redis on 6381
 pnpm typecheck
-pnpm test             # everything, including the suites that need Postgres
-pnpm test:unit        # the half that needs no database
-pnpm test:security    # transactions, triggers, grants, row security
+pnpm test             # everything: 387 tests / 23 files
+pnpm test:unit        # the 234 that need no database
+pnpm test:security    # the 153 that need Postgres, and do not skip without it
 pnpm test:coverage
 ```
 
 ```bash
 cp .env.example .env  # then fill in the secrets it names
+pnpm seed             # org + owner + agent + wallet + policy, and one bearer credential
 pnpm --filter @ari/api start        # ari-api  → 127.0.0.1:4000
 pnpm --filter @ari/signer start     # ari-signer → 127.0.0.1:4100
 ```
+
+`pnpm seed` exists because Ari has no human-facing API yet: it is the operator's route
+from an empty database to a credential an agent can use, and it goes through the same
+packages, as the same unprivileged role, as the service itself. It prints the secret once.
+It is hashed with Argon2id under a pepper that does not live in the database, so nothing
+— including Ari — can read it back afterwards.
 
 `ari-api` opens its database pool as the `ari_app` role (`DATABASE_ROLE`, which
 defaults to it) and refuses to start if the connection does not come up as that
 role. That is not tidiness: `ari` owns the tables, and an owner is outside row
 security, so a service that "works" while connected as the owner is a service
-whose tenant isolation rests entirely on its own `WHERE` clauses.
+whose tenant isolation rests entirely on its own `WHERE` clauses. The login role
+needs `GRANT ari_app TO <login role>`.
 
 The signing provider must be `mock` until the Ika adapter exists; `ari-signer`
 exits rather than falling back to a mock when it is told otherwise, because a

@@ -104,10 +104,9 @@ function evaluationState(): EvaluationState {
     scopes: ['transaction:request'],
     usage: { reservedDayRaw: 0n, reservedMonthRaw: 0n, transactionsLastHour: 0, ikaSpentTodayRaw: 0n },
     history: {
-      knownRecipientAddresses: new Set([RECIPIENT]),
       baselineAssets: new Set([`erc20:ethereum:${USDC}`]),
       baselineChains: new Set(['ethereum']),
-      firstSeenWithinDays: () => false,
+      recipientFirstSeenAtMs: null,
     },
     risk: null,
     simulation: null,
@@ -117,7 +116,7 @@ function evaluationState(): EvaluationState {
 function signer() {
   const provider = new MockSigningProvider();
   const store = new InMemoryTicketStore();
-  const deps: SignerDeps = { key, provider, store, nowMs: NOW, wallets: new Set([walletId]) };
+  const deps: SignerDeps = { key, provider, store, nowMs: () => NOW, wallets: new Set([walletId]) };
   return { provider, store, deps };
 }
 

@@ -14,19 +14,23 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | Phase | Status | Evidence |
 |---|---|---|
 | 0 discovery | done | four docs, 1,750 lines, every claim labelled VERIFIED / DOC-ONLY / ASSUMED / NOT-FOUND |
-| 1 core domain | done | migrations `001–009`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table |
+| 1 core domain | done | migrations `001–010`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table |
 | 2 policy engine | done | 76 tests + `tests/security/` on real Postgres; 98.75 % branch on the kernel |
 | 3 signing boundary | done | `packages/signing`, `apps/signer`, `002` ALLOW-before-ticket trigger |
 | 3.5 policy lifecycle | done | `@ari/policies`: draft→activate, breadth comparison, owner-only widening, justification on rollback |
 | 6 approvals | done | `@ari/approvals` + `006`/`009`; 21 DB tests on the bound token, quorum, replay and T19 |
 | 5 risk engine | done | `packages/risk-engine`: deterministic baselines over `transaction_requests`, nine signals, 10 property/unit tests + 17 DB tests including both halves of the Phase 5 gate |
 | spine | done | `apps/api/src/authorize.ts` + `tests/security/pipeline.test.ts`: evaluate→reserve→decide→ticket→sign, 11 tests walking the brief's own scenarios |
-| HTTP edge | done | `apps/api/src/{gateway,routes,signer-client,server}.ts` + `tests/security/api.test.ts`: 18 tests through `inject`, and both processes run for real (see "Ran for real" below) |
+| HTTP edge | done | `apps/api/src/{gateway,routes,signer-client,server}.ts` + `tests/security/api.test.ts`: 22 tests through `inject`, and both processes run for real (see "Ran for real" below) |
 | agent SDK | started | `packages/client`: the outbound half of the decimal-string rule, three methods, 19 tests, and 2 contract tests that run the client's transport against the real routes |
 | 4–5, 7–11 | not started | intent, risk, simulation, the CLI, Ika, dashboard |
 
-`pnpm test` is **367 tests / 23 files**; `pnpm test:unit` is the 214 that need no
-database; `pnpm test:security` is the 153 that need Postgres and do not skip without it.
+`pnpm test` is **387 tests / 23 files**, in two halves that now add up to it: `pnpm test:unit` is the
+**234** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **153** that
+need Postgres and do not skip without it. They did not add up before: `test:security` was
+`vitest run --dir tests/security`, which on vitest 5 matches **no files** at all. Positional filters are
+used now, and the two numbers are written down because "the security gate is green" has to mean the
+security gate ran.
 
 `pnpm typecheck && pnpm test` — needs no database for the unit half. `test:security` needs
 `pnpm db:up` (Postgres on **127.0.0.1:5435**, Redis 6381; 5432/5433/6380 belong to other projects on this
@@ -154,17 +158,103 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   And `count(*)` is `bigint`, which the driver returns as a **string**, so `row.x === 0` never matched:
   every count in that SELECT is cast `::int` on purpose, and `query<T>` is an assertion, not a check.
 
-## Ran for real (2026-09-26)
+- **The signer reads its own clock per attempt, and does not believe anyone else's.**
+  `SignerDeps.nowMs` was a `bigint` and `startSigner` filled it with `BigInt(Date.now())` at process
+  startup — so every ticket was compared against the clock at boot, a payment signed an hour later still
+  looked four minutes from expiry, and the 60-second TTL that is the whole point of a short-lived
+  capability was enforced in tests and not in the process that has to enforce it. It is
+  `() => bigint` now, which is the fix *and* the enforcement. Alongside it: a ticket may not claim to have
+  been issued more than `TICKET_CLOCK_SKEW_MS` (5s) in the future. Lifetime is bounded by the seal, but
+  both of its endpoints are the decision plane's own assertion, and a ticket saying "issued next year"
+  expires next year — inside its TTL and invisible to an expiry check that trusts it.
+- **A route that cannot answer still answers.** `ari-signer`'s `route` wrapped nothing, and its caller
+  discarded the promise: a provider that threw, or a client that hung up mid-body, left `res` unwritten
+  (the decision plane sat on its 5s timeout) *and* raised an unhandled rejection, which on Node's default
+  kills the signer. That is a signing outage from a malformed request. It now answers
+  `SIGNING_PROVIDER_ERROR` at 500 and says in the log only the error's name.
+- **A reservation is claimed, held, abandoned, settled or released — never deleted.** The over-limit path
+  used to insert the idempotency claim as `HELD` and `DELETE` it when the cap refused; `008` gives
+  `ari_app` no DELETE, on purpose, so a genuine race threw `permission denied` instead of returning
+  `LIMIT_EXCEEDED`: a 500, a rolled-back audit row, and no refusal recorded for a refusal that happened.
+  Every test was green because the suites that exercised it ran as the table owner. `010` adds the statuses
+  and an update trigger that makes them progress one way.
+- **A window's cap counts money that has already gone out.** `settled` leaves `current_reserved` when a
+  hold settles, and both the kernel's `reservedDayRaw` and the ledger's guarded update compared only the
+  first — five $1,000 payments against a $5,000 daily ceiling, each settling before the next was asked
+  for, and the ceiling never binding. It was latent only because nothing called `settle` yet; the delivery
+  step does now, so the fix had to land first. Live proof in "Ran for real" below.
+- **Monthly limits are real now, and one request can hold two windows.** `reservedMonthRaw` was a constant
+  `0n`, so `perMonth` was a policy sentence that checked against nothing. `010` keys the idempotency claim
+  on `(agent_id, idempotency_key, dimension)` instead of `(agent_id, idempotency_key)`, which is what makes
+  a second window expressible; `reserve` takes the day then the month and gives the day back if the month
+  refuses. A policy that asks for a monthly cap should get one, or the schema should refuse to accept it.
+- **The delivery answer moves the ledger, in a transaction of its own.** `recordDeliveryOutcome` settles
+  the holds when the signer reports `COMPLETE`, leaves them parked for `SIGNING_PENDING`/`PENDING` (a
+  `user_gated` handoff is not a signature, and settling on an intention is the same overclaim in the other
+  direction), releases them on a *terminal* refusal the agent could never honour (`TICKET_ALREADY_USED`,
+  a digest or key mismatch — that is T13 with Ari's own hand on the lever), and keeps them parked on a
+  transient failure because a retry re-delivers the same ticket. It is a second transaction because the
+  signing attempt is an outside event; holding the tenant's advisory lock across a network call would make
+  a slow signer serialise other requests behind a signature. `reconciliation` owns whatever comes after —
+  including the crash between commit and settle, which is a HELD row that no code here will ever move.
+- **A published policy version cannot be walked back into DRAFT.** `005` freezes the content of any version
+  that is not DRAFT, and `ari_app` holds UPDATE on the table, so the bypass was two statements: set it to
+  DRAFT (the content trigger's own `WHEN` clause then excludes the row), edit the document, set it forward.
+  `010` puts a state machine on `status`: DRAFT→ACTIVE, ACTIVE→SUPERSEDED, SUPERSEDED→ACTIVE (a justified
+  reactivation, §7.3), either live state→RETIRED (terminal), and nothing into DRAFT.
+- **Every lifecycle step is `transaction.state_changed`, and a proposal is its own event.** The lifecycle
+  writer labelled *every* transition `transaction.proposed` — four to six rows per payment all saying an
+  agent had proposed a transaction — while `recordRequest`, the place a proposal actually arrives, wrote
+  nothing at all. A mislabelled trail reads as evidence and is not: an auditor chasing "who advanced this"
+  would have been pointed at a person for steps taken by `system`. Now one `transaction.proposed` per new
+  request row, and `actorType` on every transition says whether it was the agent or the pipeline.
+- **The chain head is cached inside a transaction, and the org's advisory lock is why that is sound.**
+  `appendEvent` used three statements (re-issue the lock `asTenant` already holds, read the head, insert);
+  seven events per request made ~40 % of the request's round trips bookkeeping. `ChainCursor` skips the
+  re-issue and trusts the last hash this transaction wrote, because while the transaction holds the
+  org's advisory lock no other transaction can append to that chain. Keyed by org, so a caller writing for
+  two tenants cannot carry a head from one into the other. A bare client with no cursor gets the old
+  behaviour, which is what `createOrganization` still is.
+- **The cost of a request is a test.** `tests/security/pipeline.test.ts` counts statements through a
+  proxy client: 29 for a payment that mints a ticket, 20 for a refusal, bounded at 34, with the preview
+  strictly cheaper and leaving no row. Every optimisation in the two bullets above is invisible to a
+  correctness test and obvious to that one; it is the ratchet that stops the next feature adding a query
+  per rule.
+- **`scripts/seed-tenant.mts` is the operator's path, and it runs as `ari_app`.** Org, owner, agent,
+  wallet, policy, activation, grant, credential — printed once, because the bearer secret cannot be read
+  back afterwards. It exists because there is no human-facing API yet; Phase 9's CLI replaces it, and the
+  script deliberately uses the same packages and the same unprivileged role the service uses, so a
+  privilege it needs that the service does not have fails here first.
 
+## Ran for real (2026-09-26)
 `pnpm --filter @ari/api start` and `pnpm --filter @ari/signer start`, both against Postgres on 5435, seeded
 a tenant through the packages (there is no HTTP route for it yet), and every state was observed over a real
 socket: `DECIDED` preview, `COMPLETE` end to end with the ticket crossing the process boundary and never
 appearing in the caller's response, `DENIED [RECIPIENT_NOT_IN_ALLOWLIST]`, `APPROVAL_PENDING` with an expiry
 15 minutes out, `TICKET_ISSUED_NOT_DELIVERED` with the signer stopped, and a retry of a spent request
 returning the same `requestId` with the signer's own `TICKET_ALREADY_USED` — single use held across two
-processes. Un-scope a `requestId` to a non-uuidv7 string and the parser refuses it with a 400. The seeding
-script was deleted afterwards on purpose: it duplicates what the test fixtures do, and Phase 9's CLI is the
-version of it worth keeping.
+processes. Un-scope a `requestId` to a non-uuidv7 string and the parser refuses it with a 400. The seeding path that
+run needed on the spot became `scripts/seed-tenant.mts`, which is now the documented way to get from an
+empty database to a bearer token; Phase 9's CLI is still the version of it worth shipping.
+
+**Second run, after the reservation/cap/settle work — and this one is the proof, not a smoke test.**
+`scripts/seed-tenant.mts`, both processes up, six $900 payments against the seeded $5,000 daily cap:
+
+```
+payment 1..5 ($900) -> {"state":"COMPLETE", ...}
+payment 6  ($900)   -> {"state":"DENIED","reasonCodes":["AMOUNT_EXCEEDS_DAILY_LIMIT","LIMIT_RESERVATION_FAILED"]}
+counters           -> daily_usdc-6dp current_reserved=0 settled=4500000000
+reservations       -> SETTLED   request -> SIGNING_COMPLETE
+audit mix          -> transaction.proposed/agent=6  transaction.state_changed/system=27
+                      risk.assessed/system=6  reservation.settled/system=5  ticket.minted/agent=5
+preview            -> DECIDED, and the request-row count did not move
+```
+
+Five settled payments are $4,500 of a $5,000 day, and the sixth is refused — which is the whole
+"settled money still bounds the window" fix observed from outside, on the real path, with the real signer.
+The same run replayed a completed request and got `REFUSED: request is already in SIGNING_COMPLETE; a
+retry gets the original answer, not a new attempt` rather than a second signature or a 500, and the
+reservation stayed SETTLED through it.
 
 ## Open threads
 
@@ -173,10 +263,11 @@ version of it worth keeping.
    an approval, activating a policy — all of those need a *user session*, Ari has no session model, and
    inventing one inside a route handler is a security decision taken as a side effect. Until it is taken
    deliberately, operators work through `@ari/identity` and `@ari/policies` directly, which is what the test
-   suites do. Consequence worth knowing: there is no way to seed a working tenant without writing a
-   script against the packages — which is why `ROADMAP` moved the CLI (Phase 9) up, and why the CLI's
-   first command is the same question that script answers. `approvalId` is returned by
-   `APPROVAL_PENDING` but nothing can consume it over HTTP.
+   suites do. `scripts/seed-tenant.mts` is that path today (`pnpm seed`, prints one bearer credential and
+   cannot read it back), which is also why `ROADMAP` moved the CLI (Phase 9) up: the CLI's first command is
+   the same question that script answers. `approvalId` is returned by `APPROVAL_PENDING` but nothing can
+   consume it over HTTP — the approval token has to be minted by whoever holds `APPROVAL_KEY`, which today
+   means the operator's own process, not an approver's device.
 2. **A randomised test that has never failed is not evidence.** `properties.test.ts`'s "a HIGH threshold is
    never looser than a CRITICAL one" asserted that the stricter policy escalates on *every* input where the
    looser one allowed — false at once for any input below the threshold, and it had passed every run so far on
@@ -213,6 +304,21 @@ version of it worth keeping.
     consequence of the design, not a bug, but it is untested against reality: the weights and the bands are
     ASSUMED numbers with no corpus behind them. Revisit when there is traffic to look at, and change the
     weights in `scoring.ts` only with the monotonicity properties still passing.
+10a. **One tenant, one request at a time — deliberately.** `asTenant` takes
+   `pg_advisory_xact_lock(hashtext(orgId))` as the transaction's first statement and holds it to commit,
+   which is what fixed the audit-chain deadlock and what makes the chain head cache sound. It also means a
+   single organisation's authorizations serialise for the length of a transaction (~29 statements plus
+   Argon2id, which is measured at p50 ~30ms per request on this box). Cross-tenant traffic is unaffected.
+   If per-tenant throughput ever becomes the constraint, the honest fix is to narrow the lock to the audit
+   append rather than to add a second chain-writing scheme — and `hashtext` is 32-bit, so two org ids can
+   collide onto one lock. Nothing in the repo asserts either property; this is the note, not a TODO.
+10b. **Two counters are placeholders and one of them is load-bearing in a policy field.**
+   `usageOf` supplies `ikaSpentTodayRaw: 0n`, so `validity.signingBudget.maxIkaRawPerDay` cannot fire —
+   correct for a system with no Ika provider, wrong the day one exists, and a policy that reads as cost
+   guarded is not. `reservedMonthRaw` *was* the same shape of lie for the monthly cap and is now real; do
+   not let the budget field follow it silently. Also `verifyCounterIntegrity` derives from `HELD` rows
+   only, which matches `current_reserved` but not `settled` — extend it when the reconciliation pass learns
+   to settle.
 11. **Simulation (Phase 7) is the next phase with a hole already cut for it.** `state.simulation` is still
     `null` in every path, the kernel's simulation arms (`SIMULATION_MISMATCH`, `SIMULATION_UNAVAILABLE`,
     `fallback.onSimulationUnavailable`) are written and tested against hand-built states, and

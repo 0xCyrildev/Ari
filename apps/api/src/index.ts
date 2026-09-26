@@ -6,6 +6,7 @@
  */
 export {
   authorize,
+  recordDeliveryOutcome,
   type AuthorizeInput,
   type AuthorizeOutcome,
   type PipelineDeps,
