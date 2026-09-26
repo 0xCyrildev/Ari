@@ -14,7 +14,7 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | Phase | Status | Evidence |
 |---|---|---|
 | 0 discovery | done | four docs, 1,750 lines, every claim labelled VERIFIED / DOC-ONLY / ASSUMED / NOT-FOUND |
-| 1 core domain | done | migrations `001–012`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table — and `tests/security/schema.test.ts` asks the catalogue, not the code |
+| 1 core domain | done | migrations `001–014`, `@ari/identity` (tenancy, credentials, wallets, grants, requests), `@ari/audit` (chain + role grants), RLS on every tenant table — and `tests/security/schema.test.ts` asks the catalogue, not the code |
 | 2 policy engine | done | 76 tests + `tests/security/` on real Postgres; 98.75 % branch on the kernel |
 | 3 signing boundary | done | `packages/signing`, `apps/signer`, `002` ALLOW-before-ticket trigger |
 | 3.5 policy lifecycle | done | `@ari/policies`: draft→activate, breadth comparison, owner-only widening, justification on rollback |
@@ -25,8 +25,8 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | agent SDK | started | `packages/client`: the outbound half of the decimal-string rule, three methods, 19 tests, and 2 contract tests that run the client's transport against the real routes |
 | 4–5, 7–11 | not started | intent, risk, simulation, the CLI, Ika, dashboard |
 
-`pnpm test` is **423 tests / 25 files**, in two halves that add up to it: `pnpm test:unit` is the
-**235** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **188** that
+`pnpm test` is **439 tests / 26 files**, in two halves that add up to it: `pnpm test:unit` is the
+**235** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **204** that
 need Postgres and do not skip without it. They did not always add up: `test:security` was
 `vitest run --dir tests/security`, which on vitest 5 matches **no files** at all. Positional filters are
 used now, and the two numbers are written down because "the security gate is green" has to mean the
@@ -284,11 +284,38 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   a hash chain gets two events claiming one predecessor. `tests/security/audit.test.ts` *finds* a
   colliding pair in the old key space and appends 60 events for each through the new one.
 - **An approval can record "no amount", which is not amount zero.** `requestApproval` takes
-  `bigint | null` and the column is nullable now (`011`); `NULL` is what distinguishes a valueless contract
+  `bigint | null` and the column is nullable as of `014`; `NULL` is what distinguishes a valueless contract
   call from a payment whose amount was computed as zero — which the kernel refuses separately as
   `AMOUNT_ZERO`, and which the reservation path skips rather than holding for a figure that does not exist.
   The sealed token still always binds a number: making *it* nullable would change the payload bytes of every
   outstanding token, and the payload is what the HMAC covers.
+  **The correction is the lesson.** `011` dropped the `> 0` CHECK and added `IS NULL OR >= 0`, and
+  wrote in its own header that the row was now nullable — while `006`'s `NOT NULL` sat on the line above
+  it in the same table, and nothing re-read it. The type said `null`, `requestApproval` passed `null`,
+  the CHECK permitted `null`, and the column refused it: escalating a valueless contract call to a human
+  raised a not-null violation, rolled the decision back, and left no record that it had happened. A
+  CHECK that allows a value the column cannot hold is not a relaxation, it is a promise nobody kept,
+  and the only reason it stayed hidden is that no test had a reason to ask for a null amount until
+  `tests/security/immutability.test.ts` did.
+
+- **`014` is the rest of the same class, and `immutability.test.ts` is its witness.** Six rules the
+  application believed and the schema did not hold: a revocation a second statement could undo
+  (`revoked_at = NULL` on either credential table — S14 is a one-way door now, and the only forward
+  writes are `revoked_at` and `last_used_at`); an approval request whose digest, amount, quorum and
+  roles stayed editable *while humans were voting on it*, which is the one substitution that survives
+  every check afterwards, because `spendApproval` matches the rewritten digest; a vote that named no
+  authority the database could check (`approver_user_id` referenced nobody, `role` matched nothing, and
+  `INSERT INTO ari.approvals` × `quorum_needed` reached `GRANTED` with no human involved — the trigger
+  now validates role, membership, digest, openness and T19 at insert, in the shape `002` already uses
+  for a ticket and its decision); `window_key` and `dimension` as two unrelated strings, where a
+  `monthly_raw` counter keyed by a day is a parallel row that makes a monthly cap silently stop
+  binding while `verifyCounterIntegrity` reports it healthy; `memberships` allowing a second role per
+  person per organisation while every reader took `rows[0]` with no `ORDER BY` at all; and
+  `SUPERSEDED → ACTIVE` needing no written reason whenever nothing was currently active — the least
+  defensible activation in the set was the free one, so the TypeScript requires a justification for
+  every reactivation and the database refuses one without. Each refusal is asserted *with the
+  legitimate statement beside it*: a constraint that blocks everything would pass the same tests, and
+  would be an outage rather than a control.
 - **Addresses are validated by one grammar on both sides of a comparison.** A policy's recipient and
   contract allowlists were free strings while a candidate's address had to match the EVM/Bitcoin grammar,
   and the kernel's check is an exact string match — so a pasted checksummed `0xAbC…` allowlist entry

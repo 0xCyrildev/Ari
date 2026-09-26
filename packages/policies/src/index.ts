@@ -254,8 +254,23 @@ export async function activateVersion(
   const changes = incumbent === null ? [] : widenings(incumbent.breadth, target.breadth);
   const isDowngrade = incumbent !== null && target.versionNumber < incumbent.versionNumber;
 
-  if (isDowngrade && (input.justification === undefined || input.justification.trim().length < 10)) {
-    refuse(context, 'JUSTIFICATION_REQUIRED', 'reactivating an older version requires a written justification', changes);
+  // A reactivation always costs a sentence, not only a downgrade. `010`'s machine makes
+  // `SUPERSEDED → ACTIVE` the one step that reads backwards, and the case the version-number
+  // comparison missed is the worst one: nothing active at all — every version superseded or
+  // retired — and an older document returns as the authority on an organisation's money with
+  // no reason recorded anywhere. The database now refuses that too (`014`), so the two copies
+  // agree on the floor; what neither can express is freshness, and that is said plainly in the
+  // migration rather than implied here.
+  const isReactivation = target.status === 'SUPERSEDED';
+  if ((isDowngrade || isReactivation) && (input.justification === undefined || input.justification.trim().length < 10)) {
+    refuse(
+      context,
+      'JUSTIFICATION_REQUIRED',
+      isReactivation
+        ? 'reactivating a published version requires a written justification'
+        : 'activating an older version than the incumbent requires a written justification',
+      changes,
+    );
   }
   if (changes.length > 0 && role !== 'owner') {
     refuse(
