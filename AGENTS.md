@@ -25,8 +25,8 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | agent SDK | started | `packages/client`: the outbound half of the decimal-string rule, three methods, 19 tests, and 2 contract tests that run the client's transport against the real routes |
 | 4–5, 7–11 | not started | intent, risk, simulation, the CLI, Ika, dashboard |
 
-`pnpm test` is **387 tests / 23 files**, in two halves that now add up to it: `pnpm test:unit` is the
-**234** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **153** that
+`pnpm test` is **388 tests / 23 files**, in two halves that now add up to it: `pnpm test:unit` is the
+**234** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **154** that
 need Postgres and do not skip without it. They did not add up before: `test:security` was
 `vitest run --dir tests/security`, which on vitest 5 matches **no files** at all. Positional filters are
 used now, and the two numbers are written down because "the security gate is green" has to mean the
