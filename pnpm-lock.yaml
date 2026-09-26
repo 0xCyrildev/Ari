@@ -45,6 +45,34 @@ importers:
         specifier: 5.0.1
         version: 5.0.1(@types/node@24.10.1)(@vitest/coverage-v8@5.0.1)(vite@8.3.1(@types/node@24.10.1)(jiti@2.7.0))
 
+  apps/signer:
+    dependencies:
+      '@ari/ledger':
+        specifier: workspace:*
+        version: link:../../packages/ledger
+      '@ari/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
+      '@ari/signing':
+        specifier: workspace:*
+        version: link:../../packages/signing
+      pg:
+        specifier: 8.23.0
+        version: 8.23.0
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.1
+        version: 5.0.1(@types/node@24.10.1)(@vitest/coverage-v8@5.0.1)(vite@8.3.1(@types/node@24.10.1)(jiti@2.7.0))
+
   packages/ledger:
     dependencies:
       '@ari/schemas':
@@ -122,10 +150,10 @@ importers:
       '@ari/transaction-engine':
         specifier: workspace:*
         version: link:../transaction-engine
-      zod:
-        specifier: 4.6.5
-        version: 4.6.5
     devDependencies:
+      '@ari/policy-engine':
+        specifier: workspace:*
+        version: link:../policy-engine
       '@types/node':
         specifier: 24.10.1
         version: 24.10.1

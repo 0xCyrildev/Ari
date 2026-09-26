@@ -12,8 +12,6 @@
  * not.
  */
 
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
 import { newId } from '@ari/schemas';
 import {
@@ -27,26 +25,13 @@ import {
   type ReservationResult,
   type WindowKey,
 } from '@ari/ledger';
-import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { connect } from './database.js';
 
-const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://ari:ari@127.0.0.1:5435/ari';
-const MIGRATION = fileURLToPath(new URL('../../packages/ledger/sql/001_accounting.sql', import.meta.url));
-
-let pool: Pool;
+let pool: Awaited<ReturnType<typeof connect>>;
 
 beforeAll(async () => {
-  pool = new Pool({ connectionString: DATABASE_URL, max: 16 });
-  try {
-    await pool.query('SELECT 1');
-  } catch (error) {
-    throw new Error(
-      `Postgres is not reachable at ${DATABASE_URL} (${(error as Error).message}). ` +
-        'This gate is deliberately not skippable: a mocked concurrency test says nothing about a row lock. ' +
-        'Run `pnpm db:up`.',
-    );
-  }
-  await pool.query(readFileSync(MIGRATION, 'utf8'));
+  pool = await connect();
 });
 
 afterAll(async () => {

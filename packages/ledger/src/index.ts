@@ -357,3 +357,12 @@ export async function verifyCounterIntegrity(
   const derivedRaw = BigInt(derived.rows[0]?.total ?? '0');
   return { ok: counterRaw === derivedRaw, counterRaw, derivedRaw };
 }
+
+export {
+  claimTicket,
+  mintTicket,
+  recordDecision,
+  type DecisionOutcome,
+  type DecisionRecord,
+  type TicketRow,
+} from './decisions.js';

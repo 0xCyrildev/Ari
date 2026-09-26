@@ -11,10 +11,10 @@
   },
   "dependencies": {
     "@ari/schemas": "workspace:*",
-    "@ari/transaction-engine": "workspace:*",
-    "zod": "4.6.5"
+    "@ari/transaction-engine": "workspace:*"
   },
   "devDependencies": {
+    "@ari/policy-engine": "workspace:*",
     "@types/node": "24.10.1",
     "typescript": "5.9.3",
     "vitest": "5.0.1"

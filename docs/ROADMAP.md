@@ -80,7 +80,17 @@ comparison operators, which is the only place an off-by-one moves money.
 
 - `AuthorizationTicket`: HMAC-sealed, digest-bound, single-use, TTL 60s, branded type mintable in exactly one
   module (CC1, ADR-5).
-- `apps/signer` as a separate process verifying the ticket independently with a key `ari-api` does not hold.
+- `apps/signer` as a separate process, verifying against **its own copy of the seal, its own clock, and its own
+  record of what has been redeemed**.
+
+  This line used to read "with a key `ari-api` does not hold", and it was corrected while building the phase
+  rather than after shipping it, because that property is not obtainable from an HMAC: sealing and verifying
+  need the same secret, so a compromised `ari-api` can always produce a well-formed ticket. What the boundary
+  does buy is narrower and worth stating exactly — the signer re-derives the digest from the bytes it was
+  handed (T10, T11), refuses a lifetime over the TTL even behind a valid seal, spends tickets against a
+  database row rather than a flag on a string, and returns a reconciliation ref and never a signature (S16).
+  Removing `ari-api`'s minting power entirely means an asymmetric seal, and that is a Phase 8 decision to make
+  beside the custody questions in `ASSUMPTIONS.md` §8.5 — not a sentence to leave in a plan.
 - `MockSigningProvider` with an invocation **counter**, and `IkaSigningProvider` as an interface only.
 - DB: `signing_requests.decision_id` FK + trigger requiring an `ALLOW` decision row to exist first.
 - Canonicalisation `canon/v1` with a fixed test-vector file (T10 residual).
