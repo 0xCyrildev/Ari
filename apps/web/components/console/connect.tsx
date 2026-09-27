@@ -19,6 +19,16 @@ import { useConsole } from '@/lib/ari/console'
  * against, so the sample state is announced, and the actions that would need a deployment
  * refuse in the same words on every screen.
  */
+/**
+ * `org_` + 36, a dot, `ucrd_` + 36, a dot, then a 43-character secret: 126 characters, and the
+ * count is shown while typing because the failure this prevents is silent. A paste that clipped a
+ * piece, or that a password manager rewrote, arrives as a different string and the deployment
+ * answers it exactly as it answers a wrong secret — one shape, no detail, by design (T8). The
+ * length is the only thing this field can say about the difference without echoing a capability
+ * back into the DOM.
+ */
+const BEARER_LENGTH = 126
+
 export function ConnectPanel() {
   const { view, connected, error, connect, forget, refresh, loading } = useConsole()
   const [draft, setDraft] = useState('')
@@ -95,9 +105,15 @@ const isHumanSecret = draft.trim().includes('.ucrd_')
             </button>
           </div>
           <p className="connect-hint">
-            {hint ??
-              'Kept in this tab only, and gone when you close it. An agent credential (crd_…) will not open the human routes.'}
+            {draft.length} characters
+            {draft.length > 0 && draft.length !== BEARER_LENGTH
+              ? `, not the ${BEARER_LENGTH} a bearer here runs to. A paste that lost or split a piece is the usual cause, and the deployment will read it as a wrong secret.`
+              : ''}
+            {draft.length === 0
+              ? '. Kept in this tab only, and gone when you close it. An agent credential (crd_…) will not open the human routes.'
+              : ''}
           </p>
+          {hint !== null && <p className="connect-hint">{hint}</p>}
           {draft.length > 0 && !isHumanSecret && (
             <p className="connect-hint" data-kind="warning">
               That does not start with <code>ucrd_</code>. It will be sent as presented and the
