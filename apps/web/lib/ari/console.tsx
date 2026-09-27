@@ -24,7 +24,8 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { AgentStatus, ApprovalRequest, AuditEvent, LifecycleState, TraceStage, TransactionRecord, Wallet } from './types'
+import type { AgentStatus, AgentSurfaceState, RiskLevel, ApprovalRequest, AuditEvent, LifecycleState, TransactionRecord, Wallet } from './types'
+import { RISK_ORDER, deriveAgentState } from './types'
 import * as sample from './sample'
 import {
   parseAgents,
@@ -138,6 +139,34 @@ export interface GrantRow {
   readonly escalateAboveRaw: string | null
 }
 
+/**
+ * One agent, with the three things an operator actually scans for: what it is allowed to move
+ * today, what it has moved, and whether anything is waiting on a person because of it.
+ *
+ * Both adapters build it from the same inputs the fixture screen used to reach into directly —
+ * the agent's grant, the daily ceiling in the governed document, the counters the ledger keeps,
+ * and the risk band on its requests. `detail` is the one field that is not the same fact on both
+ * sides: the fixture carries a written purpose, and a live agent has no such column, so it
+ * carries the id instead. Nothing is invented to make the two look alike.
+ */
+export interface AgentRow {
+  readonly id: string
+  readonly name: string
+  readonly status: AgentStatus
+  readonly state: AgentSurfaceState
+  readonly detail: string
+  readonly policyName: string
+  readonly policyVersionNumber: number
+  readonly walletName: string
+  /** Settled plus still-held against the open daily window. `limitRaw` is null when the policy names no daily cap. */
+  readonly usedRaw: bigint
+  readonly limitRaw: bigint | null
+  readonly requests: number
+  readonly pending: number
+  readonly risk: RiskLevel | null
+  readonly lastAt: string | null
+}
+
 export interface ConsoleView {
   readonly source: 'sample' | 'live'
   /** What the banner above every screen says. The sample must never be able to look like a tenant. */
@@ -146,6 +175,7 @@ export interface ConsoleView {
   readonly transactions: readonly ConsoleTransaction[]
   readonly approvals: readonly PendingApproval[]
   readonly agents: readonly AgentView[]
+  readonly agentRows: readonly AgentRow[]
   readonly wallets: readonly Wallet[]
   readonly policies: readonly {
     readonly key: string
@@ -191,9 +221,61 @@ export const EMPTY_VIEW: ConsoleView = {
   policies: [],
   auditEvents: [],
   grantRows: [],
+  agentRows: [],
   unavailable: [],
   unit: sample.UNIT,
   summary: { authorizedRaw: 0n, count: 0, denied: 0, pending: 0, agents: 0, wallets: 0, unit: sample.UNIT },
+}
+
+/**
+ * The one derivation of "what has this agent done today, and under what ceiling".
+ *
+ * Shared by both adapters on purpose. An agent table built twice would drift the way `014`'s
+ * `rows[0]` readers did: two places that each decide which grant governs an agent, and only one
+ * of them is what the ledger enforces.
+ */
+function buildAgentRows(
+  agents: readonly { readonly id: string; readonly name: string; readonly status: AgentStatus }[],
+  transactions: readonly ConsoleTransaction[],
+  approvals: readonly PendingApproval[],
+  grantOf: (agentId: string) => {
+    readonly policyName: string
+    readonly policyVersionNumber: number
+    readonly walletName: string
+    readonly limitRaw: bigint | null
+  } | null,
+  usedOf: (agentId: string) => bigint,
+): readonly AgentRow[] {
+  return agents.map((agent) => {
+    const own = transactions.filter((transaction) => transaction.agentId === agent.id)
+    const highest = own.reduce<RiskLevel | null>((best, transaction) => {
+      const level = transaction.risk?.level as RiskLevel | undefined
+      if (level === undefined) return best
+      return best === null || RISK_ORDER.indexOf(level) > RISK_ORDER.indexOf(best) ? level : best
+    }, null)
+    const pending = approvals.filter((approval) => approval.agentId === agent.id && approval.status === 'PENDING').length
+    const grant = grantOf(agent.id)
+    const last = own.reduce<string | null>(
+      (latest, transaction) => (latest === null || transaction.submittedAt > latest ? transaction.submittedAt : latest),
+      null,
+    )
+    return {
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      state: deriveAgentState(agent.status, pending, highest),
+      detail: agent.id,
+      policyName: grant?.policyName ?? 'no grant recorded',
+      policyVersionNumber: grant?.policyVersionNumber ?? 0,
+      walletName: grant?.walletName ?? 'no wallet',
+      usedRaw: usedOf(agent.id),
+      limitRaw: grant?.limitRaw ?? null,
+      requests: own.length,
+      pending,
+      risk: highest,
+      lastAt: last,
+    }
+  })
 }
 
 /** The fixture side. Every figure is computed from `sample.ts` in the expression that returns it. */
@@ -246,6 +328,27 @@ function fromSample(): ConsoleView {
     transactions,
     approvals,
     agents,
+    agentRows: buildAgentRows(
+      sample.agents.map((agent) => ({ id: agent.id, name: agent.name, status: agent.status })),
+      transactions,
+      approvals,
+      (agentId) => {
+        const seed = sample.agents.find((agent) => agent.id === agentId)
+        if (seed === undefined) return null
+        const policy = sample.policies.find((item) => item.key === seed.policy)
+        const version = policy === undefined ? undefined : sample.activeVersion(seed.policy)
+        return {
+          policyName: policy?.name ?? seed.policy,
+          policyVersionNumber: version?.number ?? 0,
+          walletName: sample.wallets[seed.wallet]?.name ?? 'no wallet',
+          limitRaw: version === undefined ? null : BigInt(version.document.permissions.transfers.perDay.maxRaw),
+        }
+      },
+      (agentId) => {
+        const seed = sample.agents.find((agent) => agent.id === agentId)
+        return seed === undefined ? 0n : sample.usageFor(seed.name).settledRaw
+      },
+    ),
     wallets: sample.wallets,
     policies: sample.policies.map((policy) => {
       const active = policy.versions.find((version) => version.status === 'ACTIVE')
@@ -443,6 +546,30 @@ function fromLive(input: {
       status: agent.status as AgentStatus,
       detail: `credential minting and revocation act on this principal`,
     })),
+    agentRows: buildAgentRows(
+      input.agents.map((agent) => ({ id: agent.id, name: agent.name, status: agent.status as AgentStatus })),
+      transactions,
+      approvals,
+      (agentId) => {
+        const grant = input.wallets
+          .flatMap((wallet) => wallet.grants.filter((row) => row.agentId === agentId).map((row) => ({ ...row, walletId: wallet.id })))[0]
+        if (grant === undefined) return null
+        const governed = input.policies
+          .map((policy) => ({ policy, version: policy.versions.find((v) => v.id === grant.policyVersionId) }))
+          .find((found) => found.version !== undefined)
+        const caps = capsOf(governed?.version?.document)
+        return {
+          policyName: governed?.policy.name ?? 'a policy this read cannot name',
+          policyVersionNumber: governed?.version?.versionNumber ?? 0,
+          walletName: input.wallets.find((wallet) => wallet.id === grant.walletId)?.displayName ?? grant.walletId,
+          limitRaw: caps.perDayRaw === null ? null : BigInt(caps.perDayRaw),
+        }
+      },
+      (agentId) => {
+        const rows = input.summary.windows.filter((window) => window.agentId === agentId && window.dimension.startsWith('daily'))
+        return rows.reduce((sum, window) => sum + BigInt(window.settled) + BigInt(window.currentReserved), 0n)
+      },
+    ),
     wallets: input.wallets.map((wallet) => ({
       id: wallet.id,
       name: wallet.displayName,

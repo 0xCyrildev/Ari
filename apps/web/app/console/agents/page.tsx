@@ -4,57 +4,26 @@ import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { MetricBand, Panel, Reveal, State, Tag, DataTable, type Column } from '@/components/console/ui'
 import * as sampleData from '@/lib/ari/sample'
-import { useConsole } from '@/lib/ari/console'
+import { useConsole, type AgentRow } from '@/lib/ari/console'
 import { UnwiredScreen } from '@/components/console/ui'
 import { deriveAgentState, type RiskLevel } from '@/lib/ari/types'
 import { money, relativeTime } from '@/lib/ari/format'
 
 const ORDER: readonly RiskLevel[] = ['NONE', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']
 
-function rows() {
-  return sampleData.agents.map((agent) => {
-    const usage = sampleData.usageFor(agent.name)
-    const txs = sampleData.transactions.filter((tx) => tx.agentId === agent.id)
-    const pending = txs.filter((tx) => tx.outcome === 'REQUIRE_HUMAN_APPROVAL').length
-    const highest = txs.reduce<RiskLevel | null>((acc, tx) => {
-      const level = tx.risk?.level ?? null
-      if (level === null) return acc
-      return acc === null || ORDER.indexOf(level) > ORDER.indexOf(acc) ? level : acc
-    }, null)
-    const policy = sampleData.policies.find((item) => item.key === agent.policy)
-    const active = policy === undefined ? undefined : sampleData.activeVersion(policy.key)
-    return {
-      agent,
-      // Stored status and this surface's reading of the rows are two different facts, and the
-      // screen says which one it is showing. Counting derived states as if they were stored
-      // would make "paused" read zero while the engine has the agent paused.
-      state: deriveAgentState(agent.status, pending, highest),
-      pending,
-      highest,
-      policyName: policy?.name ?? agent.policy,
-      policyNumber: active?.number ?? 0,
-      walletName: sampleData.walletById(sampleData.wallets[agent.wallet]?.id ?? '')?.name ?? 'no wallet',
-      usageRaw: usage.settledRaw,
-      limitRaw: active === undefined ? 0n : BigInt(active.document.permissions.transfers.perDay.maxRaw),
-      lastAt: usage.lastAt ?? new Date(Date.now() - agent.lastActivity).toISOString(),
-    }
-  })
-}
-
-type Row = ReturnType<typeof rows>[number]
+type Row = AgentRow
 
 export default function Agents() {
   const { view } = useConsole()
-  if (view.source === 'live') return <UnwiredScreen screen={'agent management'} need={'the agent table, its limits and credential minting need live reads; POST /v1/agents, /revoke and /credentials are proxyable already'} />
 
   const router = useRouter()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('ALL')
-  const all = useMemo(rows, [])
+  const all = view.agentRows
   const shown = all.filter(
     (row) =>
-      (filter === 'ALL' || row.state === filter || row.agent.status === filter) &&
-      (query.trim().length === 0 || `${row.agent.name} ${row.agent.purpose}`.toLowerCase().includes(query.trim().toLowerCase())),
+      (filter === 'ALL' || row.state === filter || row.status === filter) &&
+      (query.trim().length === 0 || `${row.name} ${row.detail} ${row.policyName}`.toLowerCase().includes(query.trim().toLowerCase())),
   )
 
   const columns: readonly Column<Row>[] = [
@@ -63,8 +32,8 @@ export default function Agents() {
       header: 'AGENT',
       cell: (row) => (
         <>
-          {row.agent.name}
-          <span className="sub">{row.agent.purpose}</span>
+          {row.name}
+          <span className="sub">{row.detail}</span>
         </>
       ),
     },
@@ -73,7 +42,7 @@ export default function Agents() {
       key: 'policy',
       header: 'POLICY',
       hideBelow: 'md',
-      cell: (row) => <span className="num">{`${row.policyName} v${row.policyNumber}`}</span>,
+      cell: (row) => <span className="num">{`${row.policyName} v${row.policyVersionNumber}`}</span>,
     },
     { key: 'wallet', header: 'WALLET', hideBelow: 'md', cell: (row) => <span className="num">{row.walletName}</span> },
     {
@@ -83,8 +52,11 @@ export default function Agents() {
       hideBelow: 'sm',
       cell: (row) => (
         <span className="num">
-          {money(row.usageRaw.toString(), sampleData.UNIT, true)}
-          <span className="muted"> / {money(row.limitRaw.toString(), sampleData.UNIT, true)}</span>
+          {money(row.usedRaw.toString(), view.unit, true)}
+          <span className="muted">
+            {' / '}
+            {row.limitRaw === null ? 'no daily ceiling in the governed document' : money(row.limitRaw.toString(), view.unit, true)}
+          </span>
         </span>
       ),
     },
@@ -92,9 +64,9 @@ export default function Agents() {
       key: 'risk',
       header: 'RISK',
       hideBelow: 'md',
-      cell: (row) => (row.highest === null ? <span className="muted">not assessed</span> : <Tag>{row.highest}</Tag>),
+      cell: (row) => (row.risk === null ? <span className="muted">not assessed</span> : <Tag>{row.risk}</Tag>),
     },
-    { key: 'last', header: 'LAST ACTIVITY', align: 'right', hideBelow: 'sm', cell: (row) => <time dateTime={row.lastAt}>{relativeTime(row.lastAt).toUpperCase()}</time> },
+    { key: 'last', header: 'LAST ACTIVITY', align: 'right', hideBelow: 'sm', cell: (row) => <time dateTime={row.lastAt ?? undefined}>{(row.lastAt === null ? 'never' : relativeTime(row.lastAt)).toUpperCase()}</time> },
   ]
 
   return (
@@ -114,9 +86,9 @@ export default function Agents() {
       <div style={{ margin: '38px 0 46px' }}>
         <MetricBand
           items={[
-            { label: 'ACTIVE', value: all.filter((row) => row.agent.status === 'ACTIVE').length, note: 'stored status at the engine' },
-            { label: 'PAUSED', value: all.filter((row) => row.agent.status === 'PAUSED').length, tone: 'wait', note: 'refuses new requests, outstanding tickets still redeem' },
-            { label: 'REVOKED', value: all.filter((row) => row.agent.status === 'REVOKED').length, tone: 'none', note: 'terminal, credentials stop parsing' },
+            { label: 'ACTIVE', value: all.filter((row) => row.status === 'ACTIVE').length, note: 'stored status at the engine' },
+            { label: 'PAUSED', value: all.filter((row) => row.status === 'PAUSED').length, tone: 'wait', note: 'refuses new requests, outstanding tickets still redeem' },
+            { label: 'REVOKED', value: all.filter((row) => row.status === 'REVOKED').length, tone: 'none', note: 'terminal, credentials stop parsing' },
             { label: 'WAITING ON A HUMAN', value: all.filter((row) => row.pending > 0).length, tone: 'wait', note: 'this surface reading of live rows' },
           ]}
         />
@@ -146,8 +118,8 @@ export default function Agents() {
         <DataTable
           rows={shown}
           columns={columns}
-          rowKey={(row) => row.agent.id}
-          onRow={(row) => router.push(`/console/agents/${row.agent.name}`)}
+          rowKey={(row) => row.id}
+          onRow={(row) => router.push(`/console/agents/${row.name}`)}
           empty={
             <div className="empty">
               <b>No agents match this filter</b>

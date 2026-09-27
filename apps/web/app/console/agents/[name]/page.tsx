@@ -5,6 +5,8 @@ import { useParams } from 'next/navigation'
 import { useState } from 'react'
 import { ActionButton, Empty, KeyValue, Meter, Panel, Reveal, State, Tag, DataTable, type Column } from '@/components/console/ui'
 import * as sampleData from '@/lib/ari/sample'
+import { useConsole } from '@/lib/ari/console'
+import { UnwiredScreen } from '@/components/console/ui'
 import { deriveAgentState, type RiskLevel, type TransactionRecord } from '@/lib/ari/types'
 import { money, relativeTime } from '@/lib/ari/format'
 
@@ -14,6 +16,16 @@ import { money, relativeTime } from '@/lib/ari/format'
  * payment console teaches the operator the wrong contract.
  */
 export default function AgentDetail() {
+  const { view } = useConsole()
+  if (view.source === 'live') {
+    return (
+      <UnwiredScreen
+        screen="agent detail"
+        need="one read is missing: nothing on this API lists an agent's credentials, so the credential panel would be invented. Its revoke and mint buttons are wired to the proxy already."
+      />
+    )
+  }
+
   const { name } = useParams<{ name: string }>()
   const [refusal, setRefusal] = useState<string | null>(null)
   const agent = sampleData.agentByName(name)
