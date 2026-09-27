@@ -33,6 +33,8 @@ export interface SignerConfig {
   readonly databaseRole: string;
   readonly wallets: ReadonlySet<string>;
   readonly port: number;
+  /** Loopback by default. The signer answers to the decision plane, not to the internet. */
+  readonly host: string;
 }
 
 export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
@@ -64,7 +66,8 @@ export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
     databaseUrl,
     databaseRole,
     wallets: new Set(wallets),
-    port: Number(env.SIGNER_PORT ?? '4100'),
+    port: Number(env.SIGNER_PORT ?? env.PORT ?? '4100'),
+    host: env.SIGNER_HOST ?? '127.0.0.1',
   };
 }
 
@@ -111,7 +114,7 @@ export async function startSigner(config: SignerConfig): Promise<RunningSigner> 
   const server = createServer((req, res) => {
     void route(handle, req, res);
   });
-  await new Promise<void>((resolve) => server.listen(config.port, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => server.listen(config.port, config.host, resolve));
 
   return {
     deps,

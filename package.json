@@ -17,6 +17,7 @@
     "test:security": "vitest run tests/security",
     "db:up": "docker compose up -d postgres redis",
     "db:down": "docker compose down",
+    "db:migrate": "node --import tsx --env-file-if-exists=.env scripts/migrate.mts",
     "clean": "rm -rf packages/*/dist node_modules/.vite",
     "test:coverage": "vitest run --coverage.enabled --coverage.include='packages/*/src/**' --coverage.reporters=text",
     "seed": "node --import tsx --env-file-if-exists=.env scripts/seed-tenant.mts",

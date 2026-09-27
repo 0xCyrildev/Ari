@@ -35,6 +35,13 @@ export interface ApiConfig {
   readonly approvalKey: ApprovalKey;
   readonly bootstrapToken: string;
   readonly signerUrl: string;
+  /**
+   * The interface to bind. Loopback by default, because a service that comes up reachable on
+   * every interface is a service whose owner did not choose that. A platform that fronts it
+   * with a proxy sets `API_HOST=0.0.0.0` and terminates TLS in front; saying it out loud in
+   * configuration is the point, not an obstacle.
+   */
+  readonly host: string;
   /** Null is a configuration, not an omission — see `PipelineDeps.simulation`. */
   readonly simulation: EvmProviderConfig | null;
   readonly port: number;
@@ -95,7 +102,8 @@ export function readConfig(env: NodeJS.ProcessEnv): ApiConfig {
     approvalKey: new ApprovalKey(approvalSecret),
     bootstrapToken,
     signerUrl: env.SIGNER_URL ?? 'http://127.0.0.1:4100/v1/sign',
-    port: Number(env.API_PORT ?? '4000'),
+    port: Number(env.API_PORT ?? env.PORT ?? '4000'),
+    host: env.API_HOST ?? '127.0.0.1',
     simulation,
   };
 }
@@ -196,8 +204,15 @@ if (process.argv[1]?.endsWith('server.ts') || process.argv[1]?.endsWith('server.
     process.exit(2);
   }
   const api = await startApi(config);
-  await api.app.listen({ host: '127.0.0.1', port: config.port });
-  console.log(`ari-api listening on 127.0.0.1:${config.port}`);
+  await api.app.listen({ host: config.host, port: config.port });
+  console.log(`ari-api listening on ${config.host}:${config.port}`);
+  // `API_HOST` was named in `.env.example` and read by nothing: the process always bound
+  // loopback, so a deployment behind a platform proxy accepted connections from the container
+  // and nowhere else, and the health check passed. Non-loopback is legitimate on a PaaS and
+  // reckless on a laptop, so it is stated rather than assumed.
+  if (config.host !== '127.0.0.1' && config.host !== 'localhost') {
+    process.stderr.write(`ari-api: bound to ${config.host}, reachable beyond this machine. TLS must terminate in front of it: bearer credentials and the bootstrap token cross this socket.\n`);
+  }
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
       void api.close().then(() => process.exit(0));
