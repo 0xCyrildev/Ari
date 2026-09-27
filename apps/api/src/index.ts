@@ -14,4 +14,5 @@ export {
 export { authenticateAgent, acceptsBootstrapToken, type AuthResult, type Principal } from './gateway.js';
 export { createSignerClient, type DeliveryResult, type SignerClient } from './signer-client.js';
 export { registerRoutes, type RouteDeps } from './routes.js';
+export { MAX_READ_LIMIT } from './reads.js';
 export { readConfig, startApi, type ApiConfig, type RunningApi } from './server.js';

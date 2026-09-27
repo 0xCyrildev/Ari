@@ -44,6 +44,7 @@ import {
   sealGrantedApproval,
 } from '@ari/approvals';
 import { authorize, recordDeliveryOutcome, type AuthorizeOutcome, type PipelineDeps } from './authorize.js';
+import { listPolicies, listRequests, listWallets, MAX_READ_LIMIT, organizationSummary, requestRecord } from './reads.js';
 import { acceptsBootstrapToken, authenticateAgent, authenticateApprover, type ApproverPrincipal } from './gateway.js';
 import type { SignerClient } from './signer-client.js';
 import type { FastifyError, FastifyInstance, FastifyReply } from 'fastify';
@@ -726,4 +727,112 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
       };
     }),
   );
+
+  // ---------------------------------------------------------------------------
+  // The console's reads.
+  //
+  // Until now every read in this file was by primary key and answered a question the
+  // *caller's own process* had already asked: an agent polling a request it submitted, an
+  // approver opening an approval id that reached them out of band. A person who wants to see
+  // a tenant — what moved today, what is waiting, which policy is live, who was refused and
+  // why — had no route at all, and the numbers were only in a database they are not given
+  // access to.
+  //
+  // Two of these scopes are the reason for the section. `transaction:read` and `policy:read`
+  // have been in `SCOPES` since well before any route could ask for them, and `013` permits a
+  // human credential to hold both, so a mint with either in its list looked like a grant while
+  // nothing checked. A scope no route requires is decoration, which is the exact drift the
+  // `013` CHECK was written to stop.
+  //
+  // What `GET /v1/transactions/:id` stays as: the thin status poll an agent makes about its
+  // own request, on an agent credential, answering three fields. The console's record of the
+  // same row is `/record` below, on a human credential with `transaction:read`, and the two are
+  // separate paths because the two subjects are separate in the row (`013`) — one handler that
+  // branches on which kind of caller it got is how that separation becomes a convention.
+  // ---------------------------------------------------------------------------
+
+  const readWindow = (query: Record<string, unknown>): { readonly limit: number } | GateReply => {
+    const limit = query.limit;
+    // The default is applied here rather than left to the read, so that the `limit` in the
+    // response is the page the caller got, whatever either side's default happens to be.
+    if (limit === undefined) return { limit: 50 };
+    if (typeof limit !== 'string' || !/^\d{1,6}$/.test(limit) || Number(limit) < 1) {
+      return { status: 400, body: { code: 'INVALID_REQUEST', detail: `limit must be between 1 and ${MAX_READ_LIMIT}` } };
+    }
+    // Clamped, not refused: a screen that asks for a thousand rows is asking for "everything
+    // you have", and the answer is the first two hundred with the ceiling stated in the body.
+    return { limit: Math.min(Number(limit), MAX_READ_LIMIT) };
+  };
+
+  app.get('/v1/transactions', async (request, reply) => {
+    const query = (request.query ?? {}) as Record<string, unknown>;
+    const window = readWindow(query);
+    if ('status' in window) return reply.code(window.status).send(window.body);
+    const agent = query.agent;
+    if (agent !== undefined && (typeof agent !== 'string' || agent.length === 0 || agent.length > 200)) {
+      return reply.code(400).send({ code: 'INVALID_REQUEST', detail: 'agent must be a non-empty id, at most 200 characters' });
+    }
+    return asUser('transaction:read')(request, reply, async (tx) => ({
+      status: 200,
+      body: {
+        organizationId: tx.orgId,
+        readAt: new Date().toISOString(),
+        limit: window.limit,
+        transactions: await listRequests(tx, {
+          limit: window.limit,
+          ...(typeof agent === 'string' ? { agentId: agent } : {}),
+        }),
+      },
+    }));
+  });
+
+  app.get('/v1/transactions/:id/record', async (request, reply) => {
+    const params = request.params as { id: string };
+    if (params.id.length === 0 || params.id.length > 200) {
+      return reply.code(400).send({ code: 'INVALID_REQUEST', detail: 'request id is malformed' });
+    }
+    return asUser('transaction:read')(request, reply, async (tx) => {
+      const record = await requestRecord(tx, params.id);
+      // The same rule the status poll follows: another tenant's row and no row at all answer
+      // alike, because which one it was is itself a fact about someone else's payments.
+      if (record === null) return { status: 404, body: { code: 'NOT_FOUND' } };
+      return { status: 200, body: { transaction: record } };
+    });
+  });
+
+  app.get('/v1/summary', async (request, reply) =>
+    asUser('transaction:read')(request, reply, async (tx) => ({
+      status: 200,
+      body: {
+        organizationId: tx.orgId,
+        readAt: new Date().toISOString(),
+        summary: await organizationSummary(tx),
+      },
+    })),
+  );
+
+  app.get('/v1/wallets', async (request, reply) =>
+    asUser('wallet:manage')(request, reply, async (tx) => ({
+      status: 200,
+      body: {
+        organizationId: tx.orgId,
+        readAt: new Date().toISOString(),
+        wallets: await listWallets(tx),
+      },
+    })),
+  );
+
+  app.get('/v1/policies', async (request, reply) => {
+    const window = readWindow((request.query ?? {}) as Record<string, unknown>);
+    if ('status' in window) return reply.code(window.status).send(window.body);
+    return asUser('policy:read')(request, reply, async (tx) => ({
+      status: 200,
+      body: {
+        organizationId: tx.orgId,
+        readAt: new Date().toISOString(),
+        limit: window.limit,
+        policies: await listPolicies(tx, { limit: window.limit }),
+      },
+    }));
+  });
 }
