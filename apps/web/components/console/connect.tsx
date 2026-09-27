@@ -48,7 +48,7 @@ export function ConnectPanel() {
   return (
     <section className="connect" aria-label="Deployment connection">
       <div className="connect-state">
-        <span className="label">{connected ? 'CONNECTED TENANT' : 'SAMPLE TENANT'}</span>
+        <span className="label">{view.source === 'live' ? 'CONNECTED TENANT' : 'SAMPLE TENANT'}</span>
         <p className="connect-notice" role="status">
           {view.notice}
         </p>

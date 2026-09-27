@@ -183,6 +183,12 @@ export interface WireApproval {
   readonly quorumNeeded: number
   readonly approved: number
   readonly expiresAt: string
+  /**
+   * Present on the detail read, absent on the list read: `listApprovals` returns a summary,
+   * and `approvalDetail` is what adds `status` and `votes`. The list is filtered to open and
+   * unexpired rows, so the absence is meaningful rather than unknown — it is PENDING, because
+   * nothing else is ever returned there.
+   */
   readonly status: 'PENDING' | 'GRANTED' | 'REJECTED' | 'EXPIRED' | 'CONSUMED'
   readonly votes: readonly { readonly approver: string; readonly role: string; readonly decision: string; readonly at: string }[]
 }
@@ -395,7 +401,7 @@ export const parseApprovals = (value: unknown): readonly WireApproval[] =>
       quorumNeeded: num(row.quorumNeeded, 'approval.quorumNeeded'),
       approved: num(row.approved, 'approval.approved'),
       expiresAt: str(row.expiresAt, 'approval.expiresAt'),
-      status: oneOf(row.status, APPROVAL_STATUSES, 'approval.status') as WireApproval['status'],
+      status: (row.status === undefined ? 'PENDING' : oneOf(row.status, APPROVAL_STATUSES, 'approval.status')) as WireApproval['status'],
       votes: list(row.votes ?? [], 'approval.votes').map((vote) => {
         const v = record(vote, 'approval.votes[]')
         return {
