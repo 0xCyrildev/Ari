@@ -511,7 +511,10 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   drives headless Chromium over the DevTools WebSocket (Node's built-in `WebSocket`, no dependency) to
   scroll to a fraction of the document and capture. The CLI flag only ever photographs the top, and a
   tall window is worse than useless here: sections sized in `dvh` stretch with the viewport instead of
-  being scrolled through, so a pinned pan looks broken in a way it is not.
+  being scrolled through, so a pinned pan looks broken in a way it is not. It is environment-sensitive:
+  Chromium on this box sometimes cannot load a page at all (`ERR_INSUFFICIENT_RESOURCES` under memory
+  pressure, with a desktop browser already open), so every CDP call is bounded by a timeout and fails
+  loudly instead of hanging the run.
 - **The mark is used as supplied, and painted through a mask.** `docs/assets/ari-logo.svg` is copied, not
   redrawn; because it is ink drawn for a light surface, the dark interface renders it with
   `mask-image` + a token colour so the geometry is byte-identical and only the paint is ours. The brand

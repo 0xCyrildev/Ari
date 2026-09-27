@@ -247,18 +247,29 @@ export function Landing() {
       <section id="keys" className="border-t border-line bg-base">
         <div className="mx-auto grid max-w-[75rem] items-center gap-10 px-5 py-16 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1fr)] lg:gap-16 lg:py-24">
           <Reveal>
-            <Tilt className="mx-auto w-full max-w-[34rem] [perspective:1200px]">
+            <Tilt className="mx-auto grid w-full max-w-[34rem] gap-4 [perspective:1200px] sm:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
               <figure className="border border-line bg-sunken">
                 <img
                   src="/images/ari-vault-door.jpg"
                   alt="A circular steel bank vault door standing open in a dark room."
                   loading="lazy"
                   decoding="async"
-                  className="h-[19rem] w-full object-cover sm:h-[24rem]"
+                  className="h-[15rem] w-full object-cover object-[68%] sm:h-[22rem]"
                 />
-                <figcaption className="flex items-center justify-between gap-3 border-t border-line px-4 py-2.5 text-[11px] text-ink-3">
-                  <span>A door with a mechanism, not a person standing in front of it.</span>
-                  <span className="shrink-0 font-mono text-ink-4">CC BY-SA</span>
+                <figcaption className="border-t border-line px-3.5 py-2 text-[11px] text-ink-3">
+                  The mechanism. CC BY-SA.
+                </figcaption>
+              </figure>
+              <figure className="border border-line bg-sunken">
+                <img
+                  src="/images/ari-vault.jpg"
+                  alt="A woman in 1967 walking out of an open bank vault doorway, holding papers."
+                  loading="lazy"
+                  decoding="async"
+                  className="h-[15rem] w-full object-cover object-top sm:h-[22rem]"
+                />
+                <figcaption className="border-t border-line px-3.5 py-2 text-[11px] text-ink-3">
+                  The person who was allowed to.
                 </figcaption>
               </figure>
             </Tilt>
@@ -289,9 +300,21 @@ export function Landing() {
                   </li>
                 ))}
               </ul>
-              <Link to="/app/wallets" className="mt-8 inline-flex items-center gap-1.5 text-xs text-accent transition-colors hover:text-accent-strong">
-                How a wallet is granted <ArrowRight size={13} weight="bold" />
-              </Link>
+              <p className="mt-6 max-w-[58ch] text-[14px] leading-relaxed text-ink-2">
+                The other half is a person. When a policy escalates, it waits for a named approver
+                with the right role, and the quorum is a constraint in the database rather than a
+                queue that can be retried past.
+              </p>
+              <div className="mt-6 flex flex-wrap gap-x-7 gap-y-2 border-t border-line pt-5">
+                <Link to="/app/approvals" className="group inline-flex items-center gap-1.5 text-xs text-accent transition-colors hover:text-accent-strong">
+                  What an approver is shown
+                  <ArrowRight size={13} weight="bold" className="transition-transform duration-300 group-hover:translate-x-1" />
+                </Link>
+                <Link to="/app/wallets" className="group inline-flex items-center gap-1.5 text-xs text-accent transition-colors hover:text-accent-strong">
+                  How a wallet is granted
+                  <ArrowRight size={13} weight="bold" className="transition-transform duration-300 group-hover:translate-x-1" />
+                </Link>
+              </div>
             </Reveal>
           </div>
         </div>
