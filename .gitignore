@@ -12,3 +12,6 @@ coverage/
 audit-export/
 local-proofs/
 *.pid
+
+# Local dev bearer for the console, printed once by the operator path.
+.console-credential
