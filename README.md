@@ -217,4 +217,16 @@ code does not hold is a defect — marketing copy is part of the threat model he
 
 ## Licence
 
-No licence file. All rights reserved pending a commercial decision.
+Business Source License 1.1, in `LICENSE`. Source is public; production use is
+reserved to the licensor except as the Additional Use Grant allows, and every
+version converts to an open licence on its Change Date.
+
+The grant withholds one thing specifically, because it is the thing this
+repository is for: running Ari as somebody else's permission infrastructure. A
+deployment that evaluates payments and holds keys on behalf of third parties is
+a commercial licence, not a self-host. Non-production use, internal use, and
+running it for your own agents are all permitted, so evaluating this properly
+does not require asking anyone.
+
+If you want a different Change Date, a broader grant, or a licence that survives
+being the authorization layer for a payment product, write to hello@ari.systems.

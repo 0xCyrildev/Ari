@@ -99,6 +99,18 @@ Decisions from this pass a later session must not quietly reverse:
   third-party request), and the footer's Discord/X/GitHub links pointed at generic
   homepages, so they are gone; `READ THE DOCS` points at this repository's README.
 
+- **The licence is BUSL-1.1**, with the Additional Use Grant withholding exactly one thing:
+  running Ari as a third party's permission infrastructure. Non-production, internal, and
+  own-agents use are permitted, so an evaluator never has to ask. Two things a later session must
+  check before this is legally load-bearing rather than merely present: the **Licensor name is
+  written as "Ari Systems" because that is what the site footer says**, and it must become the
+  actual legal entity; and the **Change License is Apache-2.0, which is what most BUSL holders
+  use but is not GPL-2.0-compatible**, while covenant 1 of the licence text asks for GPL-2.0-or-
+  later or something compatible with it — GPL-3.0+ is the covenant-strict substitution, so
+  switching is a one-line edit if that matters more than the patent grant. `Change Date` is
+  2030-09-27; the licence also converts four years after first public distribution, whichever is
+  sooner, so a Change Date earlier than that is the only one that actually binds.
+
 Not done, in the order it costs: point the agents/wallets/policies/detail screens at the live
 reads (`GET /v1/agents` exists; agent limits come from the policy document, which
 `GET /v1/policies` already returns); write the live trace builder for `/record`, whose
