@@ -111,14 +111,29 @@ Decisions from this pass a later session must not quietly reverse:
   2030-09-27; the licence also converts four years after first public distribution, whichever is
   sooner, so a Change Date earlier than that is the only one that actually binds.
 
-Not done, in the order it costs: point the agents/wallets/policies/detail screens at the live
-reads (`GET /v1/agents` exists; agent limits come from the policy document, which
-`GET /v1/policies` already returns); write the live trace builder for `/record`, whose
-`trail` is exactly the data a `TraceStage` list is made of; re-add a screenshot tool (the
-CDP one died with `apps/dashboard`, so **this pass was verified over HTTP and by build, not
-by clicking through a browser**); and an authenticated 200 through the proxy was proven for
-unauthenticated/scope paths but the final positive read was interrupted, so run it once by
-hand before believing the wiring end to end.
+**Corrected as of the fifth pass.** Done since: the `/record` trace builder
+(`lib/ari/trace.ts` — six stages rebuilt from the row's own events, each stage naming the
+event ids it came from, `NOT_REACHED` drawn rather than hidden, EXECUTION reporting itself
+unsettled), the developer route table's five new reads, and **an authenticated 200 through
+the proxy for every read** (`summary`, `transactions`, `wallets`, `policies`, `approvals`),
+with `agents` correctly answering `403 SCOPE_REFUSED` because that credential carries no
+`agent:manage`. `/console` renders 200.
+
+Still refused by design, in the order it costs: **wallets** (`view.grantRows` is now the
+data it needs; its `grants` block still rebuilds from the fixture and the downstream JSX
+references `grant.agent` / `grant.version`, so it is a rewrite of one table, not a rename),
+**agents** (same rows, plus it wants `purpose`/`owner`/`created`, which no read returns),
+**policies** (needs the frozen document rendered live), **risk** (the bands are derivable
+from the assessments already on the view), **settings** (people/keys/webhooks have no reads
+at all, and this is where a signed-in person should be *minting* a `ucrd_` rather than
+having one pasted), **developers** (static docs; its sample keys must not render as
+credentials). Then re-add the CDP screenshot tool that died with `apps/dashboard`: the
+live state has been proven over HTTP and by build, **not** by clicking through a browser,
+so a session that can drive Chromium should confirm the connected render before this is
+called a shipped console.
+
+`apps/web` has no ESLint or Prettier config, and `next build` runs no lint; the gates it
+does have are `web:typecheck`, `web:preflight`, `web:build`.
 
 ## Decisions made here, that a later session must not quietly reverse
 
