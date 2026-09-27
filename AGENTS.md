@@ -484,6 +484,28 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   out of the workspace because a Vite/React/Tailwind toolchain inside `packages/*`/`apps/*` would put
   its resolution and its build into `pnpm typecheck` and `pnpm test`, the two gates every other phase
   here starts from. The exclusion in `pnpm-workspace.yaml` says that. Its `node_modules` is gitignored.
+- **`apps/web` is the frontend now, and it is the v0 site plus the console built on top of it.** The
+  user generated the marketing page with Vercel's v0 and asked for the rest of the pages to follow
+  *that* scheme, so the console lives in the Next 16 app at `apps/web` (`/` is the marketing page,
+  `/console/...` is the control plane), and `apps/dashboard` is the superseded Vite build. The
+  scheme is paper `#f4f0e8` on ink `#111111`, vermilion `#d95745` as the only brand accent and lime
+  `#c6ef68` as the live signal, hairlines instead of cards, zero corner radius, 10px mono for
+  labels and 15px/1.45 body at a 380px measure; the class vocabulary is the `Console` block at the
+  bottom of `apps/web/app/globals.css` and the primitives are `components/console/ui.tsx`. Two
+  deliberate deviations from the marketing page, both written down where they are defined: state
+  colour lives in a marker glyph and never in the word (vermilion on paper is 3.2:1, lime is worse),
+  and console reveals are motion-only (the marketing `.reveal` class holds content at `opacity: 0`
+  until an observer fires, which is a blank screen if it does not). Gates: `pnpm web:typecheck`,
+  `pnpm web:dev` on **port 3100** (3000 is held by another project on this box). `v0` ships
+  `typescript.ignoreBuildErrors: true` and a `generator` meta tag; both are removed. The domain
+  layer (`lib/ari/types.ts`, `lib/ari/sample.ts`, `lib/ari/format.ts`) is copied from the Vite app
+  unchanged, so the two frontends read the same fixture and the same engine vocabulary.
+  v0's marketing page also contradicted the backend in four places and those are fixed: the trace
+  ended in `EXECUTION / CONFIRMED`, the pipeline listed six stages instead of seven, the example
+  policy named `Sui`, and the SDK was advertised as `npm install @ari/sdk`. The networks strip now
+  says what `SupportedChain` says (Ethereum today, Bitcoin in the schema, EVM chains a config away,
+  the rest not supported), and `packages/client` is labelled as the unpublished workspace package
+  it is.
 - **The console's design is token-locked and there is a mechanical gate over it.** The first pass looked
   generated, and the counts said why: 52 em dashes in visible copy, 46 small-caps micro-labels, three
   files of hand-drawn SVG icons, ten identical metric cards, one accent used in more hues than one.

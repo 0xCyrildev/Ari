@@ -23,7 +23,10 @@
     "typecheck:ui": "pnpm --dir apps/dashboard typecheck",
     "ui:dev": "pnpm --dir apps/dashboard dev",
     "ui:preflight": "pnpm --dir apps/dashboard ui:preflight",
-    "ui:build": "pnpm --dir apps/dashboard build"
+    "ui:build": "pnpm --dir apps/dashboard build",
+    "web:dev": "pnpm --dir apps/web dev",
+    "web:typecheck": "pnpm --dir apps/web typecheck",
+    "web:build": "pnpm --dir apps/web build"
   },
   "devDependencies": {
     "@ari/api": "workspace:*",

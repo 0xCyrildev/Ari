@@ -12,6 +12,9 @@ packages:
   # `pnpm typecheck:ui`, `pnpm ui:preflight` and `pnpm ui:build` instead, and it keeps its own
   # `node_modules`.
   - '!apps/dashboard'
+  # `apps/web` is the Next 16 app (the v0 site and, now, the console). Same reason as
+  # above: its own toolchain, its own gates, nothing to do with the root install or tsc.
+  - '!apps/web'
 
 # No dependency is permitted to run code at install time. A package that needs a
 # build step gets named here deliberately, with the reason, rather than approved by
