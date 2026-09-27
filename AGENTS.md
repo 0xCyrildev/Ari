@@ -57,7 +57,7 @@ are the marketing layer's).
 | agent credential inventory, policy document body, balances, users/keys/webhooks/billing | **not drawn**: no read exists, and the screen says so rather than filling the space |
 
 All thirteen console routes plus `/docs`. Verified in **both** states by driving the real pages
-over CDP (`apps/web/scripts/live-probe.mjs`, multi-path variant used this session): connected
+over CDP (`node apps/web/scripts/live-probe.mjs <bearer> /console/settings ...`, which visits each route connected and then unconnected in one browser session): connected
 renders the live `payer`/`seed` rows with real ids and decimal counters; unconnected renders the
 labelled fixture with a matching banner.
 
