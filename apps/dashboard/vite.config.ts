@@ -1,14 +1,16 @@
+import react from '@vitejs/plugin-react';
+
 /**
- * Vite, with no React plugin.
+ * Vite, with the React plugin.
  *
- * `@vitejs/plugin-react` is not in this machine's pnpm store and the box cannot reach the
- * registry from Node, so the app is transformed by Vite 8's own pipeline (oxc), which
- * handles `.tsx` with the automatic JSX runtime out of the box. What is lost is Fast
- * Refresh; what is gained is one dependency that does not need to be trusted.
+ * An earlier pass of this file said the plugin was unavailable because the box could not reach
+ * the registry from Node. That was wrong: the probes were run with `--offline` against the local
+ * store and nobody checked whether an install actually worked. It does, so Fast Refresh works and
+ * `pnpm dev` keeps component state while a screen is being edited.
  */
 export default {
+  plugins: [react()],
   server: { host: '127.0.0.1', port: 5173, strictPort: true },
   preview: { host: '127.0.0.1', port: 5173, strictPort: true },
   build: { outDir: 'dist', sourcemap: false, target: 'es2022' },
-  esbuild: { jsx: 'automatic' },
 };

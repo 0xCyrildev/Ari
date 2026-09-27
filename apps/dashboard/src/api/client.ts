@@ -27,9 +27,9 @@ export interface AriApi {
   transaction(id: string): Promise<TransactionRecord | undefined>;
   /** GET /v1/approvals · GET /v1/approvals/:id */
   approvals(): Promise<readonly ApprovalRequest[]>;
-  /** POST /v1/approvals/:id/decisions — body { decision: 'APPROVED' | 'REJECTED' } */
+  /** POST /v1/approvals/:id/decisions, body { decision: 'APPROVED' | 'REJECTED' } */
   decide(approvalId: string, decision: 'APPROVED' | 'REJECTED'): Promise<{ ok: boolean; detail: string }>;
-  /** GET /v1/audit/events — the whole chain, with the head the API reports. */
+  /** GET /v1/audit/events: the whole chain, with the head the API reports. */
   audit(): Promise<{ events: readonly AuditEvent[]; head: string }>;
   /** no route yet: policy versions are read from the ledger by the operator's tooling. */
   policies(): Promise<readonly { key: string; name: string; versions: readonly PolicyVersion[] }[]>;
@@ -38,7 +38,12 @@ export interface AriApi {
   overview(): Promise<Overview>;
 }
 
-const head = sample.auditEvents.at(-1)?.hash ?? 'genesis';
+/**
+ * The head of the chain is the row with the highest `seq`, not the last element of whatever
+ * order the fixture happens to be in. The audit list is newest-first, so `at(-1)` was the
+ * genesis-side link while being labelled "head".
+ */
+const head = [...sample.auditEvents].sort((a, b) => Number(b.seq) - Number(a.seq))[0]?.hash ?? 'genesis';
 
 export const mockApi: AriApi = {
   async transactions() {
@@ -55,7 +60,7 @@ export const mockApi: AriApi = {
     if (target === undefined) return { ok: false, detail: 'APPROVAL_NOT_FOUND' };
     // The real route refuses a decision from a credential that does not hold
     // `approval:decide`, and the sealed token it returns is minted from the row that
-    // recorded the vote — never from what the browser claimed. The mock cannot honour
+    // recorded the vote, never from what the browser claimed. The mock cannot honour
     // that, so it says so instead of pretending the button worked.
     return {
       ok: false,

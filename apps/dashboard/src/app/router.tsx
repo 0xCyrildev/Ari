@@ -5,7 +5,7 @@
  * What it does: keep `window.history` and a React state in sync, parse `/segment/segment`
  * into params, and give links a `navigate()` that does not reload. What it deliberately does
  * not do: nested layout routes, loaders, scroll restoration beyond the top, or route data
- * — all of which are the parts of a router that a design system should not need.
+ * and none of which are parts of a router that a design system should need.
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react';
 

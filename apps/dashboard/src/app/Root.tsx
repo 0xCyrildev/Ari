@@ -25,7 +25,7 @@ export function Root() {
   if (head !== 'app') {
     return (
       <Shell>
-        <div className="mx-auto mt-16 max-w-md rounded-[var(--radius-md)] border border-hair bg-surface">
+        <div className="mx-auto mt-16 max-w-md border border-line bg-panel">
           <EmptyState
             title="That page does not exist"
             body={`Nothing is routed at /${path.join('/')}. The control center lives under /app, and the public page is at /.`}

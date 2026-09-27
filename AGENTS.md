@@ -26,7 +26,7 @@ then `ROADMAP.md`, then `THREAT_MODEL.md`.
 | 7 simulation | done | `packages/simulation`: `eth_call` against a real anvil, advisory by A10, and the digest binding asserted from both sides — see "Ran against a chain" below |
 | 9 CLI | done | `apps/cli`: the operator's and the approver's tool, 16 commands, `policy validate` against a 23-case corpus, and its own socket-level suite |
 | 4, 8, 11 | not started | intent, Ika (blocked on §6), security review |
-| 10 dashboard | started | `apps/dashboard`: React 19 + Vite 8 + Tailwind 4, 23 source files, landing page and ten control-center screens. The vocabulary is the engine's own — every status, reason code, signal and event type is copied from a named package — and the data is one labelled sample tenant. No route is wired to `ari-api` yet. |
+| 10 dashboard | built, not wired | `apps/dashboard`: React 19 + Vite 8 + Tailwind 4, 18 source files, landing page plus the ten control-center screens, rebuilt once against the design gate below. Gates: `pnpm typecheck:ui`, `pnpm ui:preflight`, `pnpm ui:build`. The vocabulary is the engine's own — every status, reason code, signal and event type is copied from a named package — and the data is one labelled sample tenant. No route is wired to `ari-api` yet. |
 
 `pnpm test` is **536 tests / 30 files**, in two halves that add up to it: `pnpm test:unit` is the
 **305** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **231** that
@@ -475,14 +475,28 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   than mutating local state and showing a success. A demo that pretends a button worked is not a demo, it
   is a false test of the contract. `src/api/client.ts` is the seam: one `AriApi` interface, each method
   naming the real route it maps to, two marked `no route yet`.
-- **`apps/dashboard` is outside the pnpm workspace on purpose, and the reason is this machine.** This box
-  cannot reach the npm registry from Node (raw TCP connects, `curl` returns 200, `fetch` and pnpm's
-  resolver time out), so leaving the app in `packages/*`/`apps/*` would make a root `pnpm install` try to
-  resolve React from the network and fail — breaking the first command every other gate here starts from.
-  It is excluded in `pnpm-workspace.yaml` with that reason written out, its `node_modules` is materialised
-  from the local store, and two consequences follow: no `@vitejs/plugin-react` (Vite 8's own pipeline
-  handles `.tsx`; Fast Refresh is gone), and no icon package or web font (icons are hand-drawn on a 16px
-  grid, type is the system stack with tabular numerals).
+- **`apps/dashboard` is outside the pnpm workspace, and the reason is isolation, not the network.** An
+  earlier note here claimed this box cannot reach the npm registry from Node, and that is **false**: it
+  was measured with `--offline` probes and by reading the local store, never by running an install.
+  Installs work (`pnpm add` resolves from `registry.npmjs.org` in seconds), so the app now has
+  `@vitejs/plugin-react` (Fast Refresh is back), `framer-motion`, `@react-three/fiber` + `three`,
+  `@phosphor-icons/react`, and self-hosted `@fontsource-variable/geist` + `geist-mono`. The app stays
+  out of the workspace because a Vite/React/Tailwind toolchain inside `packages/*`/`apps/*` would put
+  its resolution and its build into `pnpm typecheck` and `pnpm test`, the two gates every other phase
+  here starts from. The exclusion in `pnpm-workspace.yaml` says that. Its `node_modules` is gitignored.
+- **The console's design is token-locked and there is a mechanical gate over it.** The first pass looked
+  generated, and the counts said why: 52 em dashes in visible copy, 46 small-caps micro-labels, three
+  files of hand-drawn SVG icons, ten identical metric cards, one accent used in more hues than one.
+  The rebuild put four rules in `src/styles/tokens.css` (one radius: sharp surfaces plus
+  `--radius-control`, no others; one accent plus three desaturated state colours; `.label` for table
+  heads and field keys only; no shadows) and enforced them in `pnpm ui:preflight`
+  (`apps/dashboard/scripts/preflight.mjs`), which fails the tree on a dash, a shadow, a hand-drawn
+  `<svg>`, a `uppercase tracking` garnish, an `h-screen`, an infinite animation, a CDN font, a
+  `Acme`/`Northwind` placeholder, or a class from the deleted token set. Run it with the typecheck
+  after any screen work; the check is mechanical precisely so that no future session has to remember
+  the list. Landing-page motion is framer-motion plus a live WebGL hero (`components/hero.tsx`,
+  faceted transmission prisms, no video file), and it stops for `prefers-reduced-motion` by rendering
+  one still frame rather than removing the scene.
 - **The mark is used as supplied, and painted through a mask.** `docs/assets/ari-logo.svg` is copied, not
   redrawn; because it is ink drawn for a light surface, the dark interface renders it with
   `mask-image` + a token colour so the geometry is byte-identical and only the paint is ours. The brand

@@ -1,8 +1,8 @@
 /**
  * Sample tenant data.
  *
- * This is a fixture, not a claim. It is one coherent tenant — an organisation, two wallets,
- * five agents, three policies, and the transactions that connect them — built so that every
+ * This is a fixture, not a claim. It is one coherent tenant: an organisation, two wallets,
+ * five agents, three policies, and the transactions that connect them, built so that every
  * number on a screen can be traced to another number on another screen: the daily usage on an
  * agent page is the sum of that agent's settled transactions here, the "3 pending" on the
  * sidebar is the length of `approvals`, and the audit events are the ones those decisions
@@ -10,9 +10,9 @@
  *
  * Nothing about a chain is invented. There are no block confirmations claimed beyond
  * `BROADCAST`, no balances pulled from thin air, no transaction hash that implies a real
- * settlement Ari has not observed. Where the product does not yet know something — that a
+ * settlement Ari has not observed. Where the product does not yet know something, that a
  * signature has been confirmed on-chain, that a wallet's address belongs to the wallet it is
- * recorded against — the fixture says so in the same words the UI uses.
+ * recorded against, the fixture says so in the same words the UI uses.
  */
 
 import type {
@@ -46,7 +46,7 @@ let counter = 0;
  * Deterministic per load, and shaped like the real thing: a UUIDv7 with its version and
  * variant nibbles in place. A seeded mulberry32 rather than multiply-by-a-constant, because
  * the first version produced ids with long runs of zeros and every digest on screen looked
- * like a placeholder — which reads as a claim about the product, not about the fixture.
+ * like a placeholder, which reads as a claim about the product, not about the fixture.
  */
 function id(prefix: string): string {
   counter += 1;
@@ -74,7 +74,7 @@ const usd = (whole: number): string => (BigInt(Math.round(whole * 1_000_000))).t
 
 export const organization = {
   id: ORG,
-  name: 'Northwind Treasury',
+  name: 'Halden Freight Group',
   environment: 'production' as const,
   region: 'eu-west-1',
   plan: 'Enterprise',
@@ -82,10 +82,10 @@ export const organization = {
 };
 
 export const users = [
-  { id: id('usr'), email: 'mara@northwind.test', name: 'Mara Ellison', role: 'owner', status: 'ACTIVE' as const },
-  { id: id('usr'), email: 'dpeña@northwind.test', name: 'Diego Peña', role: 'admin', status: 'ACTIVE' as const },
-  { id: id('usr'), email: 'sec@northwind.test', name: 'Priya Raman', role: 'approver', status: 'ACTIVE' as const },
-  { id: id('usr'), email: 'ops@northwind.test', name: 'Tomas Wenzel', role: 'approver', status: 'SUSPENDED' as const },
+  { id: id('usr'), email: 'yusuf@haldenfreight.test', name: 'Yusuf Demir', role: 'owner', status: 'ACTIVE' as const },
+  { id: id('usr'), email: 'halima@haldenfreight.test', name: 'Halima Osei', role: 'admin', status: 'ACTIVE' as const },
+  { id: id('usr'), email: 'nils@haldenfreight.test', name: 'Nils Bekker', role: 'approver', status: 'ACTIVE' as const },
+  { id: id('usr'), email: 'tomas@haldenfreight.test', name: 'Tomas Wenzel', role: 'approver', status: 'SUSPENDED' as const },
 ];
 
 export const wallets: Wallet[] = [
@@ -222,7 +222,7 @@ function documentFor(
   fallback: Partial<PolicyDocumentShape['fallback']> = {},
 ): PolicyDocumentShape {
   return {
-    meta: { name, description: `${name} — deterministic limits, no wildcard recipients.` },
+    meta: { name, description: `${name}. Deterministic limits, no wildcard recipients.` },
     target: {
       walletId: walletByName(walletName)?.id ?? '',
       authorityMode: mode,
@@ -462,8 +462,8 @@ interface TxSeed {
 }
 
 const RECIPIENTS = {
-  acme: '0x3f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c',
-  vector: '0x1111111111111111111111111111111111111111',
+  brightline: '0x3f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c',
+  vector: '0x8d2f4b61a0c9e7d35b2f8a14c6e0d9b7f3a25c18',
   novus: '0x9bc1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9',
   unknown: '0x2f6a1c9d4b8e7f0a5c3d1e9b7a5c3d1e9b7a5c3d',
 };
@@ -471,23 +471,23 @@ const RECIPIENTS = {
 const seeds: TxSeed[] = [
   {
     agent: 'treasury-agent', wallet: 0, policyKey: 'treasury-payments', versionNumber: 8,
-    intent: 'Pay Acme Ltd — invoice INV-2291', amount: 4_200, recipient: RECIPIENTS.acme, ageMs: 6 * MIN,
+    intent: 'Pay Brightline Cartage, invoice INV-2291', amount: 4_200, recipient: RECIPIENTS.brightline, ageMs: 6 * MIN,
     outcome: 'ALLOW', state: 'SIGNING_COMPLETE', codes: [], risk: risk('LOW', [], 0.12, 6 * MIN),
     note: 'Signature returned by the mock provider; not yet reconciled against a chain fact.',
   },
   {
     agent: 'treasury-agent', wallet: 0, policyKey: 'treasury-payments', versionNumber: 8,
-    intent: 'Pay Vector Logistics — invoice INV-2288', amount: 8_500, recipient: RECIPIENTS.vector, ageMs: 52 * MIN,
+    intent: 'Pay Vector Logistics, invoice INV-2288', amount: 8_500, recipient: RECIPIENTS.vector, ageMs: 52 * MIN,
     outcome: 'REQUIRE_HUMAN_APPROVAL', state: 'APPROVAL_PENDING', codes: ['HUMAN_APPROVAL_REQUIRED'], risk: risk('MEDIUM', ['AMOUNT_ABOVE_BASELINE'], 0.41, 52 * MIN),
   },
   {
     agent: 'treasury-agent', wallet: 0, policyKey: 'treasury-payments', versionNumber: 8,
-    intent: 'Pay Novus Freight — invoice INV-2287', amount: 3_100, recipient: RECIPIENTS.novus, ageMs: 3 * HOUR,
+    intent: 'Pay Novus Freight, invoice INV-2287', amount: 3_100, recipient: RECIPIENTS.novus, ageMs: 3 * HOUR,
     outcome: 'DENY', state: 'DENIED', codes: ['RECIPIENT_NOT_IN_ALLOWLIST'], risk: risk('MEDIUM', ['NEW_RECIPIENT'], 0.38, 3 * HOUR),
   },
   {
     agent: 'treasury-agent', wallet: 0, policyKey: 'treasury-payments', versionNumber: 8,
-    intent: 'Pay Acme Ltd — invoice INV-2280', amount: 12_400, recipient: RECIPIENTS.acme, ageMs: 7 * HOUR,
+    intent: 'Pay Brightline Cartage, invoice INV-2280', amount: 12_400, recipient: RECIPIENTS.brightline, ageMs: 7 * HOUR,
     outcome: 'DENY', state: 'DENIED', codes: ['AMOUNT_EXCEEDS_PER_TRANSACTION'], risk: risk('LOW', [], 0.2, 7 * HOUR),
   },
   {
@@ -498,7 +498,7 @@ const seeds: TxSeed[] = [
   },
   {
     agent: 'bridge-observer', wallet: 1, policyKey: 'ops-limits', versionNumber: 4,
-    intent: 'Pay Acme Ltd — courier surcharge', amount: 1_450, recipient: RECIPIENTS.acme, ageMs: 26 * HOUR,
+    intent: 'Pay Brightline Cartage for a courier surcharge', amount: 1_450, recipient: RECIPIENTS.brightline, ageMs: 26 * HOUR,
     outcome: 'ALLOW', state: 'SIGNING_COMPLETE', codes: [], risk: risk('LOW', [], 0.18, 26 * HOUR),
   },
   {
@@ -508,14 +508,15 @@ const seeds: TxSeed[] = [
   },
   {
     agent: 'payroll-runner', wallet: 0, policyKey: 'payroll-fixed', versionNumber: 3,
-    intent: 'Payroll batch — 42 recipients', amount: 118_400, recipient: RECIPIENTS.unknown, ageMs: 19 * HOUR,
+    intent: 'Payroll batch, 42 recipients', amount: 118_400, recipient: RECIPIENTS.unknown, ageMs: 19 * HOUR,
     outcome: 'REQUIRE_HUMAN_APPROVAL', state: 'APPROVAL_PENDING', codes: ['HUMAN_APPROVAL_REQUIRED'], risk: risk('LOW', [], 0.22, 19 * HOUR),
     note: 'Two approvers required by policy v3.',
   },
   {
     agent: 'payroll-runner', wallet: 0, policyKey: 'payroll-fixed', versionNumber: 3,
-    intent: 'Payroll batch — September', amount: 112_900, recipient: RECIPIENTS.unknown, ageMs: 31 * DAY,
+    intent: 'Payroll batch for September', amount: 112_900, recipient: RECIPIENTS.unknown, ageMs: 31 * DAY,
     outcome: 'ALLOW', state: 'BROADCAST_CONFIRMED', codes: [], risk: risk('LOW', [], 0.19, 31 * DAY),
+    note: 'The only row in this fixture that claims settlement. No reconciler exists in this build, so read it as the shape of a confirmed row rather than as a chain fact.',
   },
   {
     agent: 'treasury-agent', wallet: 0, policyKey: 'treasury-payments', versionNumber: 8,
@@ -525,12 +526,12 @@ const seeds: TxSeed[] = [
   },
   {
     agent: 'treasury-agent', wallet: 0, policyKey: 'treasury-payments', versionNumber: 8,
-    intent: 'Pay Acme Ltd — invoice INV-2244', amount: 9_800, recipient: RECIPIENTS.acme, ageMs: 8 * DAY,
+    intent: 'Pay Brightline Cartage, invoice INV-2244', amount: 9_800, recipient: RECIPIENTS.brightline, ageMs: 8 * DAY,
     outcome: 'DENY', state: 'DENIED', codes: ['AMOUNT_EXCEEDS_DAILY_LIMIT', 'LIMIT_RESERVATION_FAILED'], risk: risk('LOW', ['POLICY_BOUNDARY_PROXIMITY'], 0.28, 8 * DAY),
   },
   {
     agent: 'legacy-migrator', wallet: 2, policyKey: 'ops-limits', versionNumber: 3,
-    intent: 'Migrate remaining balance to treasury-main', amount: 400, recipient: RECIPIENTS.acme, ageMs: 62 * DAY,
+    intent: 'Migrate remaining balance to treasury-main', amount: 400, recipient: RECIPIENTS.brightline, ageMs: 62 * DAY,
     outcome: 'DENY', state: 'DENIED', codes: ['AGENT_REVOKED'], risk: null,
   },
 ];
@@ -551,7 +552,7 @@ function traceFor(seed: TxSeed, versionId: string): TraceStage[] {
       ], seed.codes)
     : stage('POLICY', escalated ? 'ESCALATED' : 'PASSED', s(120), escalated ? 'Within limits; an escalation condition matched' : 'Allowed', [
         `${seed.policyKey} v${seed.versionNumber} (${versionId})`,
-        seed.amount === null ? 'contract call — no transfer limit applies; native value is refused outright' : `within the per-transaction ceiling`,
+        seed.amount === null ? 'contract call: no transfer limit applies, native value is refused outright' : `within the per-transaction ceiling`,
       ], escalated ? ['HUMAN_APPROVAL_REQUIRED'] : []);
 
   const riskStage =
@@ -573,7 +574,7 @@ function traceFor(seed: TxSeed, versionId: string): TraceStage[] {
 
   const signingStage =
     denied || escalated
-      ? stage('SIGNING', 'NOT_REACHED', null, 'No ticket was minted', ['a refusal leaves no capability behind — enforced by a trigger, not by convention'])
+      ? stage('SIGNING', 'NOT_REACHED', null, 'No ticket was minted', ['a refusal leaves no capability behind, enforced by a trigger rather than by convention'])
       : stage('SIGNING', 'PASSED', s(12), 'Authorized by Ari', [
           `single-use ticket, 60s TTL, sealed digest`,
           `${wallets[seed.wallet]!.name} · ${wallets[seed.wallet]!.mode}`,
@@ -584,7 +585,7 @@ function traceFor(seed: TxSeed, versionId: string): TraceStage[] {
       ? stage('EXECUTION', 'NOT_REACHED', null, 'Nothing was broadcast', [])
       : seed.state === 'BROADCAST_CONFIRMED'
         ? stage('EXECUTION', 'PASSED', s(2), 'Confirmed', ['provider-confirmed finality recorded'])
-        : stage('EXECUTION', 'UNSETTLED', null, 'Not settled — awaiting confirmation', [
+        : stage('EXECUTION', 'UNSETTLED', null, 'Not settled, awaiting confirmation', [
             seed.note ?? 'the signature came from a mock provider; a mock’s word is not a chain fact',
           ]);
 
@@ -614,7 +615,7 @@ export const transactions: TransactionRecord[] = seeds.map((seed) => {
     walletId: wallets[seed.wallet]!.id,
     kind: seed.kind ?? 'transfer',
     intent: seed.intent,
-    asset: seed.kind === 'contract_call' ? '—' : 'USDC',
+    asset: seed.kind === 'contract_call' ? 'none' : 'USDC',
     unit: UNIT,
     amountRaw: seed.amount === null ? null : usd(seed.amount),
     recipient: seed.recipient ?? null,
@@ -713,7 +714,6 @@ export const auditEvents: AuditEvent[] = Array.from({ length: 46 }, (_, i) => {
   const type = auditTypes[i % auditTypes.length]!;
   const actorType: AuditEvent['actorType'] = type.startsWith('transaction.proposed') || type === 'ticket.minted' ? 'agent' : type.startsWith('approval.') ? 'human' : 'system';
   const severity = type === 'agent.revoked' || type.includes('refused') ? 'warning' : i % 11 === 0 ? 'notice' : 'info';
-  const prev = `0000000000000000${(n * 7919).toString(16)}`.slice(-16);
   return {
     seq: String(n),
     id: id('aud'),
@@ -728,8 +728,8 @@ export const auditEvents: AuditEvent[] = Array.from({ length: 46 }, (_, i) => {
     decision: type === 'policy.evaluated' ? tx.outcome : null,
     reasons: type === 'policy.evaluated' ? [...tx.codes] : [],
     severity,
-    prev,
-    hash: `${prev}${(n * 104729).toString(16)}`.slice(0, 16),
+    prev: '',
+    hash: '',
     meta:
       type === 'simulation.evaluated'
         ? { simStatus: 'SIMULATED_OK', simChainId: '1', simBlock: '0x15ab6e0', simTrustworthy: 'false', simBound: 'true' }
@@ -738,6 +738,42 @@ export const auditEvents: AuditEvent[] = Array.from({ length: 46 }, (_, i) => {
           : {},
   };
 });
+
+/**
+ * The chain, linked.
+ *
+ * `prev` and `hash` are filled in a second pass, oldest row to newest, so every row's `prev` is
+ * the row before it's `hash` and the newest row's `hash` is the head the console reports. The
+ * first version derived both from `n * 7919`, which produced sixteen-nibble strings of leading
+ * zeros: a hash column of `0000000000` on a screen whose whole claim is that the history can be
+ * verified reads as a stub, and it was. These are still fixture digests, not sha256 over the
+ * row, and no screen claims they are.
+ */
+(function linkChain(): void {
+  let link = digest('ari-sample-genesis');
+  for (let index = auditEvents.length - 1; index >= 0; index -= 1) {
+    const event = auditEvents[index]!;
+    const hash = digest(`${link}|${event.seq}|${event.type}`);
+    auditEvents[index] = { ...event, prev: link, hash };
+    link = hash;
+  }
+})();
+
+/** A 16-nibble digest from a string seed: the shape of a chain link, deterministic per load. */
+function digest(seed: string): string {
+  let state = 0x811c9dc5;
+  for (let index = 0; index < seed.length; index += 1) {
+    state = Math.imul(state ^ (seed.charCodeAt(index) ?? 0), 0x01000193) >>> 0;
+  }
+  const step = (): number => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  return Array.from({ length: 16 }, () => hex[Math.floor(step() * 16)] ?? '0').join('');
+}
 
 // ---------------------------------------------------------------------------
 // Developer surface
@@ -751,18 +787,18 @@ export const apiKeys = [
 ];
 
 export const webhooks = [
-  { id: id('whk'), url: 'https://hooks.northwind.test/ari/decisions', events: ['transaction.decided', 'approval.requested'], status: 'HEALTHY' as const, lastDelivery: ago(9 * MIN), failures: 0 },
-  { id: id('whk'), url: 'https://erp.northwind.test/ari/settled', events: ['ticket.redeemed', 'broadcast.confirmed'], status: 'RETRYING' as const, lastDelivery: ago(2 * HOUR), failures: 4 },
+  { id: id('whk'), url: 'https://hooks.haldenfreight.test/ari/decisions', events: ['transaction.decided', 'approval.requested'], status: 'HEALTHY' as const, lastDelivery: ago(9 * MIN), failures: 0 },
+  { id: id('whk'), url: 'https://erp.haldenfreight.test/ari/settled', events: ['ticket.redeemed', 'broadcast.confirmed'], status: 'RETRYING' as const, lastDelivery: ago(2 * HOUR), failures: 4 },
 ];
 
 export const environments = [
-  { key: 'production', label: 'production', base: 'https://ari.northwind.test', status: 'LIVE' as const, agents: 5, wallets: 3 },
-  { key: 'staging', label: 'staging', base: 'https://ari-staging.northwind.test', status: 'LIVE' as const, agents: 2, wallets: 1 },
-  { key: 'sandbox', label: 'sandbox', base: 'https://ari-sandbox.northwind.test', status: 'PAUSED' as const, agents: 0, wallets: 0 },
+  { key: 'production', label: 'production', base: 'https://ari.haldenfreight.test', status: 'LIVE' as const, agents: 5, wallets: 3 },
+  { key: 'staging', label: 'staging', base: 'https://ari-staging.haldenfreight.test', status: 'LIVE' as const, agents: 2, wallets: 1 },
+  { key: 'sandbox', label: 'sandbox', base: 'https://ari-sandbox.haldenfreight.test', status: 'PAUSED' as const, agents: 0, wallets: 0 },
 ];
 
 // ---------------------------------------------------------------------------
-// Derived figures — computed from the rows above, never typed in twice
+// Derived figures: computed from the rows above, never typed in twice
 // ---------------------------------------------------------------------------
 
 const settledStates = new Set(['SIGNING_COMPLETE', 'BROADCAST', 'BROADCAST_CONFIRMED']);
@@ -803,4 +839,4 @@ export function riskEvents(): { level: RiskLevel; signals: readonly RiskSignalNa
 }
 
 /** The one number in this file that is not derived from a row: the fixture's own label. */
-export const DEMO_BANNER = 'Sample tenant — no live Ari deployment is connected to this screen.';
+export const DEMO_BANNER = 'Sample tenant. No live Ari deployment is connected to this screen, and nothing below it is a chain fact.';

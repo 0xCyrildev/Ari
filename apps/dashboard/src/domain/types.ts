@@ -4,7 +4,7 @@
  * Every union below is copied from a named file in this repository, not invented for the
  * screen. That matters more than usual in a UI: a dashboard that displays a status the
  * engine cannot produce teaches its users a false model of their own controls, and the
- * prompt for this application said plainly — do not fabricate. Where the real type lives:
+ * prompt for this application said plainly: do not fabricate. Where the real type lives:
  *
  *   ReasonCode ................. packages/schemas/src/contracts.ts:33
  *   RiskSignal ................... packages/schemas/src/contracts.ts:164
@@ -28,7 +28,7 @@
 
 export type DecisionOutcome = 'ALLOW' | 'REQUIRE_HUMAN_APPROVAL' | 'DENY';
 
-/** A subset of the real `ReasonCode` enum — see the header for the source. */
+/** A subset of the real `ReasonCode` enum; see the header for the source. */
 export type ReasonCode =
   | 'AGENT_REVOKED'
   | 'AGENT_PAUSED'
@@ -252,7 +252,7 @@ export interface TraceStage {
   readonly headline: string;
   readonly detail: readonly string[];
   readonly codes: readonly ReasonCode[];
-  /** The audit event ids this stage was reconstructed from — the "why" is never decorative. */
+  /** The audit event ids this stage was reconstructed from. The "why" is never decorative. */
   readonly events: readonly string[];
 }
 
@@ -336,13 +336,13 @@ export interface AuditEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Derived helpers — the UI's only inferences, kept where they can be read
+// Derived helpers: the UI's only inferences, kept where they can be read
 // ---------------------------------------------------------------------------
 
 /**
  * `AWAITING_APPROVAL` and `ANOMALOUS` are not stored anywhere: they are this surface's
  * reading of live rows. Naming the derivation in one function is what keeps a badge from
- * becoming a claim about the engine — an agent is never "anomalous" to Ari's schema, it is
+ * becoming a claim about the engine. An agent is never "anomalous" to Ari's schema, it is
  * an agent whose most recent assessment crossed a threshold.
  */
 export function deriveAgentState(

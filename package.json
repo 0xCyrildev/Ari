@@ -21,7 +21,9 @@
     "seed": "node --import tsx --env-file-if-exists=.env scripts/seed-tenant.mts",
     "ari": "node --import tsx --env-file-if-exists=.env apps/cli/src/main.ts",
     "typecheck:ui": "pnpm --dir apps/dashboard typecheck",
-    "ui:dev": "pnpm --dir apps/dashboard dev"
+    "ui:dev": "pnpm --dir apps/dashboard dev",
+    "ui:preflight": "pnpm --dir apps/dashboard ui:preflight",
+    "ui:build": "pnpm --dir apps/dashboard build"
   },
   "devDependencies": {
     "@ari/api": "workspace:*",

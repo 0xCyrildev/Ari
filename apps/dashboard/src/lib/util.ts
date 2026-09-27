@@ -11,14 +11,14 @@ export const cx = (...values: ClassValue[]): string => clsx(values);
  * what will be signed" is a UI bug with financial consequences.
  */
 export function formatRaw(raw: string | null, decimals: number, opts: { readonly symbol?: string; readonly compact?: boolean } = {}): string {
-  if (raw === null) return '—';
+  if (raw === null) return 'no amount';
   const negative = raw.startsWith('-');
   const digits = negative ? raw.slice(1) : raw;
   const padded = digits.padStart(decimals + 1, '0');
   const whole = padded.slice(0, padded.length - decimals) || '0';
   const frac = decimals > 0 ? padded.slice(-decimals).replace(/0+$/, '') : '';
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  const sign = negative ? '−' : '';
+  const sign = negative ? '-' : '';
   const symbol = opts.symbol ?? '$';
   if (opts.compact === true) {
     const value = Number(`${grouped.replaceAll(',', '')}.${frac || '0'}`);
@@ -39,7 +39,7 @@ export function money(raw: string | null, unit: string, compact = false): string
 }
 
 export function relativeTime(iso: string | null): string {
-  if (iso === null) return '—';
+  if (iso === null) return 'never';
   const delta = Date.parse(iso) - Date.now();
   const abs = Math.abs(delta);
   const minute = 60_000;
@@ -54,12 +54,12 @@ export function relativeTime(iso: string | null): string {
 }
 
 export function clockTime(iso: string | null): string {
-  if (iso === null) return '—';
+  if (iso === null) return 'not recorded';
   return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 export function fullTime(iso: string | null): string {
-  if (iso === null) return '—';
+  if (iso === null) return 'not recorded';
   const d = new Date(iso);
   return `${d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })} · ${d.toLocaleTimeString('en-GB', { hour12: false })}`;
 }
@@ -67,7 +67,7 @@ export function fullTime(iso: string | null): string {
 export const shortHash = (value: string, keep = 6): string =>
   value.length <= keep * 2 + 3 ? value : `${value.slice(0, keep + (value.startsWith('canon/') ? 8 : 0))}…${value.slice(-keep)}`;
 
-export const shortAddress = (value: string | null): string => (value === null ? '—' : `${value.slice(0, 8)}…${value.slice(-6)}`);
+export const shortAddress = (value: string | null): string => (value === null ? 'no address' : `${value.slice(0, 8)}…${value.slice(-6)}`);
 
 export const titleCase = (value: string): string =>
   value

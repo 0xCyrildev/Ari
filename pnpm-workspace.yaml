@@ -1,12 +1,16 @@
 packages:
   - 'packages/*'
   - 'apps/*'
-  # The dashboard is excluded on purpose, and it is a constraint of this machine rather than
-  # an architectural preference: `apps/dashboard` is a Vite/React app whose dependencies are
-  # materialised from the local pnpm store, and this box cannot reach the registry from Node.
-  # Left in the workspace, a root `pnpm install` would try to resolve react/@types/* against
-  # registry.npmjs.org and fail the install of the whole repository — breaking the one command
-  # every other gate in this repo starts from. Its own `node_modules` lives inside it.
+  # The dashboard is excluded on purpose. An earlier version of this comment said the reason was
+  # that the box could not reach the registry from Node; that was measured with `--offline`
+  # probes and never by running an install, and it is false. The real reason is isolation: this is
+  # a Vite/React/Tailwind app with its own toolchain (react 19, three, framer-motion, phosphor),
+  # and inside the workspace its resolution would join the root lockfile, its build output would
+  # join the workspace graph, and `tsc -p tsconfig.json` at the root would start type-checking
+  # screens. The two commands that every other gate here depends on, `pnpm install` and
+  # `pnpm typecheck`, should not have anything to do with a frontend. It is checked by
+  # `pnpm typecheck:ui`, `pnpm ui:preflight` and `pnpm ui:build` instead, and it keeps its own
+  # `node_modules`.
   - '!apps/dashboard'
 
 # No dependency is permitted to run code at install time. A package that needs a
