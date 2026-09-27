@@ -313,10 +313,9 @@ export const Empty = ({ title, body }: { readonly title: string; readonly body: 
 export function UnwiredScreen({ screen, need }: { readonly screen: string; readonly need: string }) {
   return (
     <section aria-label={`${screen}: not connected`} style={{ display: 'grid', gap: 12 }}>
-      <p className="section-kicker">{screen.toUpperCase()} / NO LIVE READ YET</p>
+      <p className="section-kicker">{screen.toUpperCase()} / NOT DRAWN</p>
       <p style={{ maxWidth: '62ch', lineHeight: 1.55 }}>
-        This deployment is connected, so nothing on this page is being invented to fill it.{' '}
-        {need}
+        Nothing here is invented to fill the space. {need}
       </p>
     </section>
   )

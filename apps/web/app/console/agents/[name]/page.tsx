@@ -14,7 +14,10 @@ export default function AgentDetail({ params }: { params: Promise<{ name: string
   const [bearer, setBearer] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const row = view.agentRows.find((agent) => agent.name === decodeURIComponent(name) || agent.id === decodeURIComponent(name))
-  if (row === undefined) return <div className="console-body"><UnwiredScreen screen="AGENT" need="No agent with this id is present in the current console view." /></div>
+  if (row === undefined) return <div className="console-body"><UnwiredScreen
+        screen={view.source === 'live' ? `AGENT ${name.toUpperCase()} IS NOT IN THIS TENANT` : 'AGENT NOT IN THE SAMPLE TENANT'}
+        need={`Nothing is shown for “${name}” because no agent with that name is in the ${view.source === 'live' ? 'tenant you are connected to' : 'sample tenant'}. This is not a partial render: the row is simply not here.`}
+      /></div>
   const requests = view.transactions.filter((transaction) => transaction.agentId === row.id)
   const issue = async (ttl: string) => { setBusy(true); const answer = await issueAgentCredential(row.id, SCOPES, ttl); setMessage(answer.message); setBearer(answer.bearer ?? null); setBusy(false) }
   return <div className="console-body">
