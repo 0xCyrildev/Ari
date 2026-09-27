@@ -72,15 +72,21 @@ Built since that paragraph was written: the operator's and the approver's HTTP
 surface (create an agent, issue its credential, register a wallet, activate a
 policy, decide an approval, revoke an agent, read the trail — each gated on a
 scope read from the credential row, not from what authentication returned), the
-`ari` command line that drives it, and a simulation plane that asks a real node.
+`ari` command line that drives it, a simulation plane that asks a real node, and the
+reads a human surface needs to see a tenant at all: `GET /v1/transactions`,
+`/v1/transactions/:id/record` (the row, its canonical bytes, the governing evaluation
+and its own slice of the chain), `/v1/summary`, `/v1/wallets`, `/v1/policies`. Two of
+their scopes had been mintable vocabulary with no route requiring them since before
+there was a route that could ask.
 No user-session model was invented to get there: an approver and an operator are
 bearer credentials, the same shape an agent already had.
 
-Still not built: the dashboard, the AI-assisted *explanation* of a risk score (the
+Still not built: the AI-assisted *explanation* of a risk score (the
 score is computed; nothing here asks a model to justify it), Ika itself, and any
 settlement or reconciliation of a signature against a chain. The signing provider
 that works today is a mock; the simulation provider that works today answers about
-a local chain.
+a local chain. The console is built and wired to a deployment, with seven of its
+screens refusing rather than faking.
 
 The signing provider that works today is a mock, and it reports
 `trustworthy: false` on its results rather than presenting a signature as chain
@@ -95,9 +101,9 @@ proves each one.
 pnpm install
 pnpm db:up            # Postgres on 127.0.0.1:5435, Redis on 6381
 pnpm typecheck
-pnpm test             # everything: 536 tests / 30 files
+pnpm test             # everything: 548 tests / 31 files
 pnpm test:unit        # the 305 that need no database
-pnpm test:security    # the 231 that need Postgres, and do not skip without it
+pnpm test:security    # the 243 that need Postgres, and do not skip without it
 pnpm test:coverage
 ```
 
@@ -109,14 +115,34 @@ pnpm --filter @ari/signer start     # ari-signer → 127.0.0.1:4100
 ```
 
 ```bash
-cd apps/dashboard && pnpm dev        # the control center → 127.0.0.1:5173
+pnpm web:dev                         # the console → 127.0.0.1:3100 (port 3000 belongs to another project here)
+pnpm web:build && pnpm --dir apps/web start   # the same app, served from a complete asset graph
+pnpm web:typecheck && pnpm web:preflight      # the two gates over it, plus web:build
 ```
 
-`apps/dashboard` is the operator's, approver's and auditor's screen — and it is deliberately outside
-the pnpm workspace, because this box cannot reach the npm registry from Node and a root install that
-tried to resolve React would break the command above. Its README says what is real (the vocabulary,
-every status and reason code, copied from the packages that produce them) and what is not (the data:
-one sample tenant, labelled as such on every screen).
+`apps/web` is the operator's, approver's and auditor's screen, and it is outside the pnpm
+workspace on purpose: a Next/React/Tailwind toolchain inside `apps/*` would pull its resolution and
+its build into `pnpm install`, `pnpm typecheck` and `pnpm test`, which are the three commands every
+other gate here starts from. It keeps its own lockfile and its own `node_modules`.
+
+The console reads a real deployment. The browser never talks to `ari-api`: it calls `/api/ari/*` on
+its own origin and a Next route handler forwards to `ARI_API_URL`, so the payment API's
+authentication surface gained no `Origin` concept for a frontend's benefit. That handler holds an
+allowlist of method *and* path, which is what makes it a control rather than a tunnel — the two
+routes that spend (`/v1/transactions/authorize`, `/evaluate`) and the three that mint human
+authority behind the deployment token are refused there, so no browser tab can reach them even with
+a credential pasted in.
+
+What you paste is a bearer credential, not a password: `013` has no session model and none was
+invented here. It lives in `sessionStorage`, so it dies with the tab. With it, the overview, the
+transaction list, the approval queue, the audit trail and one request's own trace are live;
+approve and reject send a real decision. Seven screens refuse instead of rendering sample rows
+under a banner that names a real tenant, and each says what read it is waiting for.
+
+Serve the build, not the dev server, when you are checking it in a browser: under Turbopack this
+box races the browser ahead of the chunks it has not finished writing, hydration dies on a 403 for
+a file that returns 200 a second later, and the page becomes a static picture of the sample tenant
+that no credential can move.
 
 `pnpm seed` is the one-command version of what `pnpm ari` now does route by route: an
 empty database to the two credentials a working tenant needs — one an agent can ask for
@@ -194,11 +220,13 @@ by a vendor, unchecked), **ASSUMED** (our engineering choice), **NOT FOUND**
 apps/
   api/        the decision plane: HTTP edge, gateway, pipeline, signer delivery
   signer/     the authority plane: verifies tickets independently
+  cli/        `ari`: the operator's and the approver's command line
+  web/        the console: Next 16, outside the workspace, proxying to the API
 packages/
   schemas/  policy-engine/  transaction-engine/  ledger/
   signing/  audit/  identity/  policies/  approvals/
-  client/   risk-engine/
-migrations/ numbered SQL, applied in order
+  client/   risk-engine/  simulation/
+migrations/ numbered SQL, 001–015, applied in order and idempotent by rule
 tests/
   security/   suites that require real Postgres and do not skip without it
 ```
