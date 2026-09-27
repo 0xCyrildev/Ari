@@ -136,9 +136,9 @@ live state has been proven over HTTP and by build, **not** by clicking through a
 so a session that can drive Chromium should confirm the connected render before this is
 called a shipped console.
 
-**The favicon was v0's own.**  and the three PNGs were the generator's default mark, so every browser tab said v0 while the site said Ari. They are now rendered from  (its C2PA provenance manifest stripped: 40 KB of the 42 KB was that blob, not drawing), on a paper ground so the ink mark reads on both light and dark chrome, at 32/180/192. The five shadcn  files went with them. If v0 is ever used to regenerate the page, these files come back as its defaults.
+**The favicon was v0's own.** `public/icon.svg` and the three PNGs were the generator's default mark, so every browser tab said v0 while the site said Ari. They are now rendered from `docs/assets/ari-logo.svg` (its C2PA provenance manifest stripped: 40 KB of the 42 KB was that blob, not drawing), on a paper ground so the ink mark reads on both light and dark chrome, at 32/180/192. The five shadcn `placeholder.*` files went with them. If v0 is ever used to regenerate the page, these files come back as its defaults — check them after any regeneration, not just this once.
 
- has no ESLint or Prettier config, and `next build` runs no lint; the gates it
+`apps/web` has no ESLint or Prettier config, and `next build` runs no lint; the gates it
 does have are `web:typecheck`, `web:preflight`, `web:build`.
 
 **Verifying the console in a browser: use `pnpm start`, not `pnpm dev`.** This cost an hour.
