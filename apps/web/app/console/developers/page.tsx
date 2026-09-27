@@ -3,6 +3,8 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import { ActionButton, DataTable, MetricBand, Notice, Panel, Reveal, State, Tag, type Column } from '@/components/console/ui'
 import * as sampleData from '@/lib/ari/sample'
+import { useConsole } from '@/lib/ari/console'
+import { UnwiredScreen } from '@/components/console/ui'
 import { relativeTime } from '@/lib/ari/format'
 
 /**
@@ -53,7 +55,12 @@ const ROUTES: readonly { readonly method: string; readonly path: string; readonl
   { method: 'POST', path: '/v1/transactions/evaluate', who: 'agent credential', scope: 'transaction:request', detail: 'the same decision against the same compiled policy, and commits nothing' },
   { method: 'GET', path: '/v1/transactions/:id', who: 'agent credential', scope: 'none named', detail: "another tenant's id and no id at all answer the same 404" },
   { method: 'GET', path: '/v1/approvals', who: 'user credential', scope: 'approval:decide', detail: 'what is waiting on the person presenting the secret' },
-  { method: 'GET', path: '/v1/approvals/:id', who: 'user credential', scope: 'approval:decide', detail: 'id must be 1 to 200 characters, or 400 before it is authenticated' },
+  { method: 'GET', path: '/v1/approvals/:id', who: 'user credential', scope: 'approval:decide', detail: 'an over-long id is a framework 404, so the route’s own 200-character ceiling binds only between about 100 and 200' },
+  { method: 'GET', path: '/v1/transactions', who: 'user credential', scope: 'transaction:read', detail: 'newest first, limit capped at 200, optional agent filter; money in decimal strings and no ticket anywhere' },
+  { method: 'GET', path: '/v1/transactions/:id/record', who: 'user credential', scope: 'transaction:read', detail: 'the row, its canonical bytes, the governing evaluation and its own slice of the chain' },
+  { method: 'GET', path: '/v1/summary', who: 'user credential', scope: 'transaction:read', detail: 'the open daily and monthly windows keyed off the database clock, plus counts by state' },
+  { method: 'GET', path: '/v1/wallets', who: 'user credential', scope: 'wallet:manage', detail: 'each wallet’s mode, provider, address and grants, revoked ones included rather than hidden' },
+  { method: 'GET', path: '/v1/policies', who: 'user credential', scope: 'policy:read', detail: 'policies with every frozen version document, which is what a widening is compared against' },
   { method: 'POST', path: '/v1/approvals/:id/decisions', who: 'user credential', scope: 'approval:decide', detail: 'decision must be APPROVED or REJECTED; a refused vote answers 409' },
   { method: 'POST', path: '/v1/users', who: 'bootstrap token', scope: 'not a tenant scope', detail: 'role is one of owner, admin, approver, viewer' },
   { method: 'POST', path: '/v1/users/:userId/credentials', who: 'bootstrap token', scope: 'not a tenant scope', detail: 'scopes 1 to 8, ttlMs a decimal string between one minute and thirty days' },
@@ -128,6 +135,10 @@ POST /v1/transactions/authorize   (no grant for this agent and wallet)
   "reason": "no unrevoked grant for this agent and wallet" }`
 
 export default function Developers() {
+  const { view } = useConsole()
+  if (view.source === 'live') {
+    return <UnwiredScreen screen='developer surface' need='the route table is documentation, but the sample keys and SDK snippets on this page are fixture values and would read as credentials under a live connection' />
+  }
   const [notice, setNotice] = useState<string | null>(null)
 
   const credentialColumns: readonly Column<Credential>[] = [

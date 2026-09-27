@@ -109,6 +109,31 @@ export interface ConsoleTransaction extends Omit<TransactionRecord, 'risk' | 'ou
   readonly outcome: TransactionRecord['outcome'] | null
 }
 
+/**
+ * One agent's authority over one wallet, and the three numbers a policy actually bounds it with.
+ *
+ * The wallets page and the agents page were both rebuilding this from the fixture — grants from
+ * agents, the governed version from an id, the limits out of a document. Flattening it into the
+ * view once is what lets a live tenant answer the same question, and the reason the *limits* are
+ * pulled out rather than the document: a screen that received the whole document would eventually
+ * render a field the compiler refused, and a field list is a contract.
+ */
+export interface GrantRow {
+  readonly agentId: string
+  readonly agentLabel: string
+  readonly walletId: string
+  readonly walletName: string
+  readonly policyVersionId: string
+  readonly policyName: string
+  readonly policyVersionNumber: number
+  readonly grantedAt: string | null
+  readonly revokedAt: string | null
+  /** Decimal strings straight from the document, or null where the policy names no such cap. */
+  readonly perTransactionRaw: string | null
+  readonly perDayRaw: string | null
+  readonly escalateAboveRaw: string | null
+}
+
 export interface ConsoleView {
   readonly source: 'sample' | 'live'
   /** What the banner above every screen says. The sample must never be able to look like a tenant. */
@@ -118,8 +143,17 @@ export interface ConsoleView {
   readonly approvals: readonly PendingApproval[]
   readonly agents: readonly AgentView[]
   readonly wallets: readonly Wallet[]
-  readonly policies: readonly { readonly key: string; readonly name: string; readonly status: string; readonly versions: number; readonly activeVersionId: string | null }[]
+  readonly policies: readonly {
+    readonly key: string
+    readonly name: string
+    readonly status: string
+    readonly versions: number
+    readonly activeVersionId: string | null
+    /** Every version id this policy has published, newest first — how a detail row names its governor. */
+    readonly versionIds: readonly string[]
+  }[]
   readonly auditEvents: readonly AuditEvent[]
+  readonly grantRows: readonly GrantRow[]
   /** The money unit the figures are denominated in, for a formatter that must not guess. */
   readonly unit: string
   readonly summary: {
@@ -143,6 +177,7 @@ export const EMPTY_VIEW: ConsoleView = {
   wallets: [],
   policies: [],
   auditEvents: [],
+  grantRows: [],
   unit: sample.UNIT,
   summary: { authorizedRaw: 0n, count: 0, denied: 0, pending: 0, agents: 0, wallets: 0, unit: sample.UNIT },
 }
@@ -206,11 +241,61 @@ function fromSample(): ConsoleView {
         status: active === undefined ? 'NO ACTIVE VERSION' : 'ACTIVE',
         versions: policy.versions.length,
         activeVersionId: active?.id ?? null,
+        versionIds: policy.versions.map((version) => version.id),
       }
     }),
     auditEvents: sample.auditEvents,
+    grantRows: sample.agents.flatMap((agent) => {
+      const policy = sample.policies.find((item) => item.key === agent.policy)
+      const version = policy === undefined ? undefined : sample.activeVersion(agent.policy)
+      const wallet = sample.walletById(sample.wallets[agent.wallet]?.id ?? '') ?? sample.wallets[agent.wallet]
+      if (version === undefined || wallet === undefined) return []
+      const caps = capsOf(version.document)
+      return [
+        {
+          agentId: agent.id,
+          agentLabel: agent.name,
+          walletId: wallet.id,
+          walletName: wallet.name,
+          policyVersionId: version.id,
+          policyName: policy?.name ?? agent.policy,
+          policyVersionNumber: version.number,
+          grantedAt: null,
+          revokedAt: null,
+          perTransactionRaw: caps.perTransactionRaw,
+          perDayRaw: caps.perDayRaw,
+          escalateAboveRaw: caps.escalateAboveRaw,
+        } satisfies GrantRow,
+      ]
+    }),
     unit: sample.UNIT,
     summary: { ...totals, agents: sample.agents.filter((a) => a.status === 'ACTIVE').length, wallets: sample.wallets.length, unit: sample.UNIT },
+  }
+}
+
+/**
+ * The three caps a policy document states, read defensively because the document is a jsonb
+ * column on the wire. A path that is missing answers null — which renders as "no such cap" —
+ * rather than throwing, because a screen breaking over an optional field is a worse outcome
+ * than a screen showing one fewer number.
+ */
+function capsOf(document: unknown): {
+  readonly targetWalletId: string | null
+  readonly perTransactionRaw: string | null
+  readonly perDayRaw: string | null
+  readonly escalateAboveRaw: string | null
+} {
+  const doc = document as {
+    target?: { walletId?: string }
+    permissions?: { transfers?: { perTransaction?: { maxRaw?: string }; perDay?: { maxRaw?: string } } }
+    escalation?: { humanApproval?: { requiredWhen?: readonly { op?: string; raw?: string }[] } }
+  } | null
+  const gt = doc?.escalation?.humanApproval?.requiredWhen?.find((rule) => rule.op === 'amount_gt')
+  return {
+    targetWalletId: doc?.target?.walletId ?? null,
+    perTransactionRaw: doc?.permissions?.transfers?.perTransaction?.maxRaw ?? null,
+    perDayRaw: doc?.permissions?.transfers?.perDay?.maxRaw ?? null,
+    escalateAboveRaw: gt?.raw ?? null,
   }
 }
 
@@ -360,9 +445,32 @@ function fromLive(input: {
         status: active === undefined ? 'NO ACTIVE VERSION' : 'ACTIVE',
         versions: policy.versions.length,
         activeVersionId: active?.id ?? null,
+        versionIds: policy.versions.map((version) => version.id),
       }
     }),
     unit,
+    grantRows: input.wallets.flatMap((wallet) =>
+      wallet.grants.map((grant) => {
+        const governed = input.policies
+          .map((policy) => ({ policy, version: policy.versions.find((v) => v.id === grant.policyVersionId) }))
+          .find((found) => found.version !== undefined)
+        const caps = capsOf(governed?.version?.document)
+        return {
+          agentId: grant.agentId,
+          agentLabel: input.agents.find((agent) => agent.id === grant.agentId)?.name ?? grant.agentId,
+          walletId: wallet.id,
+          walletName: wallet.displayName,
+          policyVersionId: grant.policyVersionId,
+          policyName: governed?.policy.name ?? 'a policy this read cannot name',
+          policyVersionNumber: governed?.version?.versionNumber ?? 0,
+          grantedAt: grant.grantedAt,
+          revokedAt: grant.revokedAt,
+          perTransactionRaw: caps.perTransactionRaw,
+          perDayRaw: caps.perDayRaw,
+          escalateAboveRaw: caps.escalateAboveRaw,
+        } satisfies GrantRow
+      }),
+    ),
     auditEvents: input.auditEvents.map((event) => ({
       seq: event.seq,
       id: event.id,

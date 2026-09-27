@@ -203,6 +203,8 @@ export async function listRequests(
 
 export interface TrailEvent {
   readonly seq: string;
+  /** The event's own id, so a trace stage can name what it was reconstructed from. */
+  readonly id: string;
   readonly madeAt: string;
   readonly eventType: string;
   readonly actor: string;
@@ -243,6 +245,7 @@ export async function requestRecord(tx: TenantTx, requestId: string): Promise<Re
 
   const trail = await tx.client.query<{
     seq: string;
+    id: string;
     made_at: Date;
     event_type: string;
     actor: string;
@@ -252,7 +255,7 @@ export async function requestRecord(tx: TenantTx, requestId: string): Promise<Re
     reason_codes: string[];
     metadata: unknown;
   }>(
-    `SELECT seq, made_at, event_type, actor, actor_type, severity, decision, reason_codes, metadata
+    `SELECT seq, id, made_at, event_type, actor, actor_type, severity, decision, reason_codes, metadata
        FROM ari.audit_events
       WHERE org_id = $1 AND resource = 'transaction_request' AND resource_id = $2
       ORDER BY seq DESC
@@ -267,6 +270,7 @@ export async function requestRecord(tx: TenantTx, requestId: string): Promise<Re
     trail: trail.rows
       .map((event) => ({
         seq: event.seq,
+        id: event.id,
         madeAt: event.made_at.toISOString(),
         eventType: event.event_type,
         actor: event.actor,

@@ -3,6 +3,8 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import { ActionButton, DataTable, MetricBand, Notice, Panel, Reveal, State, Tag, KeyValue, type Column } from '@/components/console/ui'
 import * as sampleData from '@/lib/ari/sample'
+import { useConsole } from '@/lib/ari/console'
+import { UnwiredScreen } from '@/components/console/ui'
 import { relativeTime } from '@/lib/ari/format'
 import type { Scope } from '@/lib/ari/types'
 
@@ -51,6 +53,10 @@ const MISSING: readonly { readonly label: string; readonly body: string }[] = [
 ]
 
 export default function Settings() {
+  const { view } = useConsole()
+  if (view.source === 'live') {
+    return <UnwiredScreen screen='settings' need='people, API keys, webhooks and environments have no reads on this API yet; a signed-in person should be minting their own credential here, which is the one thing 013 was shaped for' />
+  }
   const [notice, setNotice] = useState<string | null>(null)
 
   const userColumns: readonly Column<(typeof sampleData.users)[number]>[] = [

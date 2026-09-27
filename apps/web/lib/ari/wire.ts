@@ -99,6 +99,7 @@ export interface WireTransaction {
 
 export interface WireTrailEvent {
   readonly seq: string
+  readonly id: string
   readonly madeAt: string
   readonly eventType: string
   readonly actor: string
@@ -275,6 +276,7 @@ export const parseTransactionRecord = (value: unknown): WireTransactionRecord =>
     const e = record(event, `transaction.trail[${i}]`)
     return {
       seq: str(e.seq, `transaction.trail[${i}].seq`),
+      id: str(e.id, `transaction.trail[${i}].id`),
       madeAt: str(e.madeAt, `transaction.trail[${i}].madeAt`),
       eventType: str(e.event_type ?? e.eventType, `transaction.trail[${i}].eventType`),
       actor: str(e.actor, `transaction.trail[${i}].actor`),

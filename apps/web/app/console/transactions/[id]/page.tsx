@@ -1,12 +1,14 @@
 'use client'
 
 import { useParams } from 'next/navigation'
-import { useState, type CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { Copy } from 'lucide-react'
 import { ButtonLink, Empty, KeyValue, Panel, PageHead, Reveal, State, Tag } from '@/components/console/ui'
-import * as sampleData from '@/lib/ari/sample'
+import { useConsole } from '@/lib/ari/console'
+import { buildTrace } from '@/lib/ari/trace'
+import type { ConsoleTransaction } from '@/lib/ari/console'
 import { clockTime, money, relativeTime, shortHash } from '@/lib/ari/format'
-import { EXECUTION_UNSETTLED, type TraceStage, type TransactionRecord } from '@/lib/ari/types'
+import { EXECUTION_UNSETTLED, type TraceStage } from '@/lib/ari/types'
 
 /**
  * One request, and the authorization trace that produced its decision.
@@ -23,10 +25,10 @@ import { EXECUTION_UNSETTLED, type TraceStage, type TransactionRecord } from '@/
  * here, because none of them exists in the record.
  */
 
-const agentName = (agentId: string): string => sampleData.agents.find((agent) => agent.id === agentId)?.name ?? agentId
+const agentName = (tx: ConsoleTransaction): string => tx.agentLabel
 
 /** A contract call has no recipient: the contract it calls is the destination. */
-const destination = (tx: TransactionRecord): string | null => tx.recipient ?? tx.contract
+const destination = (tx: ConsoleTransaction): string | null => tx.recipient ?? tx.contract
 
 /**
  * A stage that never ran, and a stage downstream of the refusal that stopped the request, stay on the
@@ -108,7 +110,39 @@ export default function TransactionDetail() {
   // Next 16 hands server `params` over as a Promise; `useParams` keeps this a plain client read.
   const raw = useParams()?.id
   const id = Array.isArray(raw) ? raw[0] ?? '' : raw ?? ''
-  const tx = sampleData.transactionById(id)
+  const api = useConsole()
+  const base = api.view.transactions.find((row) => row.id === id || row.requestId === id)
+  const [trail, setTrail] = useState<readonly TraceStage[]>([])
+  const [errorText, setErrorText] = useState<string | null>(null)
+
+  /**
+   * The list read carries the row; only the record read carries its trail.
+   *
+   * So the trace is fetched for the one screen that shows it rather than seven trails on every
+   * page load, and while it is arriving the stages are empty — the page says so in its own
+   * panel instead of drawing six stages out of nothing.
+   */
+  useEffect(() => {
+    if (base === undefined) return
+    let active = true
+    if (api.view.source === 'sample') {
+      setTrail(base.trace)
+      return
+    }
+    void api.record(base.id).then((answer) => {
+      if (!active) return
+      if (typeof answer === 'string') {
+        setErrorText(answer)
+        return
+      }
+      setTrail(buildTrace(answer))
+    })
+    return () => {
+      active = false
+    }
+  }, [base, api])
+
+  const tx = base === undefined ? undefined : { ...base, trace: trail }
 
   if (tx === undefined) {
     return (
@@ -144,8 +178,11 @@ export default function TransactionDetail() {
     )
   }
 
-  const wallet = sampleData.walletById(tx.walletId)
-  const governed = sampleData.policyVersionById(tx.policyVersionId)
+  // Both lookups go through the view rather than the fixture, so the same page reads a live
+  // tenant and the sample one. A miss renders as "no wallet this read can name", which is the
+  // truth for a row whose grant has since been revoked, not a crash.
+  const wallet = api.view.wallets.find((row) => row.id === tx.walletId)
+  const governed = api.view.policies.find((row) => row.versionIds.includes(tx.policyVersionId))
   const to = destination(tx)
   const firstBlocked = tx.trace.findIndex((step) => step.state === 'BLOCKED')
   const blockedStage = firstBlocked >= 0 ? tx.trace[firstBlocked]!.name : 'policy'
@@ -191,7 +228,7 @@ export default function TransactionDetail() {
             <div style={{ padding: '20px 22px' }}>
               <KeyValue
                 items={[
-                  { k: 'AGENT', v: agentName(tx.agentId) },
+                  { k: 'AGENT', v: agentName(tx) },
                   {
                     k: 'AMOUNT',
                     v: (
@@ -278,7 +315,7 @@ export default function TransactionDetail() {
           <Panel title="THE DECISION" note={`LEFT THE LIFECYCLE AT ${tx.state}`}>
             <div style={{ ...COLUMN, padding: '20px 22px' }}>
               <div style={LINE}>
-                <State value={tx.outcome} />
+                <State value={tx.outcome ?? 'UNDECIDED'} />
                 <State value={tx.state} />
               </div>
               <p style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.55, margin: 0 }}>{decisionCopy}</p>
@@ -316,7 +353,7 @@ export default function TransactionDetail() {
                 <>
                   <div style={LINE}>
                     <State value={tx.risk.level} />
-                    <span className="num">score {tx.risk.score.toFixed(2)}</span>
+                    <span className="num">score {tx.risk.score}</span>
                   </div>
                   {tx.risk.signals.length > 0 ? (
                     <div style={{ ...LINE, gap: 6 }}>
@@ -327,13 +364,9 @@ export default function TransactionDetail() {
                   ) : (
                     <span style={LABEL}>NO SIGNAL CROSSED ITS WEIGHT</span>
                   )}
-                  <KeyValue
-                    items={[
-                      { k: 'BASELINE', v: `${tx.risk.baselineWindowDays} day behavioural window` },
-                      { k: 'MODEL', v: <span className="num">{tx.risk.modelVersion}</span> },
-                      { k: 'COMPUTED', v: relativeTime(tx.risk.computedAt) },
-                    ]}
-                  />
+                  {/* The assessment's window length and model version are not on the event the
+                      engine appends, so they are not on this page. A row that printed either would
+                      be the screen's invention, not the risk plane's answer. */}
                   <p style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.55, margin: 0 }}>
                     Risk is advisory. It can raise a signal and it can escalate; structurally it cannot grant. Nothing
                     on this row got closer to a signature because of a number in this panel.
@@ -358,13 +391,13 @@ export default function TransactionDetail() {
                   <span style={{ fontSize: 15 }}>
                     {tx.policyName} v{tx.policyVersionNumber}
                   </span>
-                  {governed !== undefined ? <State value={governed.version.status} /> : <State value="UNAVAILABLE" />}
+                  {governed !== undefined ? <State value={governed.status} /> : <State value="UNAVAILABLE" />}
                 </div>
                 <span className="sub" style={{ marginTop: 0 }}>
                   resolved by version id, not by name · {shortHash(tx.policyVersionId, 8)}
                 </span>
                 {governed !== undefined ? (
-                  <p style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.5, margin: 0 }}>{governed.version.summary}</p>
+                  <p style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.5, margin: 0 }}>{`${governed.name} · ${governed.versions} version${governed.versions === 1 ? '' : 's'} published`}</p>
                 ) : (
                   <p style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.5, margin: 0 }}>
                     No version row with that id in this tenant. The decision still names the version it ran against; this

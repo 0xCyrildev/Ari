@@ -2,6 +2,8 @@
 
 import { ButtonLink, DataTable, Empty, KeyValue, Meter, MetricBand, Panel, PageHead, Reveal, State, Tag, type Column } from '@/components/console/ui'
 import * as sampleData from '@/lib/ari/sample'
+import { useConsole } from '@/lib/ari/console'
+import { UnwiredScreen } from '@/components/console/ui'
 import { money, pct, relativeTime } from '@/lib/ari/format'
 import { riskAtLeast, type RiskAssessment, type RiskSignalName, type TransactionRecord } from '@/lib/ari/types'
 
@@ -94,6 +96,10 @@ const Limit = ({ label, meter, text, absent }: { readonly label: string; readonl
 )
 
 export default function Risk() {
+  const { view } = useConsole()
+  if (view.source === 'live') {
+    return <UnwiredScreen screen='risk' need='the band and signal columns can come from the assessments on the live rows; this screen is built on the fixture’s own history' />
+  }
   const now = Date.now()
   const agentNames = new Map(sampleData.agents.map((agent) => [agent.id, agent.name] as const))
 
