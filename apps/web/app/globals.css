@@ -134,6 +134,30 @@ h2 { font-size: clamp(52px, 7.6vw, 116px); } h2 span { color: var(--muted); }.he
 @media (max-width: 900px) { .console-shell { grid-template-columns: 1fr; }.rail { position: static; height: auto; flex-direction: row; align-items: center; border-right: 0; border-bottom: 1px solid var(--line); padding: 12px 6vw; overflow-x: auto; }.rail .brand img { margin: 0 18px 0 0; width: 30px; height: 30px; }.rail nav { flex-direction: row; }.rail a { border-left: 0; border-bottom: 1px solid transparent; padding: 8px 12px; white-space: nowrap; }.rail a[aria-current='page'] { border-left-color: transparent; border-bottom-color: var(--accent); }.rail-foot { display: none; }.console-body { padding: 34px 6vw 80px; }.metric-band { grid-template-columns: 1fr 1fr; }.metric-band > div { border-left: 0; padding-left: 0; }.stack-list > * { grid-template-columns: 1fr; gap: 8px; } }
 @media (prefers-reduced-motion: reduce) { .meter i { transition: none; } }
 
+/* Console form controls: a hairline underline, no box, no radius, 10px mono. */
+.field { border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 11px 13px; font: 10px monospace; letter-spacing: .15em; transition: border-color .2s ease; }
+.field:hover, .field:focus { border-color: var(--ink); outline: none; }
+.field::placeholder { color: var(--muted); }
+select.field { padding-right: 28px; }
+textarea.field { min-height: 140px; line-height: 1.7; }
+
 /* Column visibility for the two widths a console table has to survive. */
 @media (max-width: 1080px) { .hide-md { display: none; } }
 @media (max-width: 900px) { .hide-sm { display: none; } }
+
+/* Connection strip: one hairline band above every console screen, because the answer to "is
+   this a deployment" belongs above the rows, not beside each one. */
+.connect { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px 28px; align-items: end; padding: 16px 0 18px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 30px; }
+.connect-state { min-width: 0; display: grid; gap: 6px; }
+.connect-notice { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.connect-error { margin: 0; color: var(--accent); font: 11px monospace; overflow-wrap: anywhere; }
+.connect-actions { display: flex; gap: 8px; }
+.connect-form { display: grid; gap: 8px; min-width: 0; }
+.connect-row { display: flex; gap: 8px; }
+.connect-row .field { flex: 1 1 260px; min-width: 0; }
+.connect-button { cursor: pointer; color: var(--ink); background: transparent; white-space: nowrap; }
+.connect-button:disabled { cursor: default; color: var(--muted); }
+.connect-hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; max-width: 62ch; }
+.connect-hint[data-kind='warning'] { color: var(--accent); }
+@media (max-width: 900px) { .connect { grid-template-columns: 1fr; align-items: start; } }
+.button-link:disabled { opacity: .45; cursor: default; transform: none; }

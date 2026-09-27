@@ -3,9 +3,8 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ButtonLink, DataTable, MetricBand, Panel, Reveal, State, Tag, type Column } from '@/components/console/ui'
-import * as sampleData from '@/lib/ari/sample'
+import { useConsole, type ConsoleTransaction } from '@/lib/ari/console'
 import { clockTime, money, relativeTime, shortAddress } from '@/lib/ari/format'
-import type { TransactionRecord } from '@/lib/ari/types'
 
 /**
  * Overview. Every figure is computed from the same rows the tables below render, in this file, so
@@ -13,14 +12,18 @@ import type { TransactionRecord } from '@/lib/ari/types'
  * console becomes untrustworthy.
  */
 export default function Overview() {
-  const router = useRouter()
-  const totals = sampleData.todayTotals()
-  const pending = sampleData.approvals.filter((approval) => approval.status === 'PENDING')
-  const recent = [...sampleData.transactions].sort((a, b) => b.submittedAt.localeCompare(a.submittedAt)).slice(0, 8)
-  const riskToday = sampleData.riskEvents().filter((event) => Date.now() - Date.parse(event.tx.submittedAt) < 24 * 60 * 60 * 1000)
-  const unsettled = sampleData.transactions.filter((tx) => tx.state === 'SIGNING_COMPLETE' || tx.state === 'TICKET_MINTED')
+  const { view } = useConsole()
 
-  const columns: readonly Column<TransactionRecord>[] = [
+  const router = useRouter()
+  const totals = view.summary
+  const pending = view.approvals.filter((approval) => approval.status === 'PENDING')
+  const recent = [...view.transactions].sort((a, b) => b.submittedAt.localeCompare(a.submittedAt)).slice(0, 8)
+  const riskToday = view.transactions
+    .filter((tx) => tx.risk !== null && (tx.risk.level === 'HIGH' || tx.risk.level === 'CRITICAL') && Date.now() - Date.parse(tx.submittedAt) < 24 * 60 * 60 * 1000)
+    .map((tx) => ({ level: tx.risk?.level ?? 'MEDIUM', signals: tx.risk?.signals ?? [], tx }))
+  const unsettled = view.transactions.filter((tx) => tx.state === 'SIGNING_COMPLETE' || tx.state === 'TICKET_MINTED')
+
+  const columns: readonly Column<ConsoleTransaction>[] = [
     {
       key: 'request',
       header: 'REQUEST',
@@ -35,7 +38,7 @@ export default function Overview() {
       ),
     },
     { key: 'amount', header: 'AMOUNT', align: 'right', hideBelow: 'md', cell: (tx) => <span className="num">{money(tx.amountRaw, tx.unit, true)}</span> },
-    { key: 'decision', header: 'DECISION', cell: (tx) => <State value={tx.outcome} /> },
+    { key: 'decision', header: 'DECISION', cell: (tx) => <State value={tx.outcome ?? 'UNDECIDED'} /> },
     { key: 'state', header: 'LIFECYCLE', hideBelow: 'sm', cell: (tx) => <State value={tx.state} /> },
     { key: 'when', header: 'WHEN', align: 'right', cell: (tx) => <time dateTime={tx.submittedAt}>{clockTime(tx.submittedAt)}</time> },
   ]
@@ -65,9 +68,9 @@ export default function Overview() {
 
       <MetricBand
         items={[
-          { label: 'ACTIVE AGENTS', value: sampleData.agents.filter((agent) => agent.status === 'ACTIVE').length, note: `${sampleData.agents.length} principals in this tenant` },
+          { label: 'ACTIVE AGENTS', value: view.agents.filter((agent) => agent.status === 'ACTIVE').length, note: `${view.agents.length} principals in this tenant` },
           { label: 'REQUESTS TODAY', value: totals.count, note: 'answered by the engine, last 24h' },
-          { label: 'AUTHORISED', value: money(totals.authorizedRaw.toString(), sampleData.UNIT, true), note: 'settled holds · sample figures' },
+          { label: 'AUTHORISED', value: money(totals.authorizedRaw.toString(), view.unit, true), note: 'settled holds · sample figures' },
           { label: 'WAITING ON A HUMAN', value: pending.length, tone: 'wait', note: 'approval requests open now' },
           { label: 'REFUSED', value: totals.denied, tone: 'stop', note: 'denied by policy, last 24h' },
         ]}
@@ -76,8 +79,8 @@ export default function Overview() {
       <Panel title="WAITING ON A PERSON" note={`${pending.length} IN THE QUEUE`}>
         <div className="stack-list">
           {pending.map((approval) => {
-            const agent = sampleData.agents.find((item) => item.id === approval.agentId)
-            const needed = approval.quorum - approval.votes.filter((vote) => vote.decision === 'APPROVED').length
+            const agent = view.agents.find((item) => item.id === approval.agentId)
+            const needed = approval.quorum - approval.votes
             return (
               <div key={approval.id}>
                 <time dateTime={approval.requestedAt}>{relativeTime(approval.requestedAt).toUpperCase()}</time>

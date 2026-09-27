@@ -2,13 +2,15 @@
 
 import { usePathname } from 'next/navigation'
 import type { ReactNode } from 'react'
-import { ConsoleTop, Notice } from './ui'
-import * as sampleData from '@/lib/ari/sample'
+import { ConsoleTop } from './ui'
+import { ConnectPanel } from './connect'
+import { useConsole } from '@/lib/ari/console'
 
 /**
- * The strip above every screen: where you are, and the fact that the rows below are a fixture
- * rather than a deployment. The notice is here rather than on each page so it cannot be forgotten
- * by whoever adds the eleventh screen.
+ * The strip above every screen: where you are, and whether the rows below come from a
+ * deployment. That second half is here rather than on each page so it cannot be forgotten by
+ * whoever adds the eleventh screen, and it is *below* the connection strip rather than beside
+ * it because the strip is the only thing that can change the answer.
  */
 export function ConsoleChrome({ children }: { readonly children: ReactNode }) {
   const pathname = usePathname()
@@ -16,7 +18,7 @@ export function ConsoleChrome({ children }: { readonly children: ReactNode }) {
   return (
     <>
       <ConsoleTop crumb={crumb} />
-      <Notice text={sampleData.DEMO_BANNER.toUpperCase()} />
+      <ConnectPanel />
       {children}
     </>
   )

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Rail } from '@/components/console/ui'
 import { ConsoleChrome } from '@/components/console/chrome'
+import { ConsoleProvider } from '@/lib/ari/console'
 
 export const metadata = { title: 'ARI console', robots: { index: false } }
 
@@ -14,7 +15,9 @@ export default function ConsoleLayout({ children }: { readonly children: ReactNo
     <div className="console-shell">
       <Rail />
       <div style={{ minWidth: 0 }}>
-        <ConsoleChrome>{children}</ConsoleChrome>
+        <ConsoleProvider>
+          <ConsoleChrome>{children}</ConsoleChrome>
+        </ConsoleProvider>
       </div>
     </div>
   )

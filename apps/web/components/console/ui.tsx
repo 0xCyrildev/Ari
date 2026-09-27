@@ -171,9 +171,26 @@ export function ButtonLink({ href, children, variant = 'solid', small = false }:
   )
 }
 
-export function ActionButton({ children, onClick, variant = 'solid', small = true }: { readonly children: ReactNode; readonly onClick: () => void; readonly variant?: 'solid' | 'danger'; readonly small?: boolean }) {
+export function ActionButton({
+  children,
+  onClick,
+  variant = 'solid',
+  small = true,
+  disabled = false,
+}: {
+  readonly children: ReactNode
+  readonly onClick: () => void
+  readonly variant?: 'solid' | 'danger'
+  readonly small?: boolean
+  /** A button that is waiting on a network answer should not be pressable twice. */
+  readonly disabled?: boolean
+}) {
   return (
-    <button type="button" onClick={onClick} className={cx('button-link', small && 'sm', variant === 'danger' && 'danger')}>
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cx('button-link', small && 'sm', variant === 'danger' && 'danger')}>
       {children}
       <ArrowUpRight />
     </button>
@@ -284,3 +301,23 @@ export const Empty = ({ title, body }: { readonly title: string; readonly body: 
     {body}
   </div>
 )
+
+/**
+ * A screen that has no live read yet, drawn as itself.
+ *
+ * The alternative was to leave the unwired screens on the fixture and let the global banner
+ * carry the difference, and that is the failure this file exists to prevent: with a connection
+ * live, a page of sample rows under a banner reading "live tenant" is a page of lies with a
+ * true caption. So an unbuilt screen says it is unbuilt, names what it would need, and stops.
+ */
+export function UnwiredScreen({ screen, need }: { readonly screen: string; readonly need: string }) {
+  return (
+    <section aria-label={`${screen}: not connected`} style={{ display: 'grid', gap: 12 }}>
+      <p className="section-kicker">{screen.toUpperCase()} / NO LIVE READ YET</p>
+      <p style={{ maxWidth: '62ch', lineHeight: 1.55 }}>
+        This deployment is connected, so nothing on this page is being invented to fill it.{' '}
+        {need}
+      </p>
+    </section>
+  )
+}

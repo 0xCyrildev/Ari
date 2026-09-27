@@ -1,19 +1,12 @@
 packages:
   - 'packages/*'
   - 'apps/*'
-  # The dashboard is excluded on purpose. An earlier version of this comment said the reason was
-  # that the box could not reach the registry from Node; that was measured with `--offline`
-  # probes and never by running an install, and it is false. The real reason is isolation: this is
-  # a Vite/React/Tailwind app with its own toolchain (react 19, three, framer-motion, phosphor),
-  # and inside the workspace its resolution would join the root lockfile, its build output would
-  # join the workspace graph, and `tsc -p tsconfig.json` at the root would start type-checking
-  # screens. The two commands that every other gate here depends on, `pnpm install` and
-  # `pnpm typecheck`, should not have anything to do with a frontend. It is checked by
-  # `pnpm typecheck:ui`, `pnpm ui:preflight` and `pnpm ui:build` instead, and it keeps its own
-  # `node_modules`.
-  - '!apps/dashboard'
-  # `apps/web` is the Next 16 app (the v0 site and, now, the console). Same reason as
-  # above: its own toolchain, its own gates, nothing to do with the root install or tsc.
+  # `apps/web` is the frontend: the v0 marketing page and the console. It stays out of the
+  # workspace because a Next/React/Tailwind toolchain inside `packages/*`/`apps/*` would put its
+  # resolution and its build into `pnpm typecheck` and `pnpm test`, the two gates every other
+  # phase here starts from. Its own gates are `pnpm web:typecheck`, `pnpm web:preflight`,
+  # `pnpm web:build`. The Vite app that used to sit at `apps/dashboard` is gone; `apps/web`
+  # superseded it, and its preflight script came with it.
   - '!apps/web'
 
 # No dependency is permitted to run code at install time. A package that needs a

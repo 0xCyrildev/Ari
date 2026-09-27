@@ -42,6 +42,72 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
 `pnpm test:coverage` measures the kernel. Coverage for `ledger` and the negative path lives in
 `tests/security/`, not in the packages.
 
+## State — 2026-09-27 (fourth pass): the console is wired to a deployment
+
+Phase 10 moved from *built, not wired* to **live, partly wired**. `apps/web` is the only
+frontend now; `apps/dashboard` is deleted, and its `preflight.mjs` came with it as
+`pnpm web:preflight` (scoped to `app/console`, `components/console`, `lib/ari`; the two
+whole-app motion rules report as unjudged warnings there because the files that satisfy them
+are the marketing layer's).
+
+| Console surface | State |
+|---|---|
+| overview, transactions list, approvals, audit log | **live** — reads the tenant through the proxy |
+| approve / reject | **live write** — POST, then the queue is re-read |
+| agents, wallets, policies | refuse under a live connection (`UnwiredScreen`); fixture under no connection |
+| transaction detail, risk, settings, developers | fixture-only, and say so when connected |
+
+Decisions from this pass a later session must not quietly reverse:
+
+- **The browser never talks to `ari-api`.** `apps/web/app/api/ari/[...path]/route.ts` is a
+  same-origin proxy, chosen over CORS so the payment API's authentication surface does not
+  grow an `Origin` concept for a frontend's benefit. Its **allowlist is the control**: method
+  and path both have to appear, so `/v1/transactions/authorize` and `/evaluate` (the routes
+  that spend, on an agent secret) and the three bootstrap routes (which mint human authority)
+  are refused at the proxy with a 404 that names nothing. A generic tunnel would have handed a
+  browser tab the whole route table. The upstream is `ARI_API_URL` from the environment and no
+  request can choose it. Verified over a real socket: authorize and `/v1/users` both 404, and
+  an unreachable upstream is a 502 rather than a silent pass.
+- **A credential is pasted, held in `sessionStorage`, and never minted by the app.** `013`'s
+  answer stands — no cookies, no session model, no invented login. The routes that could mint
+  the first approver credential sit behind the deployment's bootstrap token, which is
+  deliberately not proxyable, so an operator hands the console a `ucrd_` secret the CLI made.
+  Anything that changes this is a security decision, not a frontend one.
+- **One view model, two adapters** (`lib/ari/console.tsx`): `fromSample` and `fromLive` both
+  produce `ConsoleView`. A field with no live source is **dropped from the view, not
+  invented** — which is why `ConsoleTransaction` is not `TransactionRecord`: the fixture's
+  risk assessment carries `baselineWindowDays` and `modelVersion`, the engine logs neither on
+  the request row, and a number made up to satisfy an interface is what this whole file exists
+  to refuse. Same reason `ticket` is always null on a live row: no read exposes a ticket.
+- **An unwired screen refuses rather than showing the fixture under a live banner.** The
+  global notice says which tenant you are looking at; a page of sample rows beneath a caption
+  reading "live tenant" is a page of lies with a true header. `UnwiredScreen` names what it
+  needs instead.
+- **`@ari/client`'s discipline moved to the browser** in `lib/ari/wire.ts`: hand-rolled
+  strict parsers (zod is not a dependency here), an unknown field is `CONTRACT_MISMATCH`,
+  money stays a decimal string, and one refresh refuses if its envelopes name different
+  tenants. `/v1/approvals` and `/v1/agents` answer with bare arrays and no envelope, so they
+  are excluded from that check and the code says why rather than quietly skipping them.
+- **The waitlist no longer shares the operational database.** `lib/db/index.ts` reads
+  `WAITLIST_DATABASE_URL`, lazily, and `app/api/waitlist/route.ts` answers
+  503 `WAITLIST_UNCONFIGURED` rather than 500 or a false 200; the table lives in
+  `apps/web/db/waitlist.sql`, **not** in `migrations/`, because `global-setup.ts` re-applies
+  every file there against the ledger schema.
+- **v0's page keeps its layout and lost two things**: the chain and social logos came from
+  `cdn.jsdelivr.net/gh/glincker/thesvg` (sourcing them locally turned into licensing
+  guesswork over brand marks, so the networks strip is text-only now — same slots, no
+  third-party request), and the footer's Discord/X/GitHub links pointed at generic
+  homepages, so they are gone; `READ THE DOCS` points at this repository's README.
+
+Not done, in the order it costs: point the agents/wallets/policies/detail screens at the live
+reads (`GET /v1/agents` exists; agent limits come from the policy document, which
+`GET /v1/policies` already returns); write the live trace builder for `/record`, whose
+`trail` is exactly the data a `TraceStage` list is made of; re-add a screenshot tool (the
+CDP one died with `apps/dashboard`, so **this pass was verified over HTTP and by build, not
+by clicking through a browser**); and an authenticated 200 through the proxy was proven for
+unauthenticated/scope paths but the final positive read was interrupted, so run it once by
+hand before believing the wiring end to end.
+
 ## Decisions made here, that a later session must not quietly reverse
 
 - **The digest is derived inside the policy engine, never accepted from the caller.** `evaluate()` used to

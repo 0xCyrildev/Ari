@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useState, type CSSProperties } from 'react'
 import { DataTable, Empty, MetricBand, PageHead, Panel, Reveal, State, type Column } from '@/components/console/ui'
-import * as sampleData from '@/lib/ari/sample'
+import { useConsole, type ConsoleTransaction } from '@/lib/ari/console'
 import { money, relativeTime, shortAddress } from '@/lib/ari/format'
 import { EXECUTION_UNSETTLED, type DecisionOutcome, type TransactionRecord } from '@/lib/ari/types'
 
@@ -24,10 +24,10 @@ import { EXECUTION_UNSETTLED, type DecisionOutcome, type TransactionRecord } fro
  * block number, a hash or a confirmation count.
  */
 
-const agentName = (agentId: string): string => sampleData.agents.find((agent) => agent.id === agentId)?.name ?? agentId
+const agentName = (tx: ConsoleTransaction): string => tx.agentLabel
 
 /** A contract call has no recipient: the contract it calls is the destination. */
-const destination = (tx: TransactionRecord): string | null => tx.recipient ?? tx.contract
+const destination = (tx: ConsoleTransaction): string | null => tx.recipient ?? tx.contract
 
 /**
  * What a lifecycle row owes the reader. `SIGNING_COMPLETE` and `TICKET_MINTED` are the states where
@@ -35,29 +35,23 @@ const destination = (tx: TransactionRecord): string | null => tx.recipient ?? tx
  * settlement, and the fixture labels that claim itself, so the label here repeats the label rather
  * than upgrading it.
  */
-const lifecycleNote = (tx: TransactionRecord): string | null =>
+const lifecycleNote = (tx: ConsoleTransaction): string | null =>
   EXECUTION_UNSETTLED.includes(tx.state)
     ? 'UNSETTLED · no chain confirmation'
     : tx.state === 'BROADCAST_CONFIRMED'
       ? 'claims settlement · no reconciler in this build'
       : null
 
-/** Filter controls, built from the console vocabulary: hairline, sharp corner, 10px mono label. */
-const FIELD: CSSProperties = {
-  background: 'transparent',
-  border: '1px solid var(--line)',
-  borderRadius: 0,
-  color: 'var(--ink)',
-  font: '10px monospace',
-  letterSpacing: '.13em',
-  padding: '11px 12px',
-}
+/** Filter controls: the shared console form class, with one inline rule for the elastic text field. */
+const FIELD_ROW: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 22 }
 
 const OUTCOMES: readonly DecisionOutcome[] = ['ALLOW', 'REQUIRE_HUMAN_APPROVAL', 'DENY']
 
 export default function Transactions() {
+  const { view } = useConsole()
+
   const router = useRouter()
-  const rows = sampleData.transactions
+  const rows = view.transactions
   const [query, setQuery] = useState('')
   const [outcome, setOutcome] = useState('ALL')
   const [chain, setChain] = useState('ALL')
@@ -69,7 +63,7 @@ export default function Transactions() {
     if (outcome !== 'ALL' && tx.outcome !== outcome) return false
     if (chain !== 'ALL' && tx.chain !== chain) return false
     if (trimmed.length === 0) return true
-    const hay = `${tx.intent} ${agentName(tx.agentId)} ${tx.id} ${tx.requestId} ${destination(tx) ?? ''} ${tx.codes.join(' ')} ${tx.idempotencyKey}`.toLowerCase()
+    const hay = `${tx.intent} ${agentName(tx)} ${tx.id} ${tx.requestId} ${destination(tx) ?? ''} ${tx.codes.join(' ')} ${tx.idempotencyKey}`.toLowerCase()
     return hay.includes(trimmed)
   })
 
@@ -78,7 +72,7 @@ export default function Transactions() {
   const refused = inView.filter((tx) => tx.outcome === 'DENY').length
   const unsettled = inView.filter((tx) => EXECUTION_UNSETTLED.includes(tx.state)).length
 
-  const columns: readonly Column<TransactionRecord>[] = [
+  const columns: readonly Column<ConsoleTransaction>[] = [
     {
       key: 'intent',
       header: 'INTENT',
@@ -86,7 +80,7 @@ export default function Transactions() {
         <div style={{ minWidth: 0 }}>
           {tx.intent}
           <span className="sub">
-            {agentName(tx.agentId)} · {tx.policyName} v{tx.policyVersionNumber}
+            {agentName(tx)} · {tx.policyName} v{tx.policyVersionNumber}
             {destination(tx) !== null && <> · {shortAddress(destination(tx))}</>}
             {tx.kind !== 'transfer' && <> · {tx.kind}</>}
           </span>
@@ -105,7 +99,7 @@ export default function Transactions() {
       header: 'DECISION',
       cell: (tx) => (
         <div style={{ minWidth: 0 }}>
-          <State value={tx.outcome} />
+          <State value={tx.outcome ?? 'UNDECIDED'} />
           {tx.codes.length > 0 && <span className="sub">{tx.codes[0]}</span>}
         </div>
       ),
@@ -151,15 +145,16 @@ export default function Transactions() {
         ]}
       />
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 22 }}>
+      <div style={FIELD_ROW}>
         <input
-          style={{ ...FIELD, flex: '1 1 220px', minWidth: 0 }}
+          className="field"
+          style={{ flex: '1 1 220px', minWidth: 0 }}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           aria-label="Filter requests by intent, agent, id, address or reason code"
           placeholder="FILTER BY INTENT, AGENT, ID, ADDRESS OR REASON CODE"
         />
-        <select style={FIELD} value={outcome} onChange={(event) => setOutcome(event.target.value)} aria-label="Filter by decision">
+        <select className="field" value={outcome} onChange={(event) => setOutcome(event.target.value)} aria-label="Filter by decision">
           <option value="ALL">ANY DECISION</option>
           {OUTCOMES.map((value) => (
             <option key={value} value={value}>
@@ -167,11 +162,11 @@ export default function Transactions() {
             </option>
           ))}
         </select>
-        <select style={FIELD} value={chain} onChange={(event) => setChain(event.target.value)} aria-label="Filter by chain">
+        <select className="field" value={chain} onChange={(event) => setChain(event.target.value)} aria-label="Filter by chain">
           <option value="ALL">ANY CHAIN</option>
           {chains.map((value) => (
             <option key={value} value={value}>
-              {value.toUpperCase()}
+              {value}
             </option>
           ))}
         </select>
@@ -194,7 +189,7 @@ export default function Transactions() {
 
       <Panel title="WHAT A ROW DOES NOT CLAIM" pad>
         <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--muted)' }}>
-          {unsettled} row{unsettled.length === 1 ? '' : 's'} in view show a signature returned with no chain
+          {unsettled} row{unsettled === 1 ? '' : 's'} in view show a signature returned with no chain
           confirmation behind it. That is the state the record is in, not a stale one: settlement belongs to a
           provider callback or a reconciliation pass, and neither exists in this build. Open a row to read the
           stage by stage trace that produced it.
