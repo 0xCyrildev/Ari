@@ -135,6 +135,25 @@ called a shipped console.
 `apps/web` has no ESLint or Prettier config, and `next build` runs no lint; the gates it
 does have are `web:typecheck`, `web:preflight`, `web:build`.
 
+**Verifying the console in a browser: use `pnpm start`, not `pnpm dev`.** This cost an hour.
+Under Turbopack dev on this box the browser is asked for app chunks the server has not
+finished writing, so the same file answers 403 on the initial `<script>` load and 200 on the
+dynamic import seconds later; hydration dies silently, the page becomes a static picture of
+the sample tenant, and every symptom downstream reads like an application bug — "the
+credential does nothing", "the banner never changes", zero `/api/ari` requests. The
+production build serves a complete asset graph, so there is no race: `pnpm web:build && pnpm
+--dir apps/web start`, then `node apps/web/scripts/live-probe.mjs '<bearer>'`, which drives
+headless Chromium over CDP and prints the failed requests, whether React hydrated, whether
+the connect form was replaced by the connected buttons, and the banner text. `react root: 0`
+means no hydration; `forget present: true` means the credential was restored and the reads
+went out. Deleting `.next` under a live dev server reproduces it exactly — if you do it, the
+server that survives is a zombie emitting references to files that no longer exist.
+
+Two things that probe also settled: the restore path works (the earlier zero-fetch readings
+were the dev race, not the effect), and a partial credential is now genuinely usable — an
+approver's secret that lacks `agent:manage` gets a live tenant plus a named refusal for the
+one route, instead of the sample view and an error line nobody could act on.
+
 ## Decisions made here, that a later session must not quietly reverse
 
 - **The digest is derived inside the policy engine, never accepted from the caller.** `evaluate()` used to
