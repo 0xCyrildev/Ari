@@ -126,6 +126,10 @@ export interface GrantRow {
   readonly policyVersionId: string
   readonly policyName: string
   readonly policyVersionNumber: number
+  /** The version's own status: a binding to a RETIRED version is a fact, not a live grant. */
+  readonly policyVersionStatus: string
+  /** The wallet the governed document targets. Where it differs from `walletId`, the wires crossed. */
+  readonly targetWalletId: string | null
   readonly grantedAt: string | null
   readonly revokedAt: string | null
   /** Decimal strings straight from the document, or null where the policy names no such cap. */
@@ -273,6 +277,8 @@ function fromSample(): ConsoleView {
           policyVersionId: version.id,
           policyName: policy?.name ?? agent.policy,
           policyVersionNumber: version.number,
+          policyVersionStatus: version.status,
+          targetWalletId: caps.targetWalletId,
           grantedAt: null,
           revokedAt: null,
           perTransactionRaw: caps.perTransactionRaw,
@@ -478,6 +484,8 @@ function fromLive(input: {
           policyVersionId: grant.policyVersionId,
           policyName: governed?.policy.name ?? 'a policy this read cannot name',
           policyVersionNumber: governed?.version?.versionNumber ?? 0,
+          policyVersionStatus: governed?.version?.status ?? 'UNKNOWN',
+          targetWalletId: caps.targetWalletId,
           grantedAt: grant.grantedAt,
           revokedAt: grant.revokedAt,
           perTransactionRaw: caps.perTransactionRaw,

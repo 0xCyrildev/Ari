@@ -38,10 +38,9 @@ const MODE_COPY: Readonly<Record<WalletMode, string>> = {
 
 export default function Wallets() {
   const { view } = useConsole()
-  if (view.source === 'live') return <UnwiredScreen screen={'wallets'} need={'GET /v1/wallets is live and proxyable; this table is being pointed at it'} />
 
-  const wallets = sampleData.wallets
-  const txs = sampleData.transactions
+  const wallets = view.wallets
+  const txs = view.transactions
   const live = wallets.filter((wallet) => wallet.status === 'LIVE').length
   const noAddress = wallets.filter((wallet) => wallet.address === null)
   const providers = [...new Set(wallets.map((wallet) => wallet.provider))]
@@ -69,17 +68,32 @@ export default function Wallets() {
     }
   }
 
-  /** One row per agent, sourced from the version id its own requests carried. */
-  const grants = sampleData.agents.map((agent) => {
-    const own = txs.filter((tx) => tx.agentId === agent.id)
-    const latest = [...own].sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))[0]
-    const stored = latest === undefined ? undefined : sampleData.policyVersionById(latest.policyVersionId)
-    const version = stored?.version ?? sampleData.activeVersion(agent.policy)
-    const liveVersion = sampleData.activeVersion(agent.policy)
-    const ranOn = latest === undefined ? wallets[agent.wallet] : sampleData.walletById(latest.walletId) ?? wallets[agent.wallet]
-    const target = sampleData.walletById(version.document.target.walletId)
-    return { agent, own, version, liveVersion, ranOn, target, crossed: ranOn.id !== version.document.target.walletId }
-  })
+  /**
+   * One row per grant, and every field on it read from the grant itself.
+   *
+   * This used to rebuild the binding through the fixture: an agent's policy *key*, then whichever
+   * version is live *today*, then a wallet looked up by index. That derivation cannot survive a
+   * live tenant, because a grant binds one version and the read returns the version id the grant
+   * carries. So the shape below is the grant's own data, and `crossed` is the disagreement the
+   * panel talks about — the document's target wallet against the wallet the grant points at —
+   * computed rather than asserted.
+   */
+  const grants = view.grantRows.map((row) => ({
+    agent: { id: row.agentId, name: row.agentLabel },
+    own: txs.filter((tx) => tx.agentId === row.agentId),
+    version: {
+      id: row.policyVersionId,
+      number: row.policyVersionNumber,
+      status: row.policyVersionStatus,
+      activatedAt: row.grantedAt,
+      createdAt: row.grantedAt,
+      document: { meta: { name: row.policyName } },
+    },
+    liveVersion: { id: row.policyVersionId, number: row.policyVersionNumber, status: row.policyVersionStatus },
+    ranOn: { id: row.walletId, name: row.walletName },
+    target: wallets.find((wallet) => wallet.id === (row.targetWalletId ?? '')),
+    crossed: row.targetWalletId !== null && row.targetWalletId !== row.walletId,
+  }))
   const crossedWires = grants.filter((grant) => grant.crossed).length
   const boundLabels = new Set(txs.map((tx) => `${tx.walletId}|${tx.policyName} v${tx.policyVersionNumber}`))
   const unboundCarriers = wallets.filter((wallet) => wallet.policies.some((label) => !boundLabels.has(`${wallet.id}|${label}`)))
@@ -119,11 +133,13 @@ export default function Wallets() {
     { key: 'status', header: 'STATUS', cell: (wallet) => <State value={wallet.status} /> },
     {
       key: 'balances',
-      header: 'BALANCES (SAMPLE)',
+      // The header says BALANCES and the cell says why the list is empty: there is no balance
+      // read on this API at all, so an empty column is a missing capability, not a zero.
+      header: 'BALANCES',
       hideBelow: 'md',
       cell: (wallet) =>
         wallet.balances.length === 0 ? (
-          <span className="muted">nothing recorded. An empty list is not a zero balance, and nobody asked a chain either way</span>
+          <span className="muted">{view.source === 'sample' ? 'sample figures only; no chain read was made' : 'no balance read exists on this API, so this is silence, not zero'}</span>
         ) : (
           <div style={{ display: 'grid', gap: 6 }}>
             {wallet.balances.map((balance) => (
@@ -141,7 +157,7 @@ export default function Wallets() {
       <Reveal>
         <PageHead
           title="WHO HAS TO BE PRESENT."
-          lede="A wallet is an execution resource: an address, a provider, and a rule about whose key signs. It is not a balance display, and the balances below are sample figures in a fixture rather than a chain read. The useful column is authority mode, because that is the one that says whether a permission from policy is enough on its own."
+          lede="A wallet is an execution resource: an address, a provider, and a rule about whose key signs. It is not a balance display, and nothing here has asked a chain what any address holds. The useful column is authority mode, because that is the one that says whether a permission from policy is enough on its own."
           actions={
             <ButtonLink href="/console/policies" small>
               POLICY DOCUMENTS
@@ -177,7 +193,14 @@ export default function Wallets() {
         ]}
       />
 
-      <Panel title="EXECUTION RESOURCES" note={`${wallets.length} WALLETS · BALANCES ARE SAMPLE FIGURES`}>
+      <Panel
+        title="EXECUTION RESOURCES"
+        note={
+          view.source === 'sample'
+            ? `${wallets.length} WALLETS · BALANCES ARE SAMPLE FIGURES`
+            : `${wallets.length} WALLETS · NO BALANCE READ EXISTS ON THIS API`
+        }
+      >
         <DataTable rows={wallets} columns={columns} rowKey={(wallet) => wallet.id} />
       </Panel>
 
@@ -220,7 +243,7 @@ export default function Wallets() {
                   {summary.signed.length === 1 ? 'is' : 'are'}{' '}
                   {count(summary.signed.length, 'signed state', 'signed states')} and{' '}
                   {count(summary.deviceMentions, 'trace line mentioning a device', 'trace lines mentioning a device')}
-                  . Read that as a gap in the fixture rather than as a gate that quietly opened.
+                  . Read that as a gap in what was recorded rather than as a gate that quietly opened.
                 </p>
               )}
             </div>
@@ -252,7 +275,7 @@ export default function Wallets() {
         <div className="stack-list">
           {grants.map((grant) => (
             <div key={grant.agent.id}>
-              <time dateTime={grant.version.activatedAt ?? grant.version.createdAt}>
+              <time dateTime={(grant.version.activatedAt ?? grant.version.createdAt) ?? undefined}>
                 {relativeTime(grant.version.activatedAt ?? grant.version.createdAt).toUpperCase()}
               </time>
               <div style={{ minWidth: 0 }}>
@@ -274,7 +297,7 @@ export default function Wallets() {
                 {grant.crossed && (
                   <span className="sub" style={{ color: 'var(--accent)' }}>
                     This request ran on {grant.ranOn.name}. The document it bound targets{' '}
-                    {grant.target?.name ?? 'a wallet not in this fixture'}. {count(crossedWires, 'row', 'rows')} in this fixture disagree
+                    {grant.target?.name ?? 'a wallet this read cannot name'}. {count(crossedWires, 'binding', 'bindings')} disagree
                     that way, and the screen reports the disagreement rather than drawing the tidier one.
                   </span>
                 )}
