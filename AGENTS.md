@@ -494,9 +494,24 @@ box, see `ASSUMPTIONS.md` §1). It **does not skip** when the database is absent
   `<svg>`, a `uppercase tracking` garnish, an `h-screen`, an infinite animation, a CDN font, a
   `Acme`/`Northwind` placeholder, or a class from the deleted token set. Run it with the typecheck
   after any screen work; the check is mechanical precisely so that no future session has to remember
-  the list. Landing-page motion is framer-motion plus a live WebGL hero (`components/hero.tsx`,
-  faceted transmission prisms, no video file), and it stops for `prefers-reduced-motion` by rendering
-  one still frame rather than removing the scene.
+  the list.
+- **The landing page runs at MOTION 7, and there is a switch for it.** `components/motion.tsx` holds
+  the kit: a scroll-progress rule, `ParallaxImage`, a pinned `HorizontalPan` for the seven stages, one
+  `Marquee` of reason codes, `CountUp`, `Tilt`, and the reveals. All of it is `useScroll` /
+  `useTransform` on motion values, never a scroll listener and never `useState` tracking a pointer.
+  `app/motion-pref.tsx` resolves whether any of it runs: `auto` follows `prefers-reduced-motion`, and
+  the header control lets a visitor overrule the OS, because "I can't see any motion" turned out to be
+  ambiguous between *the page is too still* and *the desktop has motion switched off*. Three real
+  photographs live in `public/images/` with `CREDITS.md` beside them (Wikimedia Commons: one CC0, one
+  CC BY-SA 3.0 credited in the footer, one public domain); image generation and video are quota-blocked
+  on this box, and stock-aggregator search results are licensed previews, so neither is a source.
+  Reject two candidates on sight rather than shipping them: a "concrete architecture" file that was a
+  church interior, and a `Server_rack` image that was a recording-studio console.
+- **Screenshots of a scrolling page need CDP, not `--screenshot`.** `apps/dashboard/scripts/shoot.mjs`
+  drives headless Chromium over the DevTools WebSocket (Node's built-in `WebSocket`, no dependency) to
+  scroll to a fraction of the document and capture. The CLI flag only ever photographs the top, and a
+  tall window is worse than useless here: sections sized in `dvh` stretch with the viewport instead of
+  being scrolled through, so a pinned pan looks broken in a way it is not.
 - **The mark is used as supplied, and painted through a mask.** `docs/assets/ari-logo.svg` is copied, not
   redrawn; because it is ink drawn for a light surface, the dark interface renders it with
   `mask-image` + a token colour so the geometry is byte-identical and only the paint is ours. The brand

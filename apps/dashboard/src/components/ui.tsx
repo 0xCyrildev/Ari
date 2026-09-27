@@ -371,12 +371,19 @@ export function MetricBand({
   );
 }
 
-export function Meter({ value, max, tone = 'accent', label }: { readonly value: number; readonly max: number; readonly tone?: Tone; readonly label?: string }) {
-  const pct = max <= 0 ? 0 : Math.min(100, (value / max) * 100);
+export function Meter({ value, max, tone = 'accent', label }: { readonly value: number; readonly max: number; readonly tone?: Tone | undefined; readonly label?: string | undefined }) {
+  const target = max <= 0 ? 0 : Math.min(100, (value / max) * 100);
+  const fill = { accent: 'bg-accent', ok: 'bg-ok', wait: 'bg-wait', stop: 'bg-stop', neutral: 'bg-ink-4' }[tone];
+  // Fills from zero on mount: the number is the fact, the arrival is the emphasis.
+  const [shown, setShown] = useState(0);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setShown(target));
+    return () => cancelAnimationFrame(frame);
+  }, [target]);
   return (
     <div className="w-full">
       <div className="h-[3px] w-full bg-sunken">
-        <div className={cx('h-full transition-[width] duration-500 ease-out', DOT[tone])} style={{ width: `${pct}%` }} />
+        <div className={cx('h-full transition-[width] duration-700 ease-out', fill)} style={{ width: `${shown}%` }} />
       </div>
       {label !== undefined && <div className="mt-1 font-mono text-[11px] text-ink-3">{label}</div>}
     </div>

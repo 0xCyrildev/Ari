@@ -3,6 +3,7 @@ import { motion, useReducedMotion } from 'framer-motion';
 import { useEffect, useState, type ReactNode } from 'react';
 import { CommandPalette, Mark, Wordmark, type Command } from '../components/product';
 import { Tag, toast } from '../components/ui';
+import { useMotionAllowed } from './motion-pref';
 import { cx } from '../lib/util';
 import { Link, useRouter } from './router';
 import { DEMO_BANNER, NAV, NAV_MOBILE, sampleData } from './nav-data';
@@ -26,6 +27,7 @@ export function Shell({ children }: { readonly children: ReactNode }) {
   const [navOpen, setNavOpen] = useState(false);
   const [palette, setPalette] = useState(false);
   const reduce = useReducedMotion();
+  const animateRoute = useMotionAllowed() && reduce !== true;
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -103,7 +105,17 @@ export function Shell({ children }: { readonly children: ReactNode }) {
           <span>{DEMO_BANNER}</span>
         </div>
 
-        <main className="mx-auto w-full max-w-[1400px] px-4 py-5 sm:px-6 lg:px-8">{children}</main>
+        {/* One screen at a time: the new page arrives rather than replacing the old one
+            mid-frame. Keyed on the path so it replays per navigation and only per navigation. */}
+        <main className="mx-auto w-full max-w-[1400px] px-4 py-5 sm:px-6 lg:px-8">
+          {animateRoute ? (
+            <motion.div key={raw} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1] }}>
+              {children}
+            </motion.div>
+          ) : (
+            children
+          )}
+        </main>
 
         <nav className="sticky bottom-0 z-20 grid grid-cols-4 border-t border-line bg-panel lg:hidden" aria-label="Primary">
           {NAV_MOBILE.map((item) => (
