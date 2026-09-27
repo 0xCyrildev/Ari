@@ -34,10 +34,16 @@ export function ConnectPanel() {
   const [draft, setDraft] = useState('')
   const [hint, setHint] = useState<string | null>(null)
 
-  // A bearer here is three dotted parts — `org….ucrd_….secret` — because the row it verifies
-// against carries the tenant it belongs to. Testing `startsWith('ucrd_')` was therefore wrong
-// about every credential this system mints, and it warned people off the string that was right.
-const isHumanSecret = draft.trim().includes('.ucrd_')
+  // Trimmed, because a paste that carried a newline is the same credential, and counting it
+  // untrimmed told a person their secret was five characters long when their clipboard was fine.
+  const presented = draft.trim()
+  const parts = presented.split('.')
+  const shape =
+    parts.length !== 3
+      ? `${parts.length} dot-separated parts, expected 3`
+      : parts[0].length === 40 && parts[1].length === 41 && parts[2].length === 43
+        ? '40 · 41 · 43, as expected'
+        : `parts of ${parts.map((part) => part.length).join(' · ')}, expected 40 · 41 · 43`
 
   return (
     <section className="connect" aria-label="Deployment connection">
@@ -77,7 +83,6 @@ const isHumanSecret = draft.trim().includes('.ucrd_')
           className="connect-form"
           onSubmit={(event) => {
             event.preventDefault()
-            const presented = draft.trim()
             if (presented.length === 0) return
             void connect(presented)
             setDraft('')
@@ -105,19 +110,18 @@ const isHumanSecret = draft.trim().includes('.ucrd_')
             </button>
           </div>
           <p className="connect-hint">
-            {draft.length} characters
-            {draft.length > 0 && draft.length !== BEARER_LENGTH
-              ? `, not the ${BEARER_LENGTH} a bearer here runs to. A paste that lost or split a piece is the usual cause, and the deployment will read it as a wrong secret.`
-              : ''}
-            {draft.length === 0
-              ? '. Kept in this tab only, and gone when you close it. An agent credential (crd_…) will not open the human routes.'
+            {presented.length === 0
+              ? 'Kept in this tab only, and gone when you close it. An agent credential (crd_…) will not open the human routes.'
+              : `${presented.length} characters · ${shape}`}
+            {presented.length !== 0 && presented.length !== BEARER_LENGTH
+              ? '. The deployment reads a wrong length exactly as it reads a wrong secret, so check the paste before assuming the credential is bad.'
               : ''}
           </p>
           {hint !== null && <p className="connect-hint">{hint}</p>}
-          {draft.length > 0 && !isHumanSecret && (
+          {presented.length > 0 && !presented.includes('.ucrd_') && (
             <p className="connect-hint" data-kind="warning">
-              That does not start with <code>ucrd_</code>. It will be sent as presented and the
-              deployment will answer the same way it answers a wrong secret.
+              No <code>.ucrd_</code> section in it. That is either an agent credential, which will
+              not open the human routes at all, or a paste that dropped the middle piece.
             </p>
           )}
         </form>
