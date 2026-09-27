@@ -50,12 +50,16 @@ frontend now; `apps/dashboard` is deleted, and its `preflight.mjs` came with it 
 whole-app motion rules report as unjudged warnings there because the files that satisfy them
 are the marketing layer's).
 
-| Console surface | State |
+| Console surface | State (as of `8f4b4ee`) |
 |---|---|
-| overview, transactions list, approvals, audit log | **live** — reads the tenant through the proxy |
-| approve / reject | **live write** — POST, then the queue is re-read |
-| agents, wallets, policies | refuse under a live connection (`UnwiredScreen`); fixture under no connection |
-| transaction detail, risk, settings, developers | fixture-only, and say so when connected |
+| overview, transactions list + detail (with the rebuilt trace), approvals, audit, wallets, agents list + detail, policies list + detail, risk, settings, developers | **live** — every screen reads the tenant through the proxy |
+| approve / reject, revoke agent, mint agent credential, register/grant wallet, apply/activate policy | **live writes** — POST, then the queue is re-read |
+| agent credential inventory, policy document body, balances, users/keys/webhooks/billing | **not drawn**: no read exists, and the screen says so rather than filling the space |
+
+All thirteen console routes plus `/docs`. Verified in **both** states by driving the real pages
+over CDP (`apps/web/scripts/live-probe.mjs`, multi-path variant used this session): connected
+renders the live `payer`/`seed` rows with real ids and decimal counters; unconnected renders the
+labelled fixture with a matching banner.
 
 Decisions from this pass a later session must not quietly reverse:
 
