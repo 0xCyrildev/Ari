@@ -154,6 +154,15 @@ export interface ConsoleView {
   }[]
   readonly auditEvents: readonly AuditEvent[]
   readonly grantRows: readonly GrantRow[]
+  /**
+   * Routes this credential could not read, with the server's own reason beside each.
+   *
+   * A partial credential is the normal case, not the broken one: an approver is not supposed to
+   * list wallets, and somebody holding two of the seven scopes should still see a live tenant
+   * rather than sample rows. So a refused read is named, rather than failing the whole refresh
+   * or being drawn as an empty table, which is a different claim about the tenant.
+   */
+  readonly unavailable: readonly { readonly route: string; readonly reason: string }[]
   /** The money unit the figures are denominated in, for a formatter that must not guess. */
   readonly unit: string
   readonly summary: {
@@ -178,6 +187,7 @@ export const EMPTY_VIEW: ConsoleView = {
   policies: [],
   auditEvents: [],
   grantRows: [],
+  unavailable: [],
   unit: sample.UNIT,
   summary: { authorizedRaw: 0n, count: 0, denied: 0, pending: 0, agents: 0, wallets: 0, unit: sample.UNIT },
 }
@@ -245,6 +255,9 @@ function fromSample(): ConsoleView {
       }
     }),
     auditEvents: sample.auditEvents,
+    // The sample tenant is complete by construction: there is no credential to be missing a
+    // scope with, so nothing here is refused.
+    unavailable: [],
     grantRows: sample.agents.flatMap((agent) => {
       const policy = sample.policies.find((item) => item.key === agent.policy)
       const version = policy === undefined ? undefined : sample.activeVersion(agent.policy)
@@ -316,6 +329,7 @@ function fromLive(input: {
   readonly policies: readonly WirePolicy[]
   readonly summary: WireSummary
   readonly auditEvents: readonly WireAuditEvent[]
+  readonly unavailable?: readonly { readonly route: string; readonly reason: string }[]
 }): ConsoleView {
   const unit = input.summary.windows[0]?.dimension.replace(/^(daily|monthly)_/, '') ?? sample.UNIT
 
@@ -413,6 +427,7 @@ function fromLive(input: {
   return {
     source: 'live',
     notice: `Live tenant ${input.organizationId.slice(0, 18)}… · reads and writes go to this deployment`,
+    unavailable: input.unavailable ?? [],
     organizationId: input.organizationId,
     transactions,
     approvals,
@@ -600,7 +615,11 @@ export function ConsoleProvider({ children }: { readonly children: ReactNode }) 
     }
     setLoading(true)
     try {
-      const [transactions, summary, approvals, agents, wallets, policies, audit] = await Promise.all([
+      // `allSettled`, because one refused route is a scope this credential does not hold and not
+      // a reason to show somebody their tenant as sample data. The failure this replaces was
+      // total: an operator without `agent:manage` got no live view at all, and no explanation
+      // wider than an error line.
+      const answers = await Promise.allSettled([
         call<{ organizationId: unknown; transactions: unknown }>('GET', READS.transactions, presented),
         call<{ organizationId: unknown; summary: unknown }>('GET', READS.summary, presented),
         call<{ approvals: unknown }>('GET', READS.approvals, presented),
@@ -609,34 +628,56 @@ export function ConsoleProvider({ children }: { readonly children: ReactNode }) 
         call<{ organizationId: unknown; policies: unknown }>('GET', READS.policies, presented),
         call<{ organizationId: unknown; events: unknown }>('GET', READS.audit, presented),
       ])
-      // Every envelope that names a tenant has to name the same one. One refresh, five reads,
-      // one credential: if they disagree, what happened is not "a tenant with two
-      // organisations" — it is a token swapped underneath the screen or a proxy pointed at the
-      // wrong place, and a view that blended the two would be a page about somebody else's
-      // money. `approvals` and `agents` are absent because those two handlers answer with a
-      // bare array and no envelope; they predate the reads below, and the check is honest about
-      // which routes it can compare rather than quietly skipping the awkward ones.
-      const organizations = [
-        transactions.organizationId,
-        summary.organizationId,
-        wallets.organizationId,
-        policies.organizationId,
-        audit.organizationId,
-      ].map((value) => str(value, 'envelope.organizationId'))
+      const names = ['transactions', 'summary', 'approvals', 'agents', 'wallets', 'policies', 'audit'] as const
+      const unavailable: { route: string; reason: string }[] = []
+      const value = <T,>(index: number): T | null => {
+        const answer = answers[index]
+        if (answer === undefined) return null
+        if (answer.status === 'fulfilled') return answer.value as T
+        const reason = answer.reason
+        unavailable.push({
+          route: names[index] ?? `read ${index}`,
+          reason: reason instanceof Error ? reason.message : 'the read did not complete',
+        })
+        return null
+      }
+
+      const transactions = value<{ organizationId: unknown; transactions: unknown }>(0)
+      const summary = value<{ organizationId: unknown; summary: unknown }>(1)
+      const approvals = value<{ approvals: unknown }>(2)
+      const agents = value<{ agents: unknown }>(3)
+      const wallets = value<{ organizationId: unknown; wallets: unknown }>(4)
+      const policies = value<{ organizationId: unknown; policies: unknown }>(5)
+      const audit = value<{ organizationId: unknown; events: unknown }>(6)
+
+      if (summary === null) {
+        // `summary` is the read that names the tenant and the money windows, so without it there
+        // is nothing honest to draw a header from. Stay on the sample view and say why.
+        throw new Refused(403, 'NOT_READABLE', `this credential cannot read /v1/summary (${unavailable[0]?.reason ?? 'refused'}), so nothing was switched over`)
+      }
+
+      // Every envelope that came back and names a tenant has to name the same one. A refused
+      // read is not a disagreement, so the check runs over what answered rather than pretending
+      // the missing ones agreed.
+      const envelopes = [summary, transactions, wallets, policies, audit].filter(
+        (envelope) => envelope !== null,
+      ) as readonly { readonly organizationId: unknown }[]
+      const organizations = envelopes.map((envelope) => str(envelope.organizationId, 'envelope.organizationId'))
       const organizationId = organizations[0] ?? ''
-      if (organizations.some((value) => value !== organizationId)) {
+      if (organizations.some((value2) => value2 !== organizationId)) {
         throw new Refused(500, 'ORGANIZATION_DISAGREEMENT', 'two reads in one refresh named different tenants')
       }
       setView(
         fromLive({
           organizationId,
-          transactions: parseTransactions(transactions.transactions),
-          approvals: parseApprovals(approvals.approvals),
-          agents: parseAgents(agents.agents),
-          wallets: parseWallets(wallets.wallets),
-          policies: parsePolicies(policies.policies),
+          unavailable,
+          transactions: transactions === null ? [] : parseTransactions(transactions.transactions),
+          approvals: approvals === null ? [] : parseApprovals(approvals.approvals),
+          agents: agents === null ? [] : parseAgents(agents.agents),
+          wallets: wallets === null ? [] : parseWallets(wallets.wallets),
+          policies: policies === null ? [] : parsePolicies(policies.policies),
           summary: parseSummary(summary.summary),
-          auditEvents: parseAuditEvents(audit.events),
+          auditEvents: audit === null ? [] : parseAuditEvents(audit.events),
         }),
       )
       setError(null)

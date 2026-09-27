@@ -24,7 +24,10 @@ export function ConnectPanel() {
   const [draft, setDraft] = useState('')
   const [hint, setHint] = useState<string | null>(null)
 
-  const isHumanSecret = draft.trim().startsWith('ucrd_')
+  // A bearer here is three dotted parts — `org….ucrd_….secret` — because the row it verifies
+// against carries the tenant it belongs to. Testing `startsWith('ucrd_')` was therefore wrong
+// about every credential this system mints, and it warned people off the string that was right.
+const isHumanSecret = draft.trim().includes('.ucrd_')
 
   return (
     <section className="connect" aria-label="Deployment connection">
@@ -34,6 +37,13 @@ export function ConnectPanel() {
           {view.notice}
         </p>
         {error !== null && <p className="connect-error">{error}</p>}
+        {view.unavailable.length > 0 && (
+          <p className="connect-hint">
+            Read without a refusal: {view.transactions.length + view.auditEvents.length} rows
+            drawn. Refused for this credential:{' '}
+            {view.unavailable.map((item) => `${item.route}: ${item.reason}`).join(' · ')}
+          </p>
+        )}
       </div>
 
       {connected ? (
@@ -78,7 +88,7 @@ export function ConnectPanel() {
                 setDraft(event.target.value)
                 setHint(null)
               }}
-              placeholder="paste the credential the operator minted"
+              placeholder="org….ucrd_….secret, or a bare ucrd_… where the deployment stores one"
             />
             <button type="submit" className="field connect-button">
               CONNECT
