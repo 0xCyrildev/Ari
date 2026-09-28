@@ -1,5 +1,17 @@
 import { NextResponse } from 'next/server'
-import { waitlist, waitlistProblem, waitlistSignups } from '@/lib/db'
+import { waitlist, waitlistProblem, waitlistSignups, type WaitlistProblem } from '@/lib/db'
+
+/**
+ * One code per refusal. A record rather than a ternary chain because a new
+ * `WaitlistProblem` has to fail the build until it is named here too — a mislabelled
+ * refusal is worse than a generic one, since the whole value of the code is that an
+ * operator knows which environment variable to fix without opening a shell.
+ */
+const PROBLEM_CODE: Record<WaitlistProblem, string> = {
+  UNCONFIGURED: 'WAITLIST_UNCONFIGURED',
+  SHARES_OPERATIONAL_DATABASE: 'WAITLIST_MISCONFIGURED',
+  UNENCRYPTED_CONNECTION: 'WAITLIST_INSECURE_URL',
+}
 
 /**
  * The one thing this page writes.
@@ -17,10 +29,7 @@ import { waitlist, waitlistProblem, waitlistSignups } from '@/lib/db'
 export async function POST(request: Request) {
   const problem = waitlistProblem()
   if (problem !== null) {
-    return NextResponse.json(
-      { code: problem === 'UNCONFIGURED' ? 'WAITLIST_UNCONFIGURED' : 'WAITLIST_MISCONFIGURED' },
-      { status: 503 },
-    )
+    return NextResponse.json({ code: PROBLEM_CODE[problem] }, { status: 503 })
   }
 
   try {

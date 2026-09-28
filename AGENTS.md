@@ -223,6 +223,18 @@ assumption false, and measuring it turned up something worse than a missing `ssl
   depends on can be taken, RLS coverage using **the same predicate `schema.test.ts` uses**,
   and connection headroom against the two pools. It never writes; migrations stay
   `pnpm db:migrate`.
+- **The waitlist got the same rule, without importing it.** `apps/web` is outside the
+  workspace by an explicit decision, so `lib/db/tls.ts` is a second copy of the predicate and
+  `waitlistProblem` now returns `UNENCRYPTED_CONNECTION` (routed to
+  `WAITLIST_INSECURE_URL`, via a `Record<WaitlistProblem,string>` so a new problem cannot
+  silently reuse somebody else's code). Two copies of a security rule is only survivable if
+  something checks they agree: `tests/unit/waitlist-tls.test.ts` asserts the ledger's
+  `inspectDatabaseUrl` and the web predicate decide identically over 66 host×sslmode
+  combinations, which is the same "both copies tested against each other" shape as the
+  lifecycle drift guard. Importing that file surfaced a genuine inconsistency —
+  `apps/web` had no `"type"` field, so the root program compiled its ESM files as CommonJS and
+  `verbatimModuleSyntax` refused them. It is now `"type": "module"`, which is what it always
+  was: the package contains no `.js`/`.cjs` files at all, and `next build` passes.
 - Two things it caught while being written, both mine: a first version checked "every table
   in `ari`" and failed on `organizations`, which has no `org_id` because it *is* the tenant —
   the invariant is `hasOrgColumn && !rowSecurity` except `signing_tickets`, and the preflight

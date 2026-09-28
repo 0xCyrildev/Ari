@@ -1,5 +1,6 @@
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { Pool } from 'pg'
+import { waitlistUrlIsSafe } from './tls'
 import { waitlistSignups } from './schema'
 
 /**
@@ -21,12 +22,16 @@ import { waitlistSignups } from './schema'
  * for is a gate that gets deleted.
  */
 
-export type WaitlistProblem = 'UNCONFIGURED' | 'SHARES_OPERATIONAL_DATABASE'
+export type WaitlistProblem = 'UNCONFIGURED' | 'SHARES_OPERATIONAL_DATABASE' | 'UNENCRYPTED_CONNECTION'
 
 export function waitlistProblem(env: NodeJS.ProcessEnv = process.env): WaitlistProblem | null {
   const url = env.WAITLIST_DATABASE_URL ?? ''
   if (url.length === 0) return 'UNCONFIGURED'
   if (url === env.DATABASE_URL) return 'SHARES_OPERATIONAL_DATABASE'
+  // A hosted Postgres reached without a verifying sslmode is the provider's default
+  // connection string, and it sends every address in plaintext. Refused here rather than
+  // at first signup, because the first signup is a person's email.
+  if (!waitlistUrlIsSafe(url)) return 'UNENCRYPTED_CONNECTION'
   return null
 }
 
