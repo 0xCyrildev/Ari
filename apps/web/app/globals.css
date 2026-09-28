@@ -237,6 +237,13 @@ h2 span { color: var(--muted); }
   .console-body { padding: 26px 5vw 72px; }
   .rail { padding: 10px 5vw; }
   .metric-band { grid-template-columns: 1fr; }
+  /* 132px of label plus a 140px `AWAITING_APPROVAL` (monospace, .13em, nowrap) plus the
+     20px gap is 292px — more than the 236px a 320px phone leaves inside a panel. The label
+     column cannot just shrink, so the pairs stack: 2px rows bind each value to its label
+     and the dd margin is what separates one pair from the next. */
+  .kv { grid-template-columns: minmax(0, 1fr); row-gap: 2px; }
+  .kv dt { padding-top: 0; }
+  .kv dd { margin-bottom: 10px; }
 }
 
 /* Reduced motion: the loader's entrance is the one animation that must still resolve to
