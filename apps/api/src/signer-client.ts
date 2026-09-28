@@ -16,6 +16,14 @@
 export interface DeliveryRequest {
   readonly ticket: string;
   readonly canonical: string;
+  /**
+   * This process's request id, forwarded as a header so the two services write about the
+   * same attempt using the same word. It is not part of the signing contract and never
+   * enters the body: the signer's verifier works on the sealed ticket and the canonical
+   * bytes, and anything else that travelled with them would be one more field someone has
+   * to reason about when they ask what a signature covered.
+   */
+  readonly requestId?: string;
 }
 
 export type DeliveryResult =
@@ -49,11 +57,15 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
       let response: Response;
       const headers: Record<string, string> = { 'content-type': 'application/json' };
       if (deliveryKey !== null) headers.authorization = `Bearer ${deliveryKey}`;
+      if (request.requestId !== undefined) headers['x-request-id'] = request.requestId;
       try {
         response = await doFetch(options.url, {
           method: 'POST',
           headers,
-          body: JSON.stringify(request),
+          // Named, not `JSON.stringify(request)`: the request now carries a field that
+          // belongs to the transport and not to the contract, and the body the signer
+          // parses must stay exactly the two things it verifies.
+          body: JSON.stringify({ ticket: request.ticket, canonical: request.canonical }),
           signal: AbortSignal.timeout(timeoutMs),
         });
       } catch (error) {

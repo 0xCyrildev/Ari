@@ -9,7 +9,7 @@
  * signer is an unavailable signer that reports success.
  */
 
-import { claimTicket, inspectDatabaseUrl, withTransaction } from '@ari/ledger';
+import { claimTicket, inspectDatabaseUrl, probeDatabase, withTransaction } from '@ari/ledger';
 import { isLoopbackHost } from '@ari/schemas';
 import {
   MockSigningProvider,
@@ -22,6 +22,7 @@ import { createServer } from 'node:http';
 import { Pool } from 'pg';
 import { createSignHandler } from './handler.js';
 import { createSignerRequestHandler } from './http.js';
+import { createSignerLog, logLevelOf, type LogLevel, type SignerLog } from './log.js';
 
 export interface SignerConfig {
   readonly ticketKey: TicketKey;
@@ -44,6 +45,9 @@ export interface SignerConfig {
   readonly host: string;
   /** Null means "no gate on this socket", which only a loopback bind may ask for. */
   readonly deliveryKey: string | null;
+  readonly logLevel: LogLevel;
+  /** Goes into `/healthz`. `dev` is the honest answer when nobody injected one. */
+  readonly version: string;
 }
 
 export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
@@ -98,6 +102,8 @@ export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
     port: Number(env.SIGNER_PORT ?? env.PORT ?? '4100'),
     host,
     deliveryKey: deliverySecret.length === 0 ? null : deliverySecret,
+    logLevel: logLevelOf(env),
+    version: env.ARI_VERSION ?? 'dev',
   };
 }
 
@@ -105,10 +111,13 @@ export interface RunningSigner {
   readonly deps: SignerDeps;
   readonly handle: ReturnType<typeof createSignHandler>;
   readonly provider: MockSigningProvider;
+  /** Exposed so a caller that starts the process can write through the same sink. */
+  readonly log: SignerLog;
   close(): Promise<void>;
 }
 
 export async function startSigner(config: SignerConfig): Promise<RunningSigner> {
+  const log = createSignerLog(config.logLevel);
   const pool = new Pool({
     connectionString: config.databaseUrl,
     max: 8,
@@ -141,13 +150,25 @@ export async function startSigner(config: SignerConfig): Promise<RunningSigner> 
   };
 
   const handle = createSignHandler({ sign: (request) => redeemAndSign(deps, request) });
-  const server = createServer(createSignerRequestHandler({ handle, deliveryKey: config.deliveryKey }));
+  const server = createServer(
+    createSignerRequestHandler({
+      handle,
+      deliveryKey: config.deliveryKey,
+      log,
+      version: config.version,
+      // The same probe the decision plane runs, from the same module: this process cannot
+      // redeem anything without the database, so a health answer that ignored it would be
+      // a claim about the socket and not about the service.
+      ready: () => probeDatabase(pool),
+    }),
+  );
   await new Promise<void>((resolve) => server.listen(config.port, config.host, resolve));
 
   return {
     deps,
     handle,
     provider,
+    log,
     async close() {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
       await pool.end();
@@ -183,11 +204,17 @@ if (process.argv[1]?.endsWith('main.ts') || process.argv[1]?.endsWith('main.js')
   const signer = await startSigner(config);
   // Say what is enforced, not just where it listens: an operator reading this line at 3am
   // needs to know whether an unauthenticated caller could reach /v1/sign.
-  console.log(
-    `ari-signer listening on ${config.host}:${config.port}; provider=${signer.deps.provider.name}; delivery-gate=${config.deliveryKey === null ? 'off' : 'on'}`,
-  );
+  signer.log.info('ari-signer listening', {
+    host: config.host,
+    port: config.port,
+    provider: signer.deps.provider.name,
+    // `on` and `off` rather than true/false, because the word an operator searches for at
+    // 3am is the one they typed into the environment.
+    deliveryGate: config.deliveryKey === null ? 'off' : 'on',
+    version: config.version,
+  });
   if (!isLoopbackHost(config.host)) {
-    process.stderr.write(`ari-signer: bound to ${config.host}, reachable beyond this machine. TLS must terminate in front of it, and only the decision plane should hold its address.\n`);
+    signer.log.warn('ari-signer is bound beyond this machine. TLS must terminate in front of it, and only the decision plane should hold its address', { host: config.host });
   }
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {

@@ -46,13 +46,22 @@ import {
 import { authorize, recordDeliveryOutcome, type AuthorizeOutcome, type PipelineDeps } from './authorize.js';
 import { listPolicies, listRequests, listWallets, MAX_READ_LIMIT, organizationSummary, requestRecord } from './reads.js';
 import { acceptsBootstrapToken, authenticateAgent, authenticateApprover, type ApproverPrincipal } from './gateway.js';
+import { acceptsBearerSecret, bearerToken } from '@ari/signing';
+import type { ApiMetrics } from './metrics.js';
 import type { SignerClient } from './signer-client.js';
-import type { FastifyError, FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyBaseLogger, FastifyError, FastifyInstance, FastifyReply } from 'fastify';
 
 export interface RouteDeps {
   readonly pipeline: PipelineDeps;
   readonly signer: SignerClient;
   readonly bootstrapToken: string;
+  /** The counters this process keeps about itself. Written on the same paths that answer. */
+  readonly metrics: ApiMetrics;
+  /** A statement that proves the pool is usable right now, bounded by the caller. */
+  readonly health: () => Promise<'ok' | 'unavailable'>;
+  /** Null means there is no metrics route at all — see `ApiConfig.metricsToken`. */
+  readonly metricsToken: string | null;
+  readonly version: string;
 }
 
 /** What an agent is allowed to learn about a decision. Note the absence of a ticket. */
@@ -65,7 +74,14 @@ function publicDecision(decision: Decision) {
   };
 }
 
-async function handleOutcome(deps: RouteDeps, orgId: string, outcome: AuthorizeOutcome): Promise<Record<string, unknown>> {
+async function handleOutcome(call: {
+  readonly deps: RouteDeps;
+  readonly log: FastifyBaseLogger;
+  readonly requestId: string;
+  readonly orgId: string;
+  readonly outcome: AuthorizeOutcome;
+}): Promise<Record<string, unknown>> {
+  const { deps, log, requestId: httpRequestId, orgId, outcome } = call;
   switch (outcome.status) {
     case 'DENIED':
       return { state: 'DENIED', requestId: outcome.requestId, reasonCodes: outcome.codes };
@@ -87,17 +103,33 @@ async function handleOutcome(deps: RouteDeps, orgId: string, outcome: AuthorizeO
       const delivered = await deps.signer.deliver({
         ticket: outcome.ticket,
         canonical: outcome.canonical,
+        requestId: httpRequestId,
       });
       // The books move after the answer is carried, in a transaction of its own: a hold
       // that became a signature is no longer parked capacity, and a hold the authority
       // plane can never honour must go back to the agent's daily total (T13).
-      await recordDeliveryOutcome(deps.pipeline, orgId, outcome.requestId, delivered);
+      const books = await recordDeliveryOutcome(deps.pipeline, orgId, outcome.requestId, delivered);
+      deps.metrics.noteDelivery(delivered.accepted ? 'accepted' : 'parked');
       if (!delivered.accepted) {
-        // The caller sees it in the response; the operator sees it here. A parked
-        // delivery writes no audit event on purpose — nothing about the request is final
-        // — and without this line a signing outage is visible only to whoever happens to
-        // ask about one ticket at a time. The code, never the ticket.
-        process.stderr.write(`ari-api: ticket not delivered for ${outcome.requestId}: ${delivered.code}\n`);
+        // The caller sees it in the response; the operator sees it here, at warn, because
+        // a parked delivery is the state where capacity is held and nothing will move it
+        // on its own. A parked delivery still writes no audit event on purpose — nothing
+        // about the request is final — and before this line existed, that decision left a
+        // signing outage visible only to whoever happened to ask about one ticket at a
+        // time. The code and the row id, never the ticket.
+        log.warn(
+          {
+            // pino stamps the same value as `reqId` on every line of this request. Named
+            // again here because `httpRequestId` is the word both processes write —
+            // `ari-signer` has no pino and no `reqId` — and one incident should be one
+            // query, not a join across two field names.
+            httpRequestId,
+            transactionRequestId: outcome.requestId,
+            code: delivered.code,
+            reservation: books,
+          },
+          'ticket minted but not delivered',
+        );
         return {
           state: 'TICKET_ISSUED_NOT_DELIVERED',
           requestId: outcome.requestId,
@@ -122,13 +154,28 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     // The response says nothing, and that is the decision (S16's cousin: an idempotency
     // conflict names two digests, a constraint error quotes a fragment of SQL, and a client
     // that sees either has learned the shape of the interior). Silence *outward* was never
-    // meant to mean silence inward — but until now it did, because `logger: false` makes
-    // `app.log` a no-op and a 500 left no trace anywhere at all. Whoever is holding the
+    // meant to mean silence inward — but until `observe.ts` it did, because `logger: false`
+    // made `app.log` a no-op and a 500 left no trace anywhere at all. Whoever was holding the
     // failing request had to reproduce it to learn what broke.
-    process.stderr.write(`ari-api: unhandled ${status} ${error.name}: ${error.message}\n`);
-    if (error.stack !== undefined) {
-      process.stderr.write(`${error.stack.split('\n').slice(1, 5).join('\n')}\n`);
-    }
+    //
+    // Written here rather than trusted to the framework's own error log, because a custom
+    // error handler is the point where that default stops applying, and because the
+    // fields are this process's choice: the name, the message and four lines of stack say
+    // what broke, and nothing in them is the caller's to read. The message is what a
+    // constraint or an idempotency conflict actually says — an operator needs it, and it
+    // never crosses the socket.
+    reply.log.error(
+      {
+        status,
+        code: 'INTERNAL',
+        err: {
+          name: error.name,
+          message: error.message,
+          stack: error.stack?.split('\n').slice(1, 5).join('\n'),
+        },
+      },
+      'unhandled failure; the response said nothing and this line is the only record of it',
+    );
     return reply.code(500).send({ code: 'INTERNAL' });
   });
 
@@ -142,7 +189,39 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     reply.code(404).send({ code: 'NOT_FOUND' });
   });
 
-  app.get('/healthz', async () => ({ status: 'ok' }));
+  // `{status:'ok'}` used to be the whole answer, which made it a claim about the process
+  // and not about the service. A deployment where every pooled connection had gone to a
+  // dead host answered 200 and then 500'd at the first statement — the same shape as the
+  // loopback-bind trap this file already records, where a container "starts cleanly,
+  // passes its own health check, and 502s from outside".
+  //
+  // So a failed probe is a 503, and the platform stops promoting the route. That is the
+  // right trade: an `ari-api` with no database cannot answer anything else correctly
+  // either, and a monitor that reads 200 with a `"db":"unavailable"` body has to
+  // understand the body to be useful, while one that reads 503 already does.
+  // Flapping is the platform's problem to bound, not this handler's to hide.
+  app.get('/healthz', async (_request, reply) => {
+    const db = await deps.health();
+    return reply.code(db === 'ok' ? 200 : 503).send({ status: db === 'ok' ? 'ok' : 'degraded', db, version: deps.version });
+  });
+
+  // Registered only when a token was configured, so `METRICS_TOKEN` unset means there is no
+  // metrics route to find — the same 404 as any unknown path, rather than a 401 that
+  // advertises a door. The body is text the caller's monitoring reads, never a response an
+  // agent's contract describes, so it is the one place here that answers outside JSON.
+  if (deps.metricsToken !== null) {
+    const token = deps.metricsToken;
+    app.get('/metrics', async (request, reply) => {
+      if (!acceptsBearerSecret(token, bearerToken(request.headers.authorization))) {
+        return reply.code(401).send({ code: 'METRICS_UNAUTHENTICATED' });
+      }
+      return reply
+        .code(200)
+        .header('content-type', 'text/plain; version=0.0.4; charset=utf-8')
+        .header('cache-control', 'no-store')
+        .send(deps.metrics.exposition());
+    });
+  }
 
   app.post('/v1/organizations', async (request, reply) => {
     if (!acceptsBootstrapToken(deps.bootstrapToken, request.headers.authorization)) {
@@ -185,6 +264,7 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
         pool: deps.pipeline.pool,
         masterPepper: deps.pipeline.masterPepper,
         nowMs: deps.pipeline.nowMs,
+        noteVerify: (kind, result) => deps.metrics.noteCredentialVerify(kind, result),
       },
       request.headers.authorization as string | undefined,
     );
@@ -218,7 +298,9 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
       idempotencyKey: body.idempotencyKey,
       ...(typeof body.approvalToken === 'string' ? { approvalToken: body.approvalToken } : {}),
     });
-    return reply.code(200).send(await handleOutcome(deps, auth.principal.orgId, outcome));
+    return reply.code(200).send(
+      await handleOutcome({ deps, log: reply.log, requestId: request.id, orgId: auth.principal.orgId, outcome }),
+    );
   });
 
   app.post('/v1/transactions/evaluate', async (request, reply) => {
@@ -236,7 +318,9 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
       idempotencyKey: `preview:${parsed.data.requestId}`,
       dryRun: true,
     });
-    return reply.code(200).send(await handleOutcome(deps, auth.principal.orgId, outcome));
+    return reply.code(200).send(
+      await handleOutcome({ deps, log: reply.log, requestId: request.id, orgId: auth.principal.orgId, outcome }),
+    );
   });
 
   app.get('/v1/transactions/:id', async (request, reply) => {
@@ -272,6 +356,8 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     pool: deps.pipeline.pool,
     masterPepper: deps.pipeline.masterPepper,
     nowMs: deps.pipeline.nowMs,
+    noteVerify: (kind: 'agent' | 'user', result: 'accepted' | 'refused') =>
+      deps.metrics.noteCredentialVerify(kind, result),
   };
 
   interface GateReply {

@@ -79,6 +79,20 @@ describe('the delivery gate a signer may start with', () => {
     expect(() => readConfig(env({ SIGNER_DELIVERY_KEY: 'changeme' }))).toThrow(/SIGNER_DELIVERY_KEY must be at least 32 characters/);
   });
 
+  it('takes its log level from the shared name, and its own when it needs to disagree', () => {
+    // The two processes are one story in a log viewer, so they default to the same level;
+    // the override exists for the case where only the signer needs to be louder.
+    expect(readConfig(env()).logLevel).toBe('info');
+    expect(readConfig(env({ LOG_LEVEL: 'warn' })).logLevel).toBe('warn');
+    expect(readConfig(env({ LOG_LEVEL: 'warn', SIGNER_LOG_LEVEL: 'debug' })).logLevel).toBe('debug');
+    expect(readConfig(env({ SIGNER_LOG_LEVEL: 'shout' })).logLevel).toBe('info');
+  });
+
+  it('says what it is running, or says dev', () => {
+    expect(readConfig(env()).version).toBe('dev');
+    expect(readConfig(env({ ARI_VERSION: '2026-09-28-a1b2c3d' })).version).toBe('2026-09-28-a1b2c3d');
+  });
+
   it('names the missing gate beside every other problem, not instead of them', () => {
     let message = '';
     try {

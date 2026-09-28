@@ -26,6 +26,31 @@ describe('what ari-api refuses to start as', () => {
     expect(readConfig(env()).databaseUrl).toBe(LOCAL);
   });
 
+  it('has no metrics route unless a token is configured, and refuses a short one', () => {
+    // Absence, not an open door: the default is that `GET /metrics` does not exist, so a
+    // deployment that never thought about scraping is not publishing its request volume on
+    // a hostname the platform made public.
+    expect(readConfig(env()).metricsToken).toBeNull();
+    expect(readConfig(env({ METRICS_TOKEN: 'a'.repeat(32) })).metricsToken).toHaveLength(32);
+    expect(() => readConfig(env({ METRICS_TOKEN: 'short' }))).toThrow(/METRICS_TOKEN must be at least 32 characters/);
+  });
+
+  it('reads the log level the .env file has always named, and lets one process override it', () => {
+    // `LOG_LEVEL` used to be decoration in `.env.example` — the same defect `API_HOST` had,
+    // a variable documented and read by nothing. It is read now, and the per-service name
+    // wins because the reason to set one is to make the two processes disagree.
+    expect(readConfig(env()).logLevel).toBe('info');
+    expect(readConfig(env({ LOG_LEVEL: 'debug' })).logLevel).toBe('debug');
+    expect(readConfig(env({ LOG_LEVEL: 'debug', API_LOG_LEVEL: 'silent' })).logLevel).toBe('silent');
+    // A typo is not a reason to stop taking payments.
+    expect(readConfig(env({ LOG_LEVEL: 'shout' })).logLevel).toBe('info');
+  });
+
+  it('reports the version it was given, or says it does not know', () => {
+    expect(readConfig(env()).version).toBe('dev');
+    expect(readConfig(env({ ARI_VERSION: '2026-09-28-a1b2c3d' })).version).toBe('2026-09-28-a1b2c3d');
+  });
+
   it('refuses a hosted database it would reach in plaintext', () => {
     expect(() => readConfig(env({ DATABASE_URL: 'postgresql://ari:pw@db.example.com/ari' }))).toThrow(/plaintext/);
   });

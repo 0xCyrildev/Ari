@@ -33,6 +33,42 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { connect, DATABASE_URL } from './database.js';
 
+/**
+ * What a process writes about itself, captured as objects.
+ *
+ * `startApi`'s third parameter is the seam; the type is read off that signature rather
+ * than imported from `fastify`, because this test tree does not depend on fastify and
+ * should not start in order to assert a log line.
+ */
+interface LoggedLine {
+  readonly level: string;
+  readonly message: string;
+  readonly fields: Record<string, unknown>;
+}
+
+type RecorderLogger = NonNullable<Parameters<typeof startApi>[2]>;
+
+function recordingLogger(into: LoggedLine[]): RecorderLogger {
+  const record = (level: string) => (obj: unknown, msg?: unknown): void => {
+    into.push({
+      level,
+      message: typeof msg === 'string' ? msg : typeof obj === 'string' ? obj : '',
+      fields: typeof obj === 'object' && obj !== null ? (obj as Record<string, unknown>) : {},
+    });
+  };
+  const logger: Record<string, unknown> = {
+    level: 'error',
+    fatal: record('fatal'),
+    error: record('error'),
+    warn: record('warn'),
+    info: record('info'),
+    debug: record('debug'),
+    trace: record('trace'),
+  };
+  logger.child = () => logger;
+  return logger as unknown as RecorderLogger;
+}
+
 let pool: Pool;
 let appPool: Pool;
 const app: Connector = {
@@ -776,28 +812,28 @@ describe('what the API process itself is allowed to hold', () => {
     expect(clash.json()).toEqual({ code: 'INTERNAL' });
     // Silence outward is the decision. Silence *inward* was a bug: `logger: false` made
     // `app.log` a no-op, so a 500 left no trace anywhere and whoever was holding the failing
-    // request had to reproduce it to learn which constraint broke. The error now goes to the
-    // process's stderr, where the operator's log is, and never into the response.
-    const written: string[] = [];
-    const original = process.stderr.write.bind(process.stderr);
-    process.stderr.write = ((chunk: string | Uint8Array) => {
-      written.push(String(chunk));
-      return true;
-    }) as typeof process.stderr.write;
+    // request had to reproduce it to learn which constraint broke.
+    //
+    // Asserted through a logger instance rather than a spy on `process.stderr`, because the
+    // claim is about what this process chooses to write — not about how pino buffers a pipe,
+    // which is what a stdout spy would actually have been testing.
+    const lines: LoggedLine[] = [];
+    const loud = await startApi(API, undefined, recordingLogger(lines));
     try {
-      await api.app.inject({
+      const again = await loud.app.inject({
         method: 'POST',
         url: '/v1/transactions/authorize',
         headers: bearer(t.presented),
         payload: { candidate: candidate(t.walletId, t.agentId, RECIPIENT, usd(700n)), idempotencyKey: 'clash' },
       });
+      expect(again.statusCode).toBe(500);
     } finally {
-      process.stderr.write = original;
+      await loud.close();
     }
-    const trace = written.join('');
-    expect(trace).toMatch(/ari-api: unhandled 500/);
+    expect(lines.some((line) => line.level === 'error' && line.message.includes('unhandled failure'))).toBe(true);
+    const trace = JSON.stringify(lines.filter((line) => line.level === 'error'));
     expect(trace).toMatch(/idempotency|conflict|duplicate key/i);
-    // And the response that the caller sees is still the one-word answer it was before.
+    // And the response the caller sees is still the one-word answer it was before.
     expect(trace).not.toMatch(/candidate|digest/);
   });
 });

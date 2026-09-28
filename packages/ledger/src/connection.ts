@@ -148,3 +148,41 @@ export function inspectDatabaseUrl(url: string): DatabaseUrlFacts {
   const safe = isLoopbackHost(host) || tls === 'verify-full' || tls === 'ssl-true';
   return { host, port, tls, sslmode, problem: safe ? null : refusal({ host, tls, sslmode }) };
 }
+
+/** Half a second: long enough to cross a region and open a connection, short enough that a
+ *  health check never becomes the reason a platform thinks this process is hung. */
+export const HEALTH_PROBE_TIMEOUT_MS = 500;
+
+/**
+ * Can this pool still answer, right now — as one bounded call both services share.
+ *
+ * It lives here rather than in each `main`, because the two processes must not be able to
+ * disagree about what "healthy" means: a signer reporting `ok` while the plane that feeds
+ * it reports `degraded` is two health checks rather than one fact.
+ *
+ * The timeout is a race, not a cancellation — `pg` has no way to abandon a queued
+ * statement — so the timer is cleared on the fast path. Leaving it would hold the event
+ * loop open for half a second after every probe, which is exactly the delay that turns a
+ * graceful shutdown into a killed one.
+ */
+export async function probeDatabase(
+  pool: { query(sql: string): Promise<unknown> },
+  timeoutMs = HEALTH_PROBE_TIMEOUT_MS,
+): Promise<'ok' | 'unavailable'> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const probe = pool.query('SELECT 1').then(
+    () => 'ok' as const,
+    // A refusal is an answer, and it is this one: the statement could not be run. The
+    // rejection is handled here, so a dead database cannot produce an unhandled
+    // rejection that kills the process while it is trying to report that it is sick.
+    () => 'unavailable' as const,
+  );
+  const answer = await Promise.race([
+    probe,
+    new Promise<'unavailable'>((resolve) => {
+      timer = setTimeout(() => resolve('unavailable'), timeoutMs);
+    }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  return answer;
+}

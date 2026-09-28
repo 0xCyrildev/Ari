@@ -17,13 +17,37 @@
 import { newId, type CanonicalDigest } from '@ari/schemas';
 import type { SignerOutcome } from '@ari/signing';
 import { createServer, type Server } from 'node:http';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createSignHandler } from '../src/handler.js';
 import { createSignerRequestHandler } from '../src/http.js';
+import type { SignerLog } from '../src/log.js';
 
 const digest = `canon/v1:${'a'.repeat(64)}` as CanonicalDigest;
 const ticket = newId('tkt');
 const deliveryKey = 'delivery-secret-for-tests-0123456789abcdef';
+
+interface LoggedLine {
+  readonly level: string;
+  readonly message: string;
+  readonly fields?: Record<string, unknown>;
+}
+
+/**
+ * A recorder rather than a `console` spy: the point of these assertions is which fields
+ * the signer chose to write, and reading them out of a structured object is the same
+ * claim the log makes. `JSON.stringify` on the way in, because the real sink serialises
+ * and a cyclic field would throw there — the guard in `log.ts` exists for that case.
+ */
+function recordingLog(): { readonly log: SignerLog; lines(): LoggedLine[] } {
+  const captured: LoggedLine[] = [];
+  const push = (level: string) => (message: string, fields?: Readonly<Record<string, unknown>>): void => {
+    captured.push(JSON.parse(JSON.stringify({ level, message, fields })) as LoggedLine);
+  };
+  return {
+    lines: () => [...captured],
+    log: { info: push('info'), warn: push('warn'), error: push('error') },
+  };
+}
 
 interface Stub {
   readonly server: Server;
@@ -34,7 +58,10 @@ interface Stub {
   explodeWith(error: Error): void;
 }
 
-async function serve(deliveryKeyOrNull: string | null): Promise<Stub> {
+async function serve(
+  deliveryKeyOrNull: string | null,
+  extra: { readonly log?: SignerLog; readonly ready?: () => Promise<'ok' | 'unavailable'>; readonly version?: string } = {},
+): Promise<Stub> {
   const outcomes: SignerOutcome[] = [];
   let calls = 0;
   let failure: Error | null = null;
@@ -51,7 +78,7 @@ async function serve(deliveryKeyOrNull: string | null): Promise<Stub> {
     },
   });
 
-  const server = createServer(createSignerRequestHandler({ handle, deliveryKey: deliveryKeyOrNull }));
+  const server = createServer(createSignerRequestHandler({ handle, deliveryKey: deliveryKeyOrNull, ...extra }));
   // Port 0, read back from the socket: a fixed port means two workers, or this box's own
   // running signer, decide what the assertions are about.
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -82,13 +109,27 @@ function ask(stub: Stub, path: string, init?: Parameters<typeof fetch>[1]) {
 }
 
 describe('readiness', () => {
-  it('answers a GET with an empty ok and touches no verifier', async () => {
+  it('answers a GET with the probe it was given, and touches no verifier', async () => {
     const before = open.calls();
     const response = await ask(open, '/healthz');
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('application/json');
-    expect(await response.json()).toEqual({ status: 'ok' });
+    // `db` and `version` are new, and they are the reason the route exists: `{status:'ok'}`
+    // was a claim about the socket. A signer whose database is unreachable cannot tell a
+    // ticket from a string, so the answer that used to be honest was the one that hid it.
+    expect(await response.json()).toEqual({ status: 'ok', db: 'ok', version: 'dev' });
     expect(open.calls()).toBe(before);
+  });
+
+  it('is a 503 when the probe says it cannot do its job', async () => {
+    // Not a claim about the platform's retry policy — which belongs to the platform — but
+    // the fact that this process could not redeem a ticket if one arrived right now.
+    const down = await serve(null, { ready: async () => 'unavailable' });
+    const response = await ask(down, '/healthz');
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ status: 'degraded', db: 'unavailable', version: 'dev' });
+    down.server.closeAllConnections();
+    await new Promise<void>((resolve) => down.server.close(() => resolve()));
   });
 
   it('is the only GET it answers', async () => {
@@ -146,7 +187,7 @@ describe('the sign path', () => {
 
     const health = await ask(open, '/healthz?ts=1');
     expect(health.status).toBe(200);
-    expect(await health.json()).toEqual({ status: 'ok' });
+    expect(await health.json()).toEqual({ status: 'ok', db: 'ok', version: 'dev' });
   });
 });
 
@@ -156,7 +197,7 @@ describe('the delivery gate', () => {
   it('keeps readiness open, because the platform health check holds no secret', async () => {
     const response = await ask(gated, '/healthz');
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: 'ok' });
+    expect(await response.json()).toEqual({ status: 'ok', db: 'ok', version: 'dev' });
   });
 
   it('refuses an unsigned delivery and reads nothing from the socket', async () => {
@@ -206,9 +247,10 @@ describe('the delivery gate', () => {
 
 describe('a signer that throws instead of refusing', () => {
   it('still answers, and logs only the error name', async () => {
-    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    open.explodeWith(new Error('the provider threw with a message nobody may log'));
-    const response = await ask(open, '/v1/sign', { method: 'POST', body: jsonBody });
+    const recorder = recordingLog();
+    const loud = await serve(null, { log: recorder.log });
+    loud.explodeWith(new Error('the provider threw with a message nobody may log'));
+    const response = await ask(loud, '/v1/sign', { method: 'POST', body: jsonBody });
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({
       state: 'REJECTED',
@@ -216,9 +258,14 @@ describe('a signer that throws instead of refusing', () => {
       detail: 'the signer could not complete the attempt',
     });
     // The message is the thing that must not reach a log: a provider's sentence can
-    // carry a wallet id or a fragment of the sealed payload.
-    expect(logged.mock.calls.map((call) => call.join(' '))).toEqual(['ari-signer: attempt failed: Error']);
-    logged.mockRestore();
+    // carry a wallet id or a fragment of the sealed payload. Asserted against the whole
+    // serialised line, because the field name is not the risk — the value is.
+    const line = JSON.stringify(recorder.lines());
+    expect(line).toContain('signing attempt failed');
+    expect(line).toContain('"name":"Error"');
+    expect(line).not.toContain('nobody may log');
+    loud.server.closeAllConnections();
+    await new Promise<void>((resolve) => loud.server.close(() => resolve()));
   });
 
   it('is still serving on the next request', async () => {
@@ -227,5 +274,68 @@ describe('a signer that throws instead of refusing', () => {
     expect(response.status).toBe(403);
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.code).toBe('TICKET_DIGEST_MISMATCH');
+  });
+});
+
+describe('what the signer writes about an attempt', () => {
+  it('carries the decision plane\'s request id, and never the body it was given', async () => {
+    const recorder = recordingLog();
+    const heard = await serve(null, { log: recorder.log });
+    const before = heard.calls();
+    heard.outcomes.push({ status: 'REJECTED', code: 'TICKET_DIGEST_MISMATCH', detail: 'bytes differ' });
+    const response = await fetch(`${heard.base}/v1/sign`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-request-id': 'abc123' },
+      body: JSON.stringify({ ticket, canonical: 'o{}' }),
+    });
+    expect(response.status).toBe(403);
+    expect(heard.calls()).toBe(before + 1);
+
+    const [line] = recorder.lines();
+    expect(line?.message).toBe('signing attempt answered');
+    expect(line?.level).toBe('info');
+    // One id across two processes: `ari-api` writes the same value on its side of the
+    // delivery, which is what turns "a ticket was parked" and "the signer refused it" into
+    // one story rather than two events that happened to overlap.
+    expect(line?.fields).toMatchObject({ httpRequestId: 'abc123', status: 403, code: 'TICKET_DIGEST_MISMATCH' });
+    // The canonical bytes are the digest's input and the ticket is a capability until it is
+    // spent; neither belongs in a file that outlives the request.
+    expect(JSON.stringify(recorder.lines())).not.toContain('o{}');
+
+    heard.server.closeAllConnections();
+    await new Promise<void>((resolve) => heard.server.close(() => resolve()));
+  });
+
+  it('drops a caller-supplied id that is not a bounded opaque string', async () => {
+    // The header is honoured so one attempt reads as one story, and only so: a value that
+    // is prose, an escape sequence, or 4 KB long must not end up in every line this process
+    // writes about the request that carried it.
+    const recorder = recordingLog();
+    const heard = await serve(null, { log: recorder.log });
+    heard.outcomes.push({ status: 'REJECTED', code: 'TICKET_INVALID', detail: 'stub' });
+    await fetch(`${heard.base}/v1/sign`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-request-id': 'a'.repeat(200) },
+      body: jsonBody,
+    });
+    const line = JSON.stringify(recorder.lines());
+    expect(line).not.toContain('a'.repeat(200));
+    heard.server.closeAllConnections();
+    await new Promise<void>((resolve) => heard.server.close(() => resolve()));
+  });
+
+  it('reports a refused delivery at info, not warn', async () => {
+    // With the gate on, this is the normal answer to everything that is not the decision
+    // plane — scanners included. A run of them is worth noticing; one per stranger is not
+    // an incident, and warn-level noise is how a real one stops being visible.
+    const recorder = recordingLog();
+    const gatedWithLog = await serve(deliveryKey, { log: recorder.log });
+    const response = await ask(gatedWithLog, '/v1/sign', { method: 'POST', body: jsonBody });
+    expect(response.status).toBe(401);
+    const lines = recorder.lines();
+    expect(lines.map((entry) => entry.level)).toEqual(['info']);
+    expect(lines[0]?.fields?.code).toBe('SIGNER_UNAUTHENTICATED');
+    gatedWithLog.server.closeAllConnections();
+    await new Promise<void>((resolve) => gatedWithLog.server.close(() => resolve()));
   });
 });

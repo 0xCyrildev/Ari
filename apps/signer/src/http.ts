@@ -14,6 +14,8 @@
 
 import { acceptsBearerSecret, bearerToken } from '@ari/signing';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { SignerLog } from './log.js';
+import { silentLog } from './log.js';
 import type { createSignHandler } from './handler.js';
 
 /** A bounded request body, because the canonical blob is attacker-influenced in length (T23). */
@@ -31,11 +33,24 @@ export interface SignerTransportDeps {
    * module, so the two cannot disagree about what a bearer token looks like.
    */
   readonly deliveryKey: string | null;
+  /**
+   * Absent means silent, which is what the transport tests want: they drive the route
+   * without a database and have nothing to report. A process that means to be observed
+   * passes one — the tests that assert *what was logged* do exactly that.
+   */
+  readonly log?: SignerLog;
+  /**
+   * Whether this process can still do its job. Absent answers `ok`, because a transport
+   * with no database to reach is not lying about one; `main.ts` supplies the real probe.
+   */
+  readonly ready?: () => Promise<'ok' | 'unavailable'>;
+  readonly version?: string;
 }
 
 export function createSignerRequestHandler(deps: SignerTransportDeps) {
+  const log = deps.log ?? silentLog;
   return function requestHandler(req: IncomingMessage, res: ServerResponse): void {
-    void route(deps.handle, deps.deliveryKey, req, res);
+    void route(deps, log, req, res);
   };
 }
 
@@ -52,13 +67,14 @@ export function createSignerRequestHandler(deps: SignerTransportDeps) {
  * failed database — nothing is signed, and the ticket is treated as spent.
  */
 async function route(
-  handle: ReturnType<typeof createSignHandler>,
-  deliveryKey: string | null,
+  deps: SignerTransportDeps,
+  log: SignerLog,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
+  const started = performance.now();
   try {
-    await respond(handle, deliveryKey, req, res);
+    await respond(deps, log, req, res, started);
   } catch (error) {
     if (!res.headersSent) {
       res.writeHead(500, { 'content-type': 'application/json' });
@@ -76,15 +92,16 @@ async function route(
     }
     // Only the error's name: a provider message can carry a wallet id or a fragment of
     // the sealed payload, and the log outlives the request.
-    console.error(`ari-signer: attempt failed: ${(error as Error).name}`);
+    log.error('signing attempt failed', { err: { name: (error as Error).name }, elapsedMs: Math.round(performance.now() - started) });
   }
 }
 
 async function respond(
-  handle: ReturnType<typeof createSignHandler>,
-  deliveryKey: string | null,
+  deps: SignerTransportDeps,
+  log: SignerLog,
   req: IncomingMessage,
   res: ServerResponse,
+  started: number,
 ): Promise<void> {
   // `req.url` is the whole request target, query string included, so comparing it to a
   // path makes `/v1/sign?x=1` a different endpoint than `/v1/sign`. Measured on the
@@ -96,15 +113,24 @@ async function respond(
   // Readiness is answered first, and before any body is read: a platform health check is
   // a GET, and a check that returns 404 is a service that never gets promoted.
   if (req.method === 'GET' && path === HEALTH_PATH) {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok' }));
+    const db = deps.ready === undefined ? 'ok' : await deps.ready();
+    res.writeHead(db === 'ok' ? 200 : 503, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ status: db === 'ok' ? 'ok' : 'degraded', db, version: deps.version ?? 'dev' }));
     return;
   }
 
   // Then the gate, ahead of the path table: an unauthenticated caller learns nothing
   // about which routes exist, and nothing is read from its socket. The seal is still what
   // authorises a signature — this says only whose request is worth verifying.
-  if (deliveryKey !== null && !acceptsBearerSecret(deliveryKey, bearerToken(req.headers.authorization))) {
+  if (deps.deliveryKey !== null && !acceptsBearerSecret(deps.deliveryKey, bearerToken(req.headers.authorization))) {
+    // At info, not warn: with the gate on, this is the normal answer to everything that is
+    // not the decision plane, including a scanner. A run of them is worth noticing and is
+    // what the delivery-side counters on `ari-api` are for; one per stranger is not an
+    // incident.
+    log.info('delivery credential refused', {
+      code: 'SIGNER_UNAUTHENTICATED',
+      httpRequestId: forwardedRequestId(req),
+    });
     res.writeHead(401, { 'content-type': 'application/json' });
     res.end(
       JSON.stringify({
@@ -144,7 +170,31 @@ async function respond(
     return;
   }
 
-  const response = await handle(body);
+  const response = await deps.handle(body);
+  // The one line that ties the two processes together: `ari-api` logs the same
+  // `httpRequestId` on its side of this call, so a parked ticket reads as one story rather
+  // than two coincidences. The body is never logged — it carries a `providerRef`, and the
+  // rule that a signature does not leave this process (S16) is no reason to write its
+  // coordinates into a file that outlives the request.
+  log.info('signing attempt answered', {
+    httpRequestId: forwardedRequestId(req),
+    status: response.status,
+    state: typeof response.body.state === 'string' ? response.body.state : undefined,
+    code: typeof response.body.code === 'string' ? response.body.code : undefined,
+    elapsedMs: Math.round(performance.now() - started),
+  });
   res.writeHead(response.status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(response.body));
+}
+
+/**
+ * Honoured only as a bounded opaque string, and only from the decision plane that this
+ * deployment chose to trust. A stranger's header cannot reach a log line here anyway —
+ * the gate runs first — but the shape rule is kept identical to the API's so neither
+ * process can be made to write prose it did not author.
+ */
+function forwardedRequestId(req: IncomingMessage): string | undefined {
+  const value = req.headers['x-request-id'];
+  const first = Array.isArray(value) ? value[0] : value;
+  return typeof first === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(first) ? first : undefined;
 }

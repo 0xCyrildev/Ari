@@ -9,14 +9,17 @@
  */
 
 import { ApprovalKey } from '@ari/approvals';
-import { inspectDatabaseUrl } from '@ari/ledger';
+import { inspectDatabaseUrl, probeDatabase } from '@ari/ledger';
 import { behaviouralProvider } from '@ari/risk-engine';
 import { isLoopbackHost } from '@ari/schemas';
 import { EvmForkProvider, type EvmProviderConfig } from '@ari/simulation';
 import { TicketKey } from '@ari/signing';
 import fastify from 'fastify';
+import type { FastifyBaseLogger } from 'fastify';
 import { Pool } from 'pg';
 import type { PipelineDeps } from './authorize.js';
+import { ApiMetrics } from './metrics.js';
+import { fastifyOptions, logLevelOf, registerRequestId, type LogLevel } from './observe.js';
 import { registerRoutes, type RouteDeps } from './routes.js';
 import { createSignerClient, type SignerClient } from './signer-client.js';
 
@@ -54,6 +57,21 @@ export interface ApiConfig {
   /** Null is a configuration, not an omission — see `PipelineDeps.simulation`. */
   readonly simulation: EvmProviderConfig | null;
   readonly port: number;
+  /**
+   * pino's level, and the one setting here that is allowed to be wrong without stopping
+   * anything: a typo in a log level must not take a payment service down.
+   */
+  readonly logLevel: LogLevel;
+  /**
+   * The bearer that makes `GET /metrics` exist. Null is not "metrics are open" — it is
+   * "there is no metrics route", answered by the same 404 as any unknown path. A
+   * deployment that scraped nothing would otherwise be publishing its request volume on
+   * a public hostname, which is a cross-tenant inference channel with no principal in
+   * front of it (T20).
+   */
+  readonly metricsToken: string | null;
+  /** Goes into `ari_api_build_info`. `dev` is the honest answer when nobody injected one. */
+  readonly version: string;
 }
 
 /** A role name goes into `SET ROLE`, which takes no parameter — so it is checked, not quoted. */
@@ -128,6 +146,14 @@ export function readConfig(env: NodeJS.ProcessEnv): ApiConfig {
 
   if (problems.length > 0) throw new Error(`ari-api cannot start:\n  - ${problems.join('\n  - ')}`);
 
+  const metricsSecret = env.METRICS_TOKEN ?? '';
+  // The same two rules the delivery gate runs, for the same reason: a length floor that a
+  // truncated paste can still satisfy is not a floor, and presence enforces — but here the
+  // failure mode of setting nothing is a closed endpoint, never an open one.
+  if (metricsSecret.length > 0 && metricsSecret.length < 32) {
+    throw new Error('ari-api cannot start:\n  - METRICS_TOKEN must be at least 32 characters when set (openssl rand -base64 48)');
+  }
+
   return {
     databaseUrl,
     databaseRole,
@@ -140,6 +166,9 @@ export function readConfig(env: NodeJS.ProcessEnv): ApiConfig {
     port: Number(env.API_PORT ?? env.PORT ?? '4000'),
     host: env.API_HOST ?? '127.0.0.1',
     simulation,
+    logLevel: logLevelOf(env),
+    metricsToken: metricsSecret.length === 0 ? null : metricsSecret,
+    version: env.ARI_VERSION ?? 'dev',
   };
 }
 
@@ -154,8 +183,15 @@ export interface RunningApi {
  * process. It is optional rather than part of `ApiConfig` because a deployment that
  * cannot reach its signer has a configuration error, and that should fail loudly at
  * startup rather than arrive as a stub nobody meant to leave in.
+ *
+ * `logger` is the same seam for the other half: pass a `FastifyBaseLogger` and this
+ * process writes its one JSON line per event into it instead of into pino on stdout.
+ * Without it, what an operator reads is the log; with it, a test can assert that the
+ * line exists, that it names the error, and that it does not carry the digest — which is
+ * the actual claim, and spying on `process.stdout` to check it would only have proven
+ * whatever pino happens to do with a pipe that day.
  */
-export async function startApi(config: ApiConfig, signer?: SignerClient): Promise<RunningApi> {
+export async function startApi(config: ApiConfig, signer?: SignerClient, logger?: FastifyBaseLogger): Promise<RunningApi> {
   const pool = new Pool({
     connectionString: config.databaseUrl,
     max: 10,
@@ -211,11 +247,52 @@ export async function startApi(config: ApiConfig, signer?: SignerClient): Promis
     simulation: config.simulation === null ? null : new EvmForkProvider(config.simulation),
   };
 
-  const app = fastify({ logger: false, bodyLimit: 64 * 1024 });
+  const metrics = new ApiMetrics(config.version);
+  // The pool's own counters, re-read on every change rather than incremented here: `pg`
+  // already knows the truth, and a counter this process keeps can drift from it. This is
+  // the metric that answers "is the database connection the bottleneck" without a query.
+  const readPool = () => {
+    metrics.notePool({ total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount });
+  };
+  // `wait` is not an event `pg` emits (the type says so, and it was right): a client that
+  // cannot be had shows up as `waiting` on the pool, which `readPool` already reports.
+  for (const event of ['acquire', 'release', 'remove'] as const) {
+    pool.on(event, readPool);
+  }
+  readPool();
+
+  // `logger: false` used to sit here, which made `app.log` a no-op and turned every
+  // deliberate silence *outward* into silence *inward* as well. The outward rules are
+  // unchanged — a 500 still answers `{code:'INTERNAL'}` and nothing else — but the reason
+  // this process refused is now written down somewhere the operator can read.
+  const app = fastify(fastifyOptions({ level: config.logLevel, loggerInstance: logger }));
+  registerRequestId(app);
+  app.addHook('onResponse', (request, reply) => {
+    metrics.noteRequest({
+      // The compiled route (`/v1/transactions/:id`), never the path a caller typed: an
+      // label drawn from the request would let anyone mint unbounded cardinality on a
+      // scrape endpoint. Anything that matched no route shares one label.
+      route: request.routeOptions.url ?? 'unmatched',
+      method: request.method,
+      status: reply.statusCode,
+      seconds: reply.elapsedTime / 1000,
+    });
+  });
+
+  // The one dependency the health answer needs that is not already in the pipeline: a
+  // statement that proves the pool can open. Shared with `ari-signer` through
+  // `probeDatabase`, because two processes disagreeing about "healthy" is two health
+  // checks rather than one fact.
+  const health = () => probeDatabase(pool);
+
   const routeDeps: RouteDeps = {
     pipeline: deps,
     signer: signer ?? createSignerClient({ url: config.signerUrl, deliveryKey: config.signerDeliveryKey }),
     bootstrapToken: config.bootstrapToken,
+    metrics,
+    health,
+    metricsToken: config.metricsToken,
+    version: config.version,
   };
   registerRoutes(app, routeDeps);
   await app.ready();
@@ -235,18 +312,24 @@ if (process.argv[1]?.endsWith('server.ts') || process.argv[1]?.endsWith('server.
   try {
     config = readConfig(process.env);
   } catch (error) {
+    // Plain text, and deliberately so: this failure happens before there is a logger to
+    // write through, and a refusal to start is the one line an operator reads on a
+    // terminal rather than in a drain.
     console.error((error as Error).message);
     process.exit(2);
   }
   const api = await startApi(config);
   await api.app.listen({ host: config.host, port: config.port });
-  console.log(`ari-api listening on ${config.host}:${config.port}`);
+  api.app.log.info({ host: config.host, port: config.port, version: config.version }, 'ari-api listening');
   // `API_HOST` was named in `.env.example` and read by nothing: the process always bound
   // loopback, so a deployment behind a platform proxy accepted connections from the container
   // and nowhere else, and the health check passed. Non-loopback is legitimate on a PaaS and
   // reckless on a laptop, so it is stated rather than assumed.
-  if (config.host !== '127.0.0.1' && config.host !== 'localhost') {
-    process.stderr.write(`ari-api: bound to ${config.host}, reachable beyond this machine. TLS must terminate in front of it: bearer credentials and the bootstrap token cross this socket.\n`);
+  //
+  // `isLoopbackHost`, not a two-value comparison: `::1` is loopback and would have been
+  // warned about, and the warning is the thing an operator is told to read as a decision.
+  if (!isLoopbackHost(config.host)) {
+    api.app.log.warn({ host: config.host }, 'ari-api is bound beyond this machine. TLS must terminate in front of it: bearer credentials and the bootstrap token cross this socket');
   }
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {

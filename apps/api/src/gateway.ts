@@ -42,6 +42,18 @@ export interface GatewayDeps {
   readonly pool: Connector;
   readonly masterPepper: string;
   readonly nowMs: () => bigint;
+  /**
+   * The one observability seam in this module, and it is a callback rather than an import:
+   * this file decides who is calling and knows nothing about how the process reports
+   * itself. Absent means no counting, which is what every test and any caller that does
+   * not care gets.
+   *
+   * It fires only when a hash was actually computed. A request with no bearer header at
+   * all is refused before Argon2id runs and costs this process nothing, so counting it
+   * beside a wrong-secret attempt would blur exactly the distinction the endpoint exists to
+   * make — and the number worth watching is how much hashing a stranger can buy.
+   */
+  readonly noteVerify?: (kind: 'agent' | 'user', result: 'accepted' | 'refused') => void;
 }
 
 /** The bearer grammar lives in `@ari/signing`, because so does the other gate that uses it. */
@@ -53,6 +65,7 @@ export async function authenticateAgent(deps: GatewayDeps, header: string | unde
     return { ok: false, status: 401, code: 'CREDENTIAL_MISSING', detail: 'expected a bearer credential' };
   }
   const verified = await verifyCredential(deps.pool, presented, deps.masterPepper, deps.nowMs);
+  deps.noteVerify?.('agent', verified.ok ? 'accepted' : 'refused');
   if (!verified.ok) {
     // One code for every reason a credential fails at the gate. `AGENT_PAUSED` and
     // `CREDENTIAL_REVOKED` are distinguished *inside* the decision, where they
@@ -109,6 +122,7 @@ export async function authenticateApprover(deps: GatewayDeps, header: string | u
     return { ok: false, status: 401, code: 'CREDENTIAL_MISSING', detail: 'expected a bearer credential' };
   }
   const verified = await verifyUserCredential(deps.pool, presented, deps.masterPepper, deps.nowMs);
+  deps.noteVerify?.('user', verified.ok ? 'accepted' : 'refused');
   if (!verified.ok) {
     return { ok: false, status: 401, code: 'UNAUTHENTICATED', detail: 'the credential was not accepted' };
   }
