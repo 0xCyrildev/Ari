@@ -194,7 +194,7 @@ way we learned that the 413 response still reaches the client after `req.destroy
 - `tsx` moved to `dependencies`: both processes run as `node --import tsx …`, so an install that prunes dev
   dependencies yields a container that cannot boot — and `@node-rs/argon2` is the only other production
   dependency, and the thing that hashes credentials.
-- Gates at this revision: `pnpm typecheck` clean, **354** unit, **244** security.
+- Gates at this revision, re-run after the phone pass: `pnpm typecheck` clean, **364** unit, **246** security.
 
 ### A hosted database is a different security property, not the same one with a new hostname
 
@@ -279,7 +279,9 @@ assumption false, and measuring it turned up something worse than a missing `ssl
 **Free — three projects, one repo, commit `a63c6b4`.** The signer is public-by-necessity and the delivery
 gate is what makes that survivable; turn on Pxxl's Password Protection for its hostname too if their edge
 challenge accepts a non-browser client (untested — if it does not, the api's delivery silently parks holds,
-which is why the stderr line exists).
+which is why the stderr line exists). **This is the shape that ran, with one substitution**: the third row is
+`ari-web` and the two-web-service cap below killed it — the frontend went to Vercel instead, so the two pxxl
+projects are `ari-api` and `ari-signer`.
 
 | Project | Working dir | Port | Install | Build | Start |
 |---|---|---|---|---|---|
@@ -326,6 +328,99 @@ vote → `GRANTED`, the retry with that seal → `COMPLETE` on the same `txr_` i
 agent-readable read. Ledger agreed: `SETTLED` holds, `approval.granted/human=1`, `ticket.minted/agent=4`.
 Seed to `/tmp/ari-seed.json` (0600), key in `/tmp/ari-keys.env`, drivers in `/tmp/ari-staging-proof.mjs` and
 `/tmp/ari-one.mjs`. A quick tunnel is ephemeral and unauthenticated at the edge: it is staging, not a host.
+
+### What is actually deployed, and the three providers it took
+
+The topology above is not what runs. Pxxl Free caps **web services at two** — it lets the third project be
+created and refuses its *Web Service* type — and `Route: No` is Plus, so "one project, three services, signer
+unrouted" was not reachable on this plan. (Note the discrepancy worth re-checking rather than trusting either
+number: their pricing page's "5 projects" is not what this workspace offered, which was four, and two of those
+usable as web services.) What is live, with the signer public by necessity:
+
+| Piece | Origin | What it is |
+|---|---|---|
+| web | `https://ari-zeta-seven.vercel.app` | Next 16 on Vercel, root directory `apps/web` |
+| api | `https://ari-api.pxxlspace.cv` | pxxl Free web service, `API_HOST=0.0.0.0`, port 4000 |
+| signer | `https://ari-signer.pxxlspace.cv` | pxxl Free web service — **routed, therefore public**, which is the whole job of the delivery gate |
+| db | Neon `ep-rough-forest-b1a4mlmx`, `eu-central-1`, **direct** endpoint | `?sslmode=verify-full&channel_binding=require`, migrated and preflighted |
+
+Re-measured over the public internet at 14:3x today, from this box, not from a dashboard:
+
+- api `GET /healthz` → 200 `{"status":"ok"}`. Signer `GET /healthz` → 200 — healthz is answered **before** the
+  gate, so a platform probe never needs the key, which is the ordering the code intends.
+- Signer `POST /v1/sign` with no bearer → 401 `SIGNER_UNAUTHENTICATED`. Signer `GET /` → **401, not 404**: the
+  gate runs before the path table, so an unauthenticated probe cannot enumerate the service's routes. That
+  difference is the argument for a public signer being survivable, and it is now an observation rather than a
+  reading of `http.ts`.
+- api `POST /v1/transactions/evaluate` with the seeded agent credential gets *past* authentication (the 400 was
+  my hand-built candidate failing `safeParse`, which is a credential-accepted signal). `GET /v1/approvals` →
+  200 `{approvals:[]}` for the operator credential and 401 for the agent credential: the `crd_`/`ucrd_` split
+  holds across a public hop, not just on loopback.
+- web `POST /api/waitlist` → 503 `WAITLIST_UNCONFIGURED`. `WAITLIST_DATABASE_URL` is not set on the Vercel
+  deployment. That is the designed refusal — an unset database must neither throw addresses away nor claim to
+  have saved one — but it does mean the live form currently accepts nothing. **Thread 13.**
+- Earlier in the day, one $100 payment ran end to end through the trio: `COMPLETE`, hold `SETTLED`,
+  `settled=100000000` (six decimals), `settled_requests=1`. The approval loop went $2,000 →
+  `APPROVAL_PENDING` → the agent 401'd on its own approval → one approver vote `GRANTED` → `COMPLETE` on the
+  same `txr_`, token absent from every agent-readable read. Through the Vercel proxy,
+  `POST /api/ari/transactions/authorize` answered 404 **while carrying a valid agent secret** — the allowlist is
+  a server-side list of method+path pairs, so an unlisted route does not exist for a browser tab.
+
+Three things only the deploy could teach:
+
+- **`SIGNER_URL` is exactly `…/v1/sign`** — no trailing slash, no extra path. That one character was
+  `ada49d6`: the signer's 404 body carries no `code`, the client used to default a missing code to
+  `TICKET_INVALID`, `TICKET_INVALID` is terminal, and a day's capacity was released beside a live unredeemed
+  ticket. The api's parked-delivery line on stderr is what made it diagnosable at all.
+- **Vercel redeploys `main` by itself.** The live stylesheet's `last-modified` was `12:09:15Z` against a commit
+  at `12:07:30Z` — two minutes. For the web, pushing to `main` *is* the deploy step. The two pxxl services are
+  still dashboard-redeployed, and there **an environment change without a redeploy is a change that did not
+  happen**: env reaches a new deployment, never a running container.
+- Secrets live in five values in `~/ari-prod.env` (0600, `DATABASE_URL` double-quoted because of its `&`) and
+  the same names typed into each dashboard's env form, unquoted. Nothing is in the repo. The signer's hostname
+  is not the secret; `SIGNER_DELIVERY_KEY` is, and it is set on both ends.
+
+### The phone pass: one meta tag, one hydration wall, and one regression of my own
+
+The brief was "it looks funny on mobile and i cannot see the loading animation… make sure you keep the design".
+So this was a responsiveness pass: no type scale, palette, spacing or component change moved, and
+`pnpm web:preflight` still gates it.
+
+- **Every phone was rendering the desktop page.** `app/layout.tsx` exported a `viewport` carrying `colorScheme`
+  and `themeColor` and no `width`, so Next emitted no `width=device-width` tag. A 390px emulated viewport
+  reported a **753px layout width**, and the desktop control matched its override exactly — which is what pinned
+  the cause to the meta tag rather than to any CSS. Every "funny on mobile" complaint runs through that line,
+  and no media-query work would have moved it.
+- **The loader was present and invisible.** `.page-loader` is opaque from first paint (measured `opacity=1`,
+  `bg=rgb(2,2,2)`), but the mark, wordmark and bar were framer-motion children sitting at their `initial`
+  values (`opacity:0`, `width:0`) and those only animate once React has hydrated — hydration being the slow
+  part on a phone. They are plain DOM with CSS keyframes inside the motion container now, so the entrance is
+  painted rather than hydrated.
+- **`vh` → `dvh`, converted in place.** The first attempt appended `.rail { height: 100vh }` *after* the 900px
+  `height: auto` rule, which pushed the whole console below the fold on a phone. The sweep reported
+  **0 px overflow** — a true statement about width — while the screen was still wrong. That is the one false
+  clean this pass produced, and only the screenshot caught it: the metric measures width, the product has
+  height.
+- **`1fr` is `minmax(auto, 1fr)`**, so the grids the mobile rules "collapsed" to one column could not shrink
+  below their content's min-content width; a 467px table inside a `1fr` grid makes the *page* 467px wide.
+  `minmax(0, 1fr)` is the same layout that can. `pre` got `max-width:100%; overflow-x:auto`, and `/docs` had
+  **no** mobile rules at all before this.
+- **320px `.kv` starvation, found by measurement:** a 132px label column + 20px gap + a 140px
+  `AWAITING_APPROVAL` (10px monospace at `.13em`, `white-space: nowrap`) is 292px inside a 236px panel, so the
+  value column got 84px and the state spilled to `right=334`. Shrinking the label column cannot fix it (labels
+  need ~90px; `LAST REQUEST` is 88px), so `.kv` stacks at ≤480: 2px rows bind a value to its label and the `dd`
+  margin is what separates one pair from the next.
+- Harness: **`/tmp/sweep.mjs <origin> <port> <widths>`** walks 15 routes × 5 widths and flags only overflow that
+  no ancestor clips — the first detector counted clipped marquee tracks and scrollable tables and produced three
+  phantom bugs. **`/tmp/why-overflow.mjs <origin> <path> <width>`** walks the offender's ancestor chain printing
+  rect, `display`, `min-width`, `white-space`, `grid-template-columns` and `overflow-x`, which is what turned
+  "which box is too wide" from a guess into the two lines above. Result: **75/75 combinations clean, 0 unhunted**,
+  and `web:typecheck` / `web:preflight` / `web:build` pass.
+- **`/tmp` here is a 3.8 GiB tmpfs and every Chromium profile dir is ~125 MB.** Fourteen probe runs filled it,
+  after which `--headless=new` cannot start and a CDP harness dies with "no DevTools page target" — or worse,
+  exits on an unsettled `await` printing *nothing*, which looks exactly like a clean sweep. The sweep now bounds
+  every CDP call and counts a `MISS`, and probe profiles are deleted when the run ends. If a browser probe
+  behaves strangely, check `df -h /tmp` before believing the page.
 
 ## Decisions made here, that a later session must not quietly reverse
 
@@ -1034,3 +1129,27 @@ assertions about somebody else's chain.
     cross-tenant. The fix is a reconciliation pass that can name them per tenant through the decision row it
     already joins, not a `DELETE` — `008` withholds that from `ari_app` on purpose, and a one-way door in the
     schema is worth more than a tidy table.
+
+13. **The live marketing form refuses every address.** Measured today against the deployed web:
+    `POST /api/waitlist` → 503 `WAITLIST_UNCONFIGURED`, because `WAITLIST_DATABASE_URL` is not set on the
+    Vercel deployment. The refusal is the design — an unset waitlist database must neither discard addresses
+    nor return a 200 that filed one nowhere — but staging currently collects nothing. Provisioning it means a
+    **second, separate** database: never the ledger's URL, which is exactly what
+    `SHARES_OPERATIONAL_DATABASE` exists to catch — then `apps/web/db/waitlist.sql` applied to it (not to
+    `migrations/`, because `global-setup.ts` re-applies every file there against the ledger schema), then a
+    redeploy, since env does not reach a running container.
+
+14. **What "deployed" does not claim.** Both pxxl services run `SIGNING_PROVIDER=mock` and
+    `SIMULATION_PROVIDER=mock`, so staging proves the plumbing — policy, reservation, sealing, delivery,
+    credentials, row security, the approval loop, the proxy allowlist — and proves nothing about a chain or a
+    dWallet. `ari-signer` still refuses to start rather than fall back to a mock, which is why the mock is an
+    explicit environment value and not an absence. Separately: the Neon database now holds real rows for the
+    staging tenant, so `pnpm db:up`'s local Postgres and the deployed ledger are two different bodies of data,
+    and nothing has ever been migrated from one to the other.
+
+15. **Still running on this box, so the ports are not free:** `ari-api` on 127.0.0.1:4000, `ari-signer` on
+    127.0.0.1:4100, a `cloudflared` quick tunnel forwarding the public
+    `camel-heaven-die-supposed.trycloudflare.com` to :4000, `next start` on :3120 serving the local build, and
+    Postgres on :5435. The tunnel is ephemeral, unauthenticated at the edge and needs restarting whenever the
+    DNS name rotates — it is a measurement tool, not a host, and the pxxl/Vercel trio above has replaced it for
+    anything anyone else would visit.
