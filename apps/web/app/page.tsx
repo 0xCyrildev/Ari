@@ -192,8 +192,8 @@ export default function Page() {
         <div className="hero-grid">
           <div className="hero-copy">
             <Reveal><p className="eyebrow">AI AGENT AUTHORIZATION INFRASTRUCTURE <span>↗</span></p></Reveal>
-            <Reveal className="delay-1"><h1>FINANCIAL<br /><em>CONTROL</em><br />FOR AUTONOMOUS<br />AGENTS.</h1></Reveal>
-            <Reveal className="delay-2"><p className="hero-description">Give AI agents the ability to act on capital without giving them unrestricted access.</p></Reveal>
+            <Reveal className="delay-1"><h1><span className="hero-line">FINANCIAL</span><span className="hero-line"><em>CONTROL</em></span><span className="hero-line">FOR AUTONOMOUS</span><span className="hero-line">AGENTS.</span></h1></Reveal>
+            <Reveal className="delay-2"><p className="hero-description">Agents may request a payment. Policy allows, denies, or asks a human. Signing only happens with a single-use ticket.</p></Reveal>
             <Reveal className="delay-3"><div className="button-row"><ButtonLink href="/console">OPEN THE CONSOLE</ButtonLink><ButtonLink light href="/docs">READ THE DOCS</ButtonLink></div></Reveal>
           </div>
           <Reveal className="hero-terminal delay-2"><div className="terminal-head"><span>ARI / AUTHORIZATION LAYER</span><span>SAMPLE INTENT</span></div><div className="terminal-body"><div className="terminal-line"><span className="muted">agent</span><span>treasury-agent</span></div><div className="terminal-line"><span className="muted">request</span><span>transfer(4200000, 6dp)</span></div><div className="terminal-divider" /><div className="terminal-line"><span className="accent">status</span><strong>AWAITING POLICY</strong></div><div className="terminal-bracket">[ <b>intent</b> → <b>policy</b> → <b>risk</b> → <b>sign</b> ]</div></div></Reveal>

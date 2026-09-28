@@ -23,13 +23,26 @@ a { color: inherit; text-decoration: none; }
 .button-link svg { width: 14px; transition: transform .25s ease; }
 .button-link:hover { background: transparent; color: var(--ink); }.button-link:hover svg { transform: translate(3px,-3px); }
 .button-link-light { background: transparent; color: var(--ink); }.button-link-light:hover { background: var(--ink); color: var(--paper); }
-.section-pad { padding: 140px 8.3vw; position: relative; }.section-pad:not(.hero)::before { content: '間'; position: absolute; top: 34px; right: 8.3vw; color: var(--muted); opacity: .24; font-size: 11px; letter-spacing: .2em; writing-mode: vertical-rl; transition: transform .8s cubic-bezier(.22,1,.36,1), opacity .3s ease; }.section-pad:not(.hero):hover::before { transform: translateY(10px); opacity: .7; }.section-kicker { position: relative; width: fit-content; }.section-kicker::after { content: ''; display: block; width: 34px; height: 1px; margin-top: 14px; background: var(--accent); transform-origin: left; transition: transform .7s cubic-bezier(.22,1,.36,1); }.reveal.is-visible .section-kicker::after { transform: scaleX(1.8); }.hero { position: relative; isolation: isolate; min-height: 100dvh; padding-top: 180px; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; }
+.section-pad { padding: 140px 8.3vw; position: relative; }.section-pad:not(.hero)::before { content: '間'; position: absolute; top: 34px; right: 8.3vw; color: var(--muted); opacity: .24; font-size: 11px; letter-spacing: .2em; writing-mode: vertical-rl; transition: transform .8s cubic-bezier(.22,1,.36,1), opacity .3s ease; }.section-pad:not(.hero):hover::before { transform: translateY(10px); opacity: .7; }.section-kicker { position: relative; width: fit-content; }.section-kicker::after { content: ''; display: block; width: 34px; height: 1px; margin-top: 14px; background: var(--accent); transform-origin: left; transition: transform .7s cubic-bezier(.22,1,.36,1); }.reveal.is-visible .section-kicker::after { transform: scaleX(1.8); }/* The headline is sized against the column it actually occupies, not the viewport.
+   `h1 { font-size: clamp(42px, 9.3vw, 148px) }` inside a grid whose copy column is ~49% of
+   the page meant the third line — "FOR AUTONOMOUS", fourteen characters — needed about 1,165px
+   in a 706px box at 1440px, so it broke mid-word on every screen, desktop included. 10.4cqi
+   is the largest size that keeps all four lines whole at the narrowest two-column width. */
+.hero-copy { container-type: inline-size; }
+.hero h1 { font-size: clamp(30px, 10.4cqi, 96px); }
+.hero-line { display: block; }
+.hero { position: relative; isolation: isolate; min-height: 100dvh; padding-top: 180px; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; }
 .hero-atmosphere { position: absolute; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; background: radial-gradient(circle at 78% 22%, rgba(217,87,69,.13), transparent 27%), radial-gradient(circle at 16% 78%, rgba(198,239,104,.09), transparent 25%), linear-gradient(115deg, transparent 0 48%, rgba(244,240,232,.025) 48.1%, transparent 48.3%); }
 .hero-grid-lines { position: absolute; inset: 0; opacity: .42; background-image: linear-gradient(rgba(23,26,43,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(23,26,43,.08) 1px, transparent 1px); background-size: 72px 72px; mask-image: linear-gradient(to bottom, transparent, black 18%, black 72%, transparent); }
 .hero-orb { position: absolute; border-radius: 999px; filter: blur(1px); mix-blend-mode: multiply; }
 .hero-orb-one { width: min(34vw, 480px); aspect-ratio: 1; right: -8vw; top: 11%; background: radial-gradient(circle at 35% 35%, rgba(255,107,95,.8), rgba(255,107,95,.18) 42%, transparent 70%); }
 .hero-orb-two { width: min(24vw, 340px); aspect-ratio: 1; left: 32%; bottom: 4%; background: radial-gradient(circle at 50% 50%, rgba(185,231,105,.55), rgba(185,231,105,.1) 50%, transparent 72%); }
 .hero-grid { position: relative; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(300px, .7fr); gap: 8vw; align-items: end; }
+/* Below ~1024px the two-column hero leaves the headline a column too narrow for any size that
+   is still a headline — at 900px the container fit gave 39px. The terminal drops below the
+   copy and the copy takes the full measure. This is written after the rule above on purpose:
+   same specificity, and the cascade resolves on order. */
+@media (max-width: 1023px) { .hero-grid { grid-template-columns: 1fr; gap: 48px; } }
 .hero-terminal { box-shadow: 18px 18px 0 rgba(23,26,43,.08); backdrop-filter: blur(10px); }
 .eyebrow, .section-kicker, .terminal-head, .hero-meta, .risk-result p, .trace-row time, .trace-row span, footer { font-size: 10px; letter-spacing: .15em; }
 .eyebrow { margin: 0 0 34px; }.eyebrow span { color: var(--muted); margin-left: 8px; }

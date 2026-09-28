@@ -4,8 +4,12 @@ import './globals.css'
 import { ThemeProvider } from '@/components/theme-provider'
 
 export const metadata: Metadata = {
-  title: 'ARI. Financial control for autonomous agents',
-  description: 'Authorization infrastructure for AI agents that need controlled access to financial assets.',
+  // The category line is the one a stranger can verify against the code: an agent gets the
+  // ability to *request*, and never a key. "Financial control for autonomous agents" stays as
+  // the large type on the page, where it is a claim about the product rather than about the
+  // mechanism.
+  title: 'ARI. Permission layer between an agent and a wallet',
+  description: 'Give an agent the ability to request a payment without giving it a key. Ari evaluates policy, records the decision, and only then lets a signer see a single-use ticket.',
     icons: {
     icon: [
       {
