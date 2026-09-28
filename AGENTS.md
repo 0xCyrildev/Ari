@@ -513,6 +513,55 @@ Gates at this revision: `pnpm typecheck` clean, **406** unit, **258** security. 
 path, indexes, statement combining, the console's seven-fetch layout) and 3 (self-minted
 `ucrd_`, T23 rate limiting) are planned and not started.
 
+### The site audit, and the claims gate (same day)
+
+An outside review of the deployed site (`~/Downloads/Audit.md`) came back with a contradiction
+table. Most of it was right, and none of it was caught by a gate — because `web:preflight` runs
+over the console, the tree this repository designed, while every rotting claim lives on the page
+v0 generated.
+
+- **What was false on the page:** the marquee named `2PC-MPC`, `EVM`, `SUI`, `SOLANA` as the
+  stack; Ethereum read `SUPPORTED TODAY` in a build where nothing settles; pipeline step 06 said
+  "Authorize with 2PC-MPC"; the risk panel listed `CHAIN`, `ASSET` and `CONTRACT` as signals,
+  which `ComputedSignal` excludes precisely because nothing can compute them; the home page and
+  docs both printed a test count (548) on a day the suite held 664. All replaced with what the
+  code says — the marquee now runs the vocabulary the API returns, and the number is gone rather
+  than refreshed, because a build cannot verify it.
+- **The console tile was wrong twice.** `AUTHORISED / settled holds` displayed
+  `settled + HELD` reservations: it counted parked holds as closed *and* used the word the
+  settlement pass has not earned. It is `CAPACITY COMMITTED` now, and the "sample figures"
+  marker is conditional on `view.source` — on a connected tenant, "sample figures" would itself
+  be a lie. Where the audit's suggested wording would have been wrong for live data
+  (`TICKET MINTED` for a reservations sum), the code won, as §0 of the audit says it should.
+- **`web:preflight` now checks claims, not just tokens** — six rules over the marketing and docs
+  tree: no settled-payment prose, no `SUPPORTED TODAY`, no `MPC`, no hardcoded test count, no
+  `LIVE` badge on a marketing card, and an unsupported chain may be named *only* on a line that
+  also says it is not supported. Verified with a control file: reintroduce the claims and all six
+  fire with correct line numbers; delete it and the gate passes. Two distinctions make it
+  survivable — comments are masked rather than deleted so line numbers stay honest, and a
+  sentence that *refuses* the claim ("will not dress a mock signature up as a settled payment")
+  is the honest use of the word, so the rule looks backwards for a negation.
+- **The hero headline was breaking mid-word at every width, not only on phones.** The audit's
+  #1 item had the right symptom and the wrong mechanism: `h1` was sized in `vw` while the
+  headline lives in a grid column ~49% of the viewport, so "FOR AUTONOMOUS" needed ~1,165px in a
+  706px box at 1440. Now sized against its container (`cqi`), with the two-column hero ending at
+  1023px. Measured with `getClientRects` per text node at eight widths: four whole lines
+  everywhere. Two traps recorded in the CSS comments — inlining the lines below 480px so
+  `text-wrap: balance` could choose the breaks put the period of "AGENTS." alone on a line, and
+  the collapse media query must come *after* the base `.hero-grid` rule or it silently does
+  nothing.
+- **`web:sweep` caught a regression the width metric would have hidden:** the unbreakable
+  `REQUIRE_HUMAN_APPROVAL` at 21px is wider than the phone's decision column, which does not
+  clip — it widens the *layout viewport*, so every `position: fixed` element inherits the larger
+  box and the first thing reported was the page loader, three elements from the cause. 75/75
+  combinations clean after the fix.
+
+Still open from the audit, deliberately not done in this pass: the Africa block is still second
+on the page, the pipeline is still taught several times, the waitlist has no qualifying
+questions (and `WAITLIST_DATABASE_URL` is still unset — thread 13), the docs quickstart still
+leads with `git clone`, and the items that are decisions rather than edits: a real domain, npm
+for `@ari/client`, a non-mock signer, decoded-effect policy, balance evidence, settlement.
+
 ## Decisions made here, that a later session must not quietly reverse
 
 - **The digest is derived inside the policy engine, never accepted from the caller.** `evaluate()` used to
