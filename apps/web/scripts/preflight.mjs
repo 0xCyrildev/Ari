@@ -30,6 +30,10 @@ function walk(dir) {
 }
 for (const dir of srcDirs) walk(join(root, dir));
 
+/** Blank a comment's content, keep its line count, so a failure names the right line. */
+const maskComments = (text) =>
+  text.replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, '')).replace(/^\s*\/\/.*$/gm, '');
+
 const stripComments = (text) =>
   text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 
@@ -117,6 +121,107 @@ else console.log('  ok   no unsourced marketing counters');
 const sampleLabel = countIn(/[Ss]ample/);
 if (sampleLabel.total === 0) warns.push('nothing in src/ says "sample": a fixture tenant must be labelled as one');
 else console.log(`  ok   sample data is labelled (${sampleLabel.total} mentions)`);
+
+// --- Claims ------------------------------------------------------------------
+/**
+ * The honesty gate over the copy a visitor reads, as distinct from the design gate above.
+ *
+ * The rules above are scoped to the console on purpose; this one is scoped to the *marketing*
+ * and documentation surfaces, which is where every claim that can rot lives. It exists because
+ * an outside audit found the site claiming `SUPPORTED TODAY` for a chain nothing settles,
+ * naming Sui and Solana in a marquee, printing `2PC-MPC` for a sealing scheme with no provider,
+ * and a test count of 548 on a day the suite held 664 — all of it true once, none of it checked
+ * afterwards. A claim that cannot be re-checked is a claim that will quietly become false, so
+ * the check runs on every build.
+ */
+const claimDirs = ['app', 'components'];
+const claimFiles = [];
+function walkClaims(dir) {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) { if (entry !== 'console') walkClaims(full); }
+    else if (/\.tsx?$/.test(entry)) claimFiles.push(full);
+  }
+}
+for (const dir of claimDirs) walkClaims(join(root, dir));
+// The console's copy is checked too — it was skipped above only because `app/console` is a
+// directory named `console`, which the marketing walk excludes.
+for (const dir of ['app/console', 'components/console']) walkClaims(join(root, dir));
+
+const claims = [...new Set(claimFiles)].map((file) => {
+  // Comments masked rather than removed: a note explaining why the page no longer says
+  // `2PC-MPC` must not trip the rule that bans the phrase, and blanking the comment out
+  // entirely shifts every later line so the failure names the wrong place. Keeping the
+  // newlines costs the check nothing and keeps its line numbers honest.
+  const text = maskComments(readFileSync(file, 'utf8'));
+  return { file: relative(root, file), text, lines: text.split('\n') };
+});
+
+/** A claim rule: name the pattern, the reason, and the file set it applies to. */
+const claimFailures = [];
+const forbidClaim = (label, pattern, files = claims) => {
+  const hits = [];
+  for (const { file, lines } of files) {
+    lines.forEach((line, index) => {
+      if (pattern.test(line)) hits.push(`${file}:${index + 1}`);
+    });
+  }
+  if (hits.length > 0) claimFailures.push(`${label} — ${hits.join(', ')}`);
+  else console.log(`  ok   ${label}`);
+};
+
+/**
+ * Nothing in this build settles anything, so no page may say it does — with three
+ * distinctions, because a blunt word ban would either lie or get ignored.
+ *
+ * `settledRaw` and `reservation.settled` are code and a ledger status: the lookaround excludes
+ * an identifier character on either side. `SETTLED` in all caps is the reservation status the
+ * schema itself uses (`010`), and the tone map that colours it is copy about a row, not a claim
+ * about money — so only the prose forms `[Ss]ettled` are matched. And a sentence that *refuses*
+ * the claim ("will not dress a mock signature up as a settled payment", "None of it says a
+ * payment settled") is the honest use, which is why the check looks backwards 60 characters for
+ * a negation instead of banning the word.
+ */
+const NEGATION = /\b(not|never|none|without|refuse|refused|stops? at|cannot|no)\b/i;
+const settledHits = [];
+for (const { file, lines } of claims) {
+  lines.forEach((line, index) => {
+    for (const match of line.matchAll(/(?<![A-Za-z_])[Ss]ettled(?![A-Za-z_])/g)) {
+      const before = line.slice(Math.max(0, (match.index ?? 0) - 60), match.index ?? 0);
+      const after = line.slice((match.index ?? 0) + 7, (match.index ?? 0) + 37);
+      if (!NEGATION.test(before) && !NEGATION.test(after)) settledHits.push(`${file}:${index + 1}`);
+    }
+  });
+}
+if (settledHits.length > 0) claimFailures.push(`copy claims a payment is settled — ${settledHits.join(', ')}`);
+else console.log('  ok   nothing claims a settled payment');
+forbidClaim('a chain sold as supported today', /SUPPORTED TODAY/);
+forbidClaim('a sealing scheme named that no provider implements', /2PC-MPC|\bMPC\b/);
+forbidClaim('a hardcoded test count (it rots the day anyone commits a test)', /\b\d{2,4}\s+tests\b/);
+// Scoped to the marketing tree: a connected console saying LIVE about a live tenant is a
+// fact, and the badge this rule exists to stop is the one on a fixture card.
+const marketing = claims.filter((c) => !c.file.startsWith('app/console') && !c.file.startsWith('components/console'));
+forbidClaim('a marketing card labelled LIVE', /aria-label="[^"]*LIVE|>\s*LIVE\s*</, marketing);
+
+/**
+ * The unsupported-chain rule cannot be a pattern ban, because the honest sentence that names
+ * them is the one place they *should* appear: "Solana, Sui, Aptos … are not supported". So the
+ * check is on the line's meaning — a chain name is allowed only where the same line says it is
+ * not supported, and a line that names it without that qualifier is the defect.
+ */
+const UNSUPPORTED_CHAINS = /\b(Sui|Solana|Aptos|Cardano|XRP Ledger|XRPL|TON)\b/;
+const NEAR_LINE = /(not supported|no simulation adapter|does not exist|not shipped|needs an address grammar|unsupported)/i;
+const chainHits = [];
+for (const { file, lines } of claims) {
+  lines.forEach((line, index) => {
+    if (UNSUPPORTED_CHAINS.test(line) && !NEAR_LINE.test(line)) chainHits.push(`${file}:${index + 1}`);
+  });
+}
+if (chainHits.length > 0) claimFailures.push(`an unsupported chain is named without saying it is unsupported — ${chainHits.join(', ')}`);
+else console.log('  ok   every unsupported chain is named alongside its refusal');
+
+if (claimFailures.length === 0) console.log(`  ok   claims checked over ${claims.length} files`);
+else failures.push(...claimFailures.map((failure) => `claim: ${failure}`));
 
 // --- Report -----------------------------------------------------------------
 const accentUses = countIn(/text-brand\b|bg-brand\b|border-brand-|text-allow\b|text-caution\b|text-deny\b|bg-hair\b|border-hair\b|text-ink-mute\b|bg-surface\b/g);

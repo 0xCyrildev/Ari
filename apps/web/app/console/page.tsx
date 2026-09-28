@@ -70,8 +70,15 @@ export default function Overview() {
         items={[
           { label: 'ACTIVE AGENTS', value: view.agents.filter((agent) => agent.status === 'ACTIVE').length, note: `${view.agents.length} principals in this tenant` },
           { label: 'REQUESTS TODAY', value: totals.count, note: 'answered by the engine, last 24h' },
-          { label: 'AUTHORISED', value: money(totals.authorizedRaw.toString(), view.unit, true), note: 'settled holds · sample figures' },
-          { label: 'WAITING ON A HUMAN', value: pending.length, tone: 'wait', note: 'approval requests open now' },
+          // The number is `limit_counters.settled + reservations.HELD` for the window —
+          // capacity Ari has committed, which is neither "money moved" nor "settled" in the
+          // sense anyone would use outside this file. The old label said AUTHORISED with a
+          // note reading "settled holds", which was wrong twice: it counted parked holds as
+          // settled, and it used the one word the settlement pass has not earned yet.
+          // The sample marker is conditional because on a connected tenant "sample figures"
+          // would itself be a false claim.
+          { label: 'CAPACITY COMMITTED', value: money(totals.authorizedRaw.toString(), view.unit, true), note: `holds closed and holds parked in the window · no funds moved${view.source === 'sample' ? ' · sample figures' : ''}` },
+          { label: 'WAITING ON A HUMAN', value: pending.length, tone: 'wait', note: `approval requests open now${view.source === 'sample' ? ' · sample figures' : ''}` },
           { label: 'REFUSED', value: totals.denied, tone: 'stop', note: 'denied by policy, last 24h' },
         ]}
       />
