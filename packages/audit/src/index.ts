@@ -101,9 +101,35 @@ export const AuditEventType = [
   'budget.exceeded',
   'evaluation.error',
   'chain.integrity_check',
+  // A reconciliation pass reporting what it found. `chain.integrity_check` is the
+  // precedent: an event whose subject is Ari's own state rather than a customer's action.
+  // It is in the vocabulary because a report that lives only in an HTTP response is not
+  // evidence — the answer to "was this known at the time" needs a row on the chain that an
+  // auditor re-reads, and `003` leaves `event_type` as plain text, so this union is the
+  // only thing between an invented name and a quiet lie.
+  'reconciliation.reported',
 ] as const;
 
 export type AuditEventTypeValue = (typeof AuditEventType)[number];
+
+/**
+ * The runtime half of the gate that until now only existed at compile time.
+ *
+ * `003` leaves `event_type` as plain `text` with no CHECK, which this file has always
+ * named as the reason the TypeScript union matters: an event type that does not exist is
+ * not a silent gap, it is a wrong sentence written into the one artefact an auditor
+ * re-reads. But a union is erased by the first `as`, by a caller in JavaScript, and by
+ * anything that builds the input out of a config value — and every one of those produces a
+ * row that verifies, hashes, exports and lies.
+ *
+ * So the name is checked where the row is written, beside the check on metadata keys, and
+ * the error names the value rather than refusing silently.
+ */
+const EVENT_TYPE_SET: ReadonlySet<string> = new Set<string>(AuditEventType);
+
+export function isAuditEventType(value: string): value is AuditEventTypeValue {
+  return EVENT_TYPE_SET.has(value);
+}
 
 /**
  * Everything an audit event may say about itself.
@@ -164,6 +190,16 @@ export interface SafeLogFields {
   readonly riskLevel?: string;
   readonly riskSignals?: readonly string[];
   readonly riskModel?: string;
+  /**
+   * A reconciliation pass: which finding codes had a non-zero count, and how many findings
+   * there were in total. The per-code detail is deliberately *not* here — it is in the
+   * response, and re-derivable by running the pass again, while this event is the witness
+   * that the pass happened and what it concluded. Six closed names and a count is a fact;
+   * a nested object of numbers would be the first metadata field whose shape nothing
+   * checks.
+   */
+  readonly reconFindings?: readonly string[];
+  readonly reconTotal?: string;
 }
 
 const ALLOWED_FIELDS: readonly string[] = Object.keys({
@@ -202,6 +238,8 @@ const ALLOWED_FIELDS: readonly string[] = Object.keys({
   riskLevel: 0,
   riskSignals: 0,
   riskModel: 0,
+  reconFindings: 0,
+  reconTotal: 0,
 } satisfies Record<keyof SafeLogFields, 0>);
 
 export type AuditSeverity = 'info' | 'notice' | 'warning' | 'critical';
@@ -314,6 +352,9 @@ async function chainHead(client: PoolClient, orgId: string): Promise<string> {
  * transaction may still be about to change.
  */
 export async function appendEvent(tx: AuditTx, input: AuditEventInput): Promise<AuditEvent> {
+  if (!isAuditEventType(input.eventType)) {
+    throw new Error(`unknown audit event type "${input.eventType}"`);
+  }
   const metadata = input.metadata ?? {};
   assertRedactable(metadata);
   const reasonCodes = input.reasonCodes ?? [];

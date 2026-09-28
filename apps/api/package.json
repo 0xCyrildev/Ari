@@ -17,6 +17,7 @@
     "@ari/ledger": "workspace:*",
     "@ari/policies": "workspace:*",
     "@ari/policy-engine": "workspace:*",
+    "@ari/reconciliation": "workspace:*",
     "@ari/risk-engine": "workspace:*",
     "@ari/schemas": "workspace:*",
     "@ari/signing": "workspace:*",

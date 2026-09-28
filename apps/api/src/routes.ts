@@ -37,6 +37,7 @@ import {
 } from '@ari/identity';
 import { readEventLog, verifyEventLog } from '@ari/audit';
 import { activateVersion, createPolicy } from '@ari/policies';
+import { recordReport, runReconciliation } from '@ari/reconciliation';
 import {
   approvalDetail,
   listApprovals,
@@ -828,6 +829,62 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
       };
     }),
   );
+
+  // ---------------------------------------------------------------------------
+  // Reconciliation: the pass that asks "is anything stuck", and answers in the open.
+  //
+  // Two routes rather than one flag, because the difference between them is a write to the
+  // audit chain and that deserves its own method: `GET` reads and reports, `POST` reads,
+  // reports, and puts one event on the chain saying what it concluded. An operator who wants
+  // the numbers now can refresh; an operator who wants evidence that the numbers were known
+  // on a date has to ask for that deliberately.
+  //
+  // There is no scheduler, and that is a decision rather than an omission. A report-only
+  // pass needs no lock, no timer and no idempotency key; a *correcting* pass would need all
+  // three plus the authority to move money-adjacent state, which is Phase 8's and belongs
+  // with a provider-confirmed callback rather than smuggled in behind a cron.
+  //
+  // Gated on `audit:read`, the scope that already covers "see what happened to this
+  // tenant": the pass reads the same rows that read does, and its one write appends to the
+  // same chain. No new scope, which is the reason `013`'s `scopes <@ …` CHECK does not have
+  // to widen for this.
+  // ---------------------------------------------------------------------------
+
+  const thresholdOf = (query: Record<string, unknown>): number | undefined | GateReply => {
+    const raw = query.thresholdSeconds;
+    if (raw === undefined) return undefined;
+    if (typeof raw !== 'string' || !/^\d{1,5}$/.test(raw)) {
+      return { status: 400, body: { code: 'INVALID_REQUEST', detail: 'thresholdSeconds must be a whole number of seconds' } };
+    }
+    const seconds = Number(raw);
+    if (seconds > 86_400) {
+      return { status: 400, body: { code: 'INVALID_REQUEST', detail: 'thresholdSeconds must be at most 86400' } };
+    }
+    return seconds;
+  };
+
+  const reconcile = (record: boolean) => async (
+    request: { headers: Record<string, string | string[] | undefined>; query: unknown },
+    reply: FastifyReply,
+  ): Promise<void> =>
+    asOperator('audit:read')(request, reply, async (tx) => {
+      const threshold = thresholdOf((request.query ?? {}) as Record<string, unknown>);
+      if (typeof threshold === 'object') return threshold;
+      const report = await runReconciliation(
+        tx.client,
+        tx.orgId,
+        new Date(),
+        typeof threshold === 'number' ? { thresholdSeconds: threshold } : {},
+      );
+      if (record) {
+        await recordReport(tx, report);
+        deps.metrics.noteReconciliation(report.total > 0);
+      }
+      return { status: 200, body: { ...report, recorded: record } };
+    });
+
+  app.get('/v1/operations/reconciliation', (request, reply) => reconcile(false)(request, reply));
+  app.post('/v1/operations/reconciliation', (request, reply) => reconcile(true)(request, reply));
 
   // ---------------------------------------------------------------------------
   // The console's reads.

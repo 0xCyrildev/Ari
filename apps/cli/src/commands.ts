@@ -333,6 +333,41 @@ export const commands: Record<string, Command> = {
     },
   },
 
+  reconcile: {
+    summary: 'ask what is stuck in this tenant, and — unless --no-record — put the answer on the chain',
+    takes: ['threshold', 'no-record', 'interval-ms'],
+    async run({ api, flags, out, err }) {
+      const threshold = optional(flags, 'threshold');
+      if (threshold !== undefined && !/^\d{1,5}$/.test(threshold)) {
+        throw new UsageError('--threshold must be a whole number of seconds (at most 86400)');
+      }
+      const record = !isBooleanFlag(flags, 'no-record');
+      // Absent means one pass, and that is the default on purpose: an operator who types
+      // `ari reconcile` wants an answer now, not a process they have to interrupt. The
+      // interval is a loop in *this* terminal — there is no scheduler in Ari, and a report
+      // that needs nobody to run it is Phase 8's decision with a provider's callback
+      // attached, not something to smuggle in behind a flag.
+      const interval = optional(flags, 'interval-ms');
+      if (interval !== undefined && !/^\d{1,9}$/.test(interval)) {
+        throw new UsageError('--interval-ms must be a whole number of milliseconds');
+      }
+      const path = `/v1/operations/reconciliation${threshold === undefined ? '' : `?thresholdSeconds=${threshold}`}`;
+
+      for (;;) {
+        const report = await api.call({ method: record ? 'POST' : 'GET', path });
+        out(report);
+        const total = typeof report.total === 'number' ? report.total : 0;
+        if (total > 0) {
+          // The JSON is the artefact; this line is so a person watching a terminal notices
+          // there is something to read, without having to parse the pipe to find out.
+          err(`ari: ${total} finding(s)${record ? ', recorded on the chain' : ''} — the codes with counts are above`);
+        }
+        if (interval === undefined) return undefined;
+        await sleep(Number(interval));
+      }
+    },
+  },
+
   'audit export': {
     summary: 'write this organisation’s audit chain to a file',
     takes: ['out'],
