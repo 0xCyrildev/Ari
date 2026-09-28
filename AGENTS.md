@@ -194,7 +194,41 @@ way we learned that the 413 response still reaches the client after `req.destroy
 - `tsx` moved to `dependencies`: both processes run as `node --import tsx …`, so an install that prunes dev
   dependencies yields a container that cannot boot — and `@node-rs/argon2` is the only other production
   dependency, and the thing that hashes credentials.
-- Gates at this revision: `pnpm typecheck` clean, **335** unit, **244** security.
+- Gates at this revision: `pnpm typecheck` clean, **354** unit, **244** security.
+
+### A hosted database is a different security property, not the same one with a new hostname
+
+Every `DATABASE_URL` this repository had ever seen was `127.0.0.1`, where encryption is a
+matter of taste. Choosing an **external Postgres** for the deploy made that invisible
+assumption false, and measuring it turned up something worse than a missing `sslmode`:
+
+- `pg-connection-string@2.14` maps **no `sslmode` at all** to `ssl: undefined` — a plaintext
+  connection. A provider's copy-to-clipboard string is exactly that shape, so the service
+  would boot, pass its health check, enforce row security correctly, and carry the login,
+  the peppered credential lookups and every payment row across the internet unencrypted.
+- It maps `require`, `prefer` and `verify-ca` to a **verifying** socket today, and prints a
+  warning that v3.0.0 / `pg` v9 will give them libpq's weaker meanings. So a rule that
+  accepted `sslmode=require` would be a control now and an unverified connection after a
+  routine dependency bump — which is why the rule names `verify-full` and refuses the rest,
+  including `no-verify` (an impostor answering row-security questions is the one threat
+  `011` exists to hold).
+- **`inspectDatabaseUrl` in `@ari/ledger`** (`src/connection.ts`) is that decision, made from
+  the URL before a socket opens: loopback exempt, `verify-full`/`ssl=true` accepted, anything
+  else refused with the reason and the fix in the sentence. Both `readConfig`s and
+  `scripts/migrate.mts` call it, so a misconfigured deployment never starts — the same shape
+  as `DATABASE_ROLE`, which exists because a silently-wrong database identity reads as working.
+- **`pnpm db:preflight -- <url>`** runs the checks a deploy hinges on in one read-only pass:
+  TLS as *negotiated* (`pg_stat_ssl`) not as requested, `CREATEROLE`/superuser for the login,
+  whether `-c role=ari_app` survives their pooler, whether the advisory lock the audit chain
+  depends on can be taken, RLS coverage using **the same predicate `schema.test.ts` uses**,
+  and connection headroom against the two pools. It never writes; migrations stay
+  `pnpm db:migrate`.
+- Two things it caught while being written, both mine: a first version checked "every table
+  in `ari`" and failed on `organizations`, which has no `org_id` because it *is* the tenant —
+  the invariant is `hasOrgColumn && !rowSecurity` except `signing_tickets`, and the preflight
+  now says so by borrowing that predicate rather than inventing a second one. And
+  `pnpm db:preflight -- <url>` forwards the `--` as an argument, so the script read the
+  literal string `--` as a hostname; positional args now skip it.
 
 ### Pxxl: what was measured, not read
 
@@ -238,12 +272,14 @@ loopback starts cleanly, passes its own health check, and 502s from outside.
 measure it from the api container with `curl http://signer:4100/healthz` — and the gate stays on as defence in
 depth at no cost.
 
-**Three measurements decide any Pxxl deploy**, in this order: does the managed login have `rolcreaterole`
+**Three measurements decide any Pxxl deploy** — `pnpm db:preflight -- '<hosted url>'` runs all
+of them against the database and exits non-zero on any failure, so do it before pointing a
+service at anything. In order: does the managed login have `rolcreaterole`
 (`migrations/003_audit.sql` runs `CREATE ROLE ari_app NOLOGIN NOINHERIT`, and `scripts/migrate.mts` names the
-fallback); does `options: '-c role=ari_app'` survive their **database router** — probe with
-`SELECT session_user, current_user` and if it is not `ari_app`, the answer is a session-mode endpoint, **never
+fallback); does `options: '-c role=ari_app'` survive their **database router** — the probe is
+`SELECT session_user, current_user`, and if it is not `ari_app`, the answer is a session-mode endpoint, **never
 dropping `DATABASE_ROLE`**, which is the silent multi-tenant hole the startup refusal exists to prevent; and
-whether an unrouted service is addressable at all.
+whether an unrouted service is addressable at all, which only the dashboard can tell you.
 
 **Migrations are run from outside the service, once:** `DATABASE_URL='<hosted url>' pnpm db:migrate`. Not
 from the app — `ari_app` holds no DDL rights by design (`008`), and not from a test harness that would skip on

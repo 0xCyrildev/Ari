@@ -9,9 +9,11 @@
  */
 
 import { ApprovalKey } from '@ari/approvals';
+import { inspectDatabaseUrl } from '@ari/ledger';
 import { behaviouralProvider } from '@ari/risk-engine';
+import { isLoopbackHost } from '@ari/schemas';
 import { EvmForkProvider, type EvmProviderConfig } from '@ari/simulation';
-import { TicketKey, isLoopbackHost } from '@ari/signing';
+import { TicketKey } from '@ari/signing';
 import fastify from 'fastify';
 import { Pool } from 'pg';
 import type { PipelineDeps } from './authorize.js';
@@ -66,7 +68,15 @@ export function readConfig(env: NodeJS.ProcessEnv): ApiConfig {
   const approvalSecret = env.APPROVAL_KEY ?? '';
   const bootstrapToken = env.ORG_BOOTSTRAP_TOKEN ?? '';
 
-  if (databaseUrl.length === 0) problems.push('DATABASE_URL is required');
+  if (databaseUrl.length === 0) {
+    problems.push('DATABASE_URL is required');
+  } else {
+    // A hosted database reached over a plaintext socket is not a degraded connection, it
+    // is a different security property: the row security that `011` exists to enforce is
+    // only worth anything if the party answering the query is the database.
+    const db = inspectDatabaseUrl(databaseUrl);
+    if (db.problem !== null) problems.push(db.problem);
+  }
   if (!ROLE_PATTERN.test(databaseRole)) problems.push('DATABASE_ROLE must be a plain Postgres role name');
   if (masterPepper.length < 32) problems.push('CREDENTIAL_PEPPER must be at least 32 characters');
   if (ticketSecret.length < 32) problems.push('TICKET_KEY must be at least 32 characters');

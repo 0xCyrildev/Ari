@@ -9,11 +9,11 @@
  * signer is an unavailable signer that reports success.
  */
 
-import { claimTicket, withTransaction } from '@ari/ledger';
+import { claimTicket, inspectDatabaseUrl, withTransaction } from '@ari/ledger';
+import { isLoopbackHost } from '@ari/schemas';
 import {
   MockSigningProvider,
   TicketKey,
-  isLoopbackHost,
   redeemAndSign,
   type SignerDeps,
   type TicketStore,
@@ -60,7 +60,15 @@ export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
 
   const problems: string[] = [];
   if (secrets.length < 32) problems.push('TICKET_KEY must be at least 32 characters (openssl rand -base64 48)');
-  if (databaseUrl.length === 0) problems.push('DATABASE_URL is required: single use is a database fact, not a memory');
+  if (databaseUrl.length === 0) {
+    problems.push('DATABASE_URL is required: single use is a database fact, not a memory');
+  } else {
+    // This is the process that decides whether a ticket has been spent, so it is the one
+    // whose database answer matters most — and a plaintext connection to a hosted
+    // Postgres means whoever answers is not provably the database.
+    const db = inspectDatabaseUrl(databaseUrl);
+    if (db.problem !== null) problems.push(db.problem);
+  }
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(databaseRole)) problems.push('DATABASE_ROLE must be a plain Postgres role name');
   if (wallets.length === 0) problems.push('SIGNER_WALLETS must name at least one wallet this signer holds capacity for');
   // Two rules, and the order between them is the point: setting the secret always turns

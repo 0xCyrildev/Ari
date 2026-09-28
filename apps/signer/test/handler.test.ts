@@ -23,7 +23,15 @@ describe('what ari-signer will refuse to start as', () => {
   });
 
   it('refuses to run without a database, because single use is not a memory', () => {
-    expect(() => readConfig(env({ DATABASE_URL: '' }))).toThrow(/DATABASE_URL/);
+    expect(() => readConfig(env({ DATABASE_URL: '' }))).toThrow(/DATABASE_URL is required/);
+  });
+
+  it('refuses a hosted database it would reach in plaintext', () => {
+    // The default in node-postgres is no TLS, and a provider's connection string is
+    // written to be pasted, not audited.
+    expect(() => readConfig(env({ DATABASE_URL: 'postgresql://ari:ari@db.example.com/ari' }))).toThrow(/sslmode=verify-full/);
+    expect(() => readConfig(env({ DATABASE_URL: 'postgresql://ari:ari@db.example.com/ari?sslmode=require' }))).toThrow(/scheduled to change/);
+    expect(() => readConfig(env({ DATABASE_URL: 'postgresql://ari:ari@db.example.com/ari?sslmode=verify-full' }))).not.toThrow();
   });
 
   it('refuses to run holding no wallets, rather than signing nothing successfully', () => {

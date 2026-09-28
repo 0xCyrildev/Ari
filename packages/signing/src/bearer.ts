@@ -38,16 +38,3 @@ export function acceptsBearerSecret(configured: string, presented: string | null
   const candidate = Buffer.from(presented, 'utf8');
   return expected.byteLength === candidate.byteLength && timingSafeEqual(expected, candidate);
 }
-
-const LOOPBACK_HOST = /^(?:127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|localhost|\[::1\]|::1)$/;
-
-/**
- * The only address shape this repository treats as "not reachable beyond this machine".
- *
- * Both processes ask this one question of their own bind or of the peer address they
- * were configured with, so the rule that decides whether a secret is *required* is not
- * two rules that can drift apart on either side of a boundary.
- */
-export function isLoopbackHost(host: string): boolean {
-  return LOOPBACK_HOST.test(host);
-}

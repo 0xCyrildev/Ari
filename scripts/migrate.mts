@@ -25,6 +25,7 @@
  * that, run this against a role with the rights and leave the services on `ari_app`.
  */
 
+import { inspectDatabaseUrl } from '@ari/ledger';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
@@ -40,6 +41,16 @@ const files = readdirSync(MIGRATIONS_DIR)
 if (files.length === 0) {
   console.error(`db:migrate: no .sql files found in ${MIGRATIONS_DIR}`);
   process.exit(1);
+}
+
+// The same rule the two services enforce, and this connection is the one carrying role
+// grants, triggers and the login password — the least forgiving plaintext hop of the three.
+{
+  const db = inspectDatabaseUrl(DATABASE_URL);
+  if (db.problem !== null) {
+    console.error(`db:migrate: ${db.problem}`);
+    process.exit(1);
+  }
 }
 
 const pool = new Pool({ connectionString: DATABASE_URL, max: 1 });

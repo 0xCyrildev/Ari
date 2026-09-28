@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptsBearerSecret, bearerToken, isLoopbackHost } from '../src/index.js';
+import { acceptsBearerSecret, bearerToken } from '../src/index.js';
 
 describe('the bearer grammar', () => {
   it('reads a scheme it names, and nothing else', () => {
@@ -48,19 +48,5 @@ describe('acceptsBearerSecret', () => {
     expect(unicode.length).toBe(secret.length);
     expect(Buffer.byteLength(unicode, 'utf8')).not.toBe(Buffer.byteLength(secret, 'utf8'));
     expect(acceptsBearerSecret(secret, unicode)).toBe(false);
-  });
-});
-
-describe('isLoopbackHost', () => {
-  it('names the addresses that cannot be reached beyond this machine', () => {
-    for (const host of ['127.0.0.1', '127.0.0.53', 'localhost', '::1', '[::1]']) {
-      expect(isLoopbackHost(host)).toBe(true);
-    }
-  });
-
-  it('does not call a public address loopback because it looks local', () => {
-    for (const host of ['0.0.0.0', '10.0.0.4', '172.17.0.2', 'signer', 'gateway.pxxl.app', 'localhost.evil']) {
-      expect(isLoopbackHost(host)).toBe(false);
-    }
   });
 });
