@@ -2,6 +2,7 @@ import { newId, type CanonicalDigest } from '@ari/schemas';
 import { InMemoryTicketStore, type SignerOutcome } from '@ari/signing';
 import { describe, expect, it } from 'vitest';
 import { createSignHandler, responseFor } from '../src/handler.js';
+import { KeyRing } from '@ari/signing';
 import { guardStore, readConfig } from '../src/main.js';
 
 const walletId = newId('wal');
@@ -77,6 +78,21 @@ describe('the delivery gate a signer may start with', () => {
 
   it('refuses a too-short secret rather than gating with it', () => {
     expect(() => readConfig(env({ SIGNER_DELIVERY_KEY: 'changeme' }))).toThrow(/SIGNER_DELIVERY_KEY must be at least 32 characters/);
+  });
+
+  it('refuses a rotation window it cannot name, and accepts one it can', () => {
+    // The signer is the process that has to hold the ring *wider* than the plane feeding
+    // it, for longer: a ticket minted under v1 must still redeem while v2 is arriving, and
+    // `docs/OPERATIONS.md` fixes the order the two deployments go out in because of it.
+    expect(() => readConfig(env({ TICKET_KEY_PREVIOUS: 'p'.repeat(48) }))).toThrow(
+      /TICKET_KEY_PREVIOUS_ID is required/,
+    );
+    expect(() => readConfig(env({ TICKET_KEY_PREVIOUS: 'short', TICKET_KEY_PREVIOUS_ID: 'v0' }))).toThrow(
+      /TICKET_KEY_PREVIOUS must be at least 32 characters/,
+    );
+    const ring = readConfig(env({ TICKET_KEY_ID: 'v2', TICKET_KEY_PREVIOUS: 'p'.repeat(48), TICKET_KEY_PREVIOUS_ID: 'v1' })).ticketKey;
+    expect(ring).toBeInstanceOf(KeyRing);
+    if (ring instanceof KeyRing) expect(ring.all.map((key) => key.id)).toEqual(['v2', 'v1']);
   });
 
   it('takes its log level from the shared name, and its own when it needs to disagree', () => {

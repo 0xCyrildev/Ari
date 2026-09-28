@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { KeyRing, TicketKey } from '@ari/signing';
 import { readConfig } from '../src/server.js';
 
 const LOCAL = 'postgresql://ari:ari@127.0.0.1:5435/ari';
@@ -88,5 +89,44 @@ describe('what ari-api refuses to start as', () => {
     expect(message).toContain('TICKET_KEY');
     expect(message).toContain('ORG_BOOTSTRAP_TOKEN');
     expect(message).toContain('sslmode=verify-full');
+  });
+
+  it('refuses a rotation window that cannot be named', () => {
+    // A previous secret with no id is a key this process trusts and cannot point at. The id
+    // exists so an operator can say which seal is being retired; without it "v1 is gone" is
+    // an unfalsifiable sentence, so the window is refused at startup instead of six weeks
+    // later when somebody tries to close it.
+    expect(() => readConfig(env({ TICKET_KEY_PREVIOUS: 'p'.repeat(48) }))).toThrow(
+      /TICKET_KEY_PREVIOUS_ID is required/,
+    );
+    expect(() => readConfig(env({ APPROVAL_KEY_PREVIOUS: 'p'.repeat(48), APPROVAL_KEY_PREVIOUS_ID: '' }))).toThrow(
+      /APPROVAL_KEY_PREVIOUS_ID is required/,
+    );
+    expect(() => readConfig(env({ TICKET_KEY_PREVIOUS: 'short', TICKET_KEY_PREVIOUS_ID: 'v0' }))).toThrow(
+      /TICKET_KEY_PREVIOUS must be at least 32 characters/,
+    );
+  });
+
+  it('holds a head that signs and one previous seal that still verifies', () => {
+    const ring = readConfig(env({
+      TICKET_KEY_ID: 'v2',
+      TICKET_KEY_PREVIOUS: 'p'.repeat(48),
+      TICKET_KEY_PREVIOUS_ID: 'v1',
+    })).ticketKey;
+    expect(ring).toBeInstanceOf(KeyRing);
+    if (!(ring instanceof KeyRing)) return;
+    expect(ring.all.map((key) => key.id)).toEqual(['v2', 'v1']);
+    expect(ring.head.id).toBe('v2');
+    // A single key stays a single key. The ring is an option, not a new required shape, so
+    // every deployment that never thought about rotation is untouched by this.
+    expect(readConfig(env()).ticketKey).toBeInstanceOf(TicketKey);
+  });
+
+  it('refuses two keys in one ring under the same id', () => {
+    expect(() => readConfig(env({
+      TICKET_KEY_ID: 'v1',
+      TICKET_KEY_PREVIOUS: 'p'.repeat(48),
+      TICKET_KEY_PREVIOUS_ID: 'v1',
+    }))).toThrow(/two keys in the ring carry the id "v1"/);
   });
 });

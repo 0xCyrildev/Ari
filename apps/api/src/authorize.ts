@@ -44,7 +44,7 @@ import {
 import { evaluate, type CompiledPolicy, type EvaluationState } from '@ari/policy-engine';
 import { loadVersion, type StoredVersion } from '@ari/policies';
 import { CanonicalDigest, Decision, type AuthorizationTicket, type CandidateTransaction, type ReasonCode } from '@ari/schemas';
-import { TicketKey, claimsFor, sealTicket, TICKET_TTL_MS } from '@ari/signing';
+import { TicketKey, claimsFor, sealTicket, type Seal, TICKET_TTL_MS } from '@ari/signing';
 import type { RiskProvider } from '@ari/risk-engine';
 import { kernelProjection, unavailable, type SimulationProvider, type SimulationResult } from '@ari/simulation';
 import { canTransition, canonicalize, computeDigest, LifecycleState } from '@ari/transaction-engine';
@@ -57,8 +57,8 @@ export interface PipelineDeps {
    * either invalidates the other, which is the kind of coupling that turns a
    * routine rotation into an outage.
    */
-  readonly ticketKey: TicketKey;
-  readonly approvalKey: ApprovalKey;
+  readonly ticketKey: Seal<TicketKey>;
+  readonly approvalKey: Seal<ApprovalKey>;
   /** Out of the pipeline's hands entirely — the gateway verifies, this evaluates. */
   readonly masterPepper: string;
   readonly nowMs: () => bigint;

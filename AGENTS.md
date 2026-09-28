@@ -7,7 +7,10 @@ asserting) still applies to everything, and it is the reason this repo's claims 
 Permission infrastructure for autonomous money: an AI agent asks to pay, a compiled policy decides
 `ALLOW | REQUIRE_HUMAN_APPROVAL | DENY`, a sealed single-use ticket releases a signature in a second
 process. Ika dWallets are the eventual signer. Read `docs/ASSUMPTIONS.md` first, then `ARCHITECTURE.md`,
-then `ROADMAP.md`, then `THREAT_MODEL.md`.
+then `ROADMAP.md`, then `THREAT_MODEL.md`. `docs/OPERATIONS.md` is for whoever is holding a
+deployment: the order the services start in, what each health and metrics answer actually
+claims, how to read a reconciliation report, and the one rotation (`CREDENTIAL_PEPPER`) that
+still has no safe path.
 
 ## State — 2026-09-26 (third pass)
 
@@ -303,14 +306,16 @@ loopback starts cleanly, passes its own health check, and 502s from outside.
 measure it from the api container with `curl http://signer:4100/healthz` — and the gate stays on as defence in
 depth at no cost.
 
-**Three measurements decide any Pxxl deploy** — `pnpm db:preflight -- '<hosted url>'` runs all
-of them against the database and exits non-zero on any failure, so do it before pointing a
-service at anything. In order: does the managed login have `rolcreaterole`
+**Three measurements decide any Pxxl deploy** — the first two are database questions and
+`pnpm db:preflight -- '<hosted url>'` runs them (plus TLS-as-negotiated, the advisory lock,
+RLS coverage and connection headroom) in one read-only pass, exiting non-zero on any failure,
+so do it before pointing a service at anything. In order: does the managed login have `rolcreaterole`
 (`migrations/003_audit.sql` runs `CREATE ROLE ari_app NOLOGIN NOINHERIT`, and `scripts/migrate.mts` names the
 fallback); does `options: '-c role=ari_app'` survive their **database router** — the probe is
 `SELECT session_user, current_user`, and if it is not `ari_app`, the answer is a session-mode endpoint, **never
 dropping `DATABASE_ROLE`**, which is the silent multi-tenant hole the startup refusal exists to prevent; and
-whether an unrouted service is addressable at all, which only the dashboard can tell you.
+whether an unrouted service is addressable at all, which is a platform question no database
+preflight can answer and only the dashboard — or a `curl` from the other container — tells you.
 
 **Migrations are run from outside the service, once:** `DATABASE_URL='<hosted url>' pnpm db:migrate`. Not
 from the app — `ari_app` holds no DDL rights by design (`008`), and not from a test harness that would skip on
@@ -428,6 +433,85 @@ So this was a responsiveness pass: no type scale, palette, spacing or component 
   exits on an unsettled `await` printing *nothing*, which looks exactly like a clean sweep. The sweep now bounds
   every CDP call and counts a `MISS`, and probe profiles are deleted when the run ends. If a browser probe
   behaves strangely, check `df -h /tmp` before believing the page.
+
+### Stage 1 — operability: what the processes say about themselves (seventh pass, 2026-09-28)
+
+The deploy worked; *observing* it did not. `fastify({ logger: false })` made `app.log` a no-op,
+so every silence this repository chose **outward** — the 500 that answers `{code:'INTERNAL'}`,
+the parked delivery that writes no audit event by decision rather than by omission — was
+silence **inward** too, and the only way to learn what broke was to reproduce it. Stage 1 of
+the current plan is about that, and it is shipped.
+
+- **`apps/api/src/observe.ts` + `apps/signer/src/log.ts`**: JSON on stdout, level from
+  `LOG_LEVEL` — the name `.env.example` had carried since before either process read anything,
+  which is the `API_HOST` defect in another variable — with `API_LOG_LEVEL`/`SIGNER_LOG_LEVEL`
+  overriding per process and both accepting the same seven words. A typo becomes `info` rather
+  than a refusal: a log level must not stop a payment service.
+- **One id across the boundary.** `x-request-id` is echoed on every response, minted when the
+  caller sent none, honoured only as a bounded opaque string, and forwarded to the signer as a
+  header — never in the body, which stays the two things the verifier reads. Both processes
+  write it as `httpRequestId`, and the ledger row separately as `transactionRequestId`: three
+  identifiers, three names. Observed on live processes with a mismatched delivery key, the
+  api's `warn` and the signer's `info` carry the same id, `reservation:"HELD"`, and no ticket
+  in either log.
+- **`/healthz` is a claim about the service now** — `probeDatabase` in `@ari/ledger`, 500 ms
+  bounded, `SELECT 1`, `200`/`503` with `{status, db, version}` — shared between the two
+  processes so they cannot disagree about the word. It stays ahead of the signer's gate and
+  the path table, which is asserted.
+- **`/metrics` exists only if `METRICS_TOKEN` does** (404 otherwise, not a 401 advertising a
+  door), hand-written exposition, and **no series labelled by tenant, agent, credential,
+  digest or request id**: a scrape endpoint with a token and no principal must not answer "who
+  is moving how much" (T20). The assertion is on label *keys* and identifier-shaped *values*,
+  not on the whole text — `ari_api_credential_verifications_total` is a name that has to say
+  what it counts.
+- **`@ari/reconciliation` reports and repairs nothing.** Six codes, one SELECT each, each
+  naming its tenant in the `WHERE` — which for `signing_tickets` *is* the isolation, since
+  `011` leaves that table outside row security on purpose. It releases nothing, re-delivers
+  nothing, prunes nothing: a sweep that could release a hold is a sweep that will one day
+  release the wrong one, and non-terminal refusals keep capacity parked by design. One new
+  event, `reconciliation.reported`, carrying the non-zero codes and the total — the numbers are
+  re-derivable; the event is the witness that you looked.
+- **No scheduler, deliberately.** `GET`/`POST /v1/operations/reconciliation` and
+  `ari reconcile`, gated on `audit:read` so `013`'s scope CHECK does not widen. A correcting
+  pass would need a lock, a timer, an idempotency key and the authority to move money-adjacent
+  state, which is Phase 8's with a provider-confirmed callback attached.
+- **Key rings, and the order they deploy in.** `TICKET_KEY_ID`/`TICKET_KEY_PREVIOUS` (and the
+  approval pair) let one generation verify while the other signs; the head always signs. A
+  previous secret with no id is refused at startup — a key nobody can name is a key nobody can
+  retire. The wire format carries **no** `kid`, weighed and kept, so a failed seal is
+  indistinguishable from a forgery and the *order* is the control, which is what
+  `docs/OPERATIONS.md` §5 exists to say. `CREDENTIAL_PEPPER` rotation is **not** built, and the
+  doc says why: Argon2id-over-pepper means a new pepper 401s every credential at once.
+- **`docs/OPERATIONS.md`** is the operator's file: preflight before anything starts, the two
+  `0.0.0.0` binds, the quoted `DATABASE_URL` in a shell file and unquoted in a dashboard form,
+  what each health/metrics answer actually promises, how to read a report, the rotation order,
+  backups, and what staging does not prove.
+
+Four things this pass found by being written, each pinned by a test now:
+
+- **An approval waiting on a human holds no capacity.** `reserve` is downstream of the approval
+  branch, so the first version of that query — which required a `HELD` reservation beside the
+  expired approval — could never fire. That is the defect this file already records for a
+  policy option that silently evaluates to false, arriving in a monitoring query. It is
+  `APPROVAL_EXPIRED_UNANSWERED` now, and the assertion is `1`, not `0`.
+- **A shared bind array across six statements is two different Postgres errors**, both
+  measured here: a list longer than the statement references, and a placeholder bound but
+  never mentioned (`could not determine data type of parameter $2` — a parameter's type is
+  inferred from where it is used, so an unused one has none). Each query declares its own binds
+  beside its own SQL, and a unit test asserts the list is dense `$1…$n`.
+- **`event_type` had no gate but the TypeScript union.** `003` leaves it plain text, and this
+  file has always named that as why the union matters — but a union is erased by the first
+  `as`, by a caller building input out of config, or by anything in JavaScript, and the row
+  that produces verifies, hashes, exports and lies. `appendEvent` now refuses a name outside
+  the vocabulary at the point the row would be written.
+- **`--token` is visible in the process list**, and a script launcher echoes argv before
+  running it: `pnpm ari --token …` printed a live bearer into this session's transcript while
+  the reconciler was being verified. The flag still works — refusing it would break every
+  script that exists — but the tool says so once and names `ARI_TOKEN`.
+
+Gates at this revision: `pnpm typecheck` clean, **406** unit, **258** security. Stages 2 (read
+path, indexes, statement combining, the console's seven-fetch layout) and 3 (self-minted
+`ucrd_`, T23 rate limiting) are planned and not started.
 
 ## Decisions made here, that a later session must not quietly reverse
 

@@ -114,7 +114,15 @@ export async function run(
         say('ari: --url is required (or set ARI_URL). This tool never guesses a deployment: a wrong one means a real payment asked of the wrong place.');
         return { exit: 2, printed };
       }
-      result = await found.run({ ...context, api: new Api(base, flag(flags, 'token', 'ARI_TOKEN')) });
+      const token = flag(flags, 'token', 'ARI_TOKEN');
+      if (typeof flags.token === 'string' && flags.token.length > 0) {
+        // The secret works from the flag, and this says once where it is visible: argv is
+        // readable by any process on the machine, and a script launcher (`pnpm ari …`)
+        // echoes the command line it is about to run before it runs it. `ARI_TOKEN` reaches
+        // the same place without either.
+        say('ari: --token is visible in the process list and in any launcher echo — prefer ARI_TOKEN for a secret that outlives this shell.');
+      }
+      result = await found.run({ ...context, api: new Api(base, token) });
     }
     if (result !== undefined) out(result);
     return { exit: 0, printed };

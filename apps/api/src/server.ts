@@ -8,12 +8,12 @@
  * check.
  */
 
-import { ApprovalKey } from '@ari/approvals';
+import { ApprovalKey, type Seal as ApprovalSeal } from '@ari/approvals';
 import { inspectDatabaseUrl, probeDatabase } from '@ari/ledger';
 import { behaviouralProvider } from '@ari/risk-engine';
 import { isLoopbackHost } from '@ari/schemas';
 import { EvmForkProvider, type EvmProviderConfig } from '@ari/simulation';
-import { TicketKey } from '@ari/signing';
+import { ringOf, TicketKey, type Seal } from '@ari/signing';
 import fastify from 'fastify';
 import type { FastifyBaseLogger } from 'fastify';
 import { Pool } from 'pg';
@@ -36,8 +36,8 @@ export interface ApiConfig {
    */
   readonly databaseRole: string;
   readonly masterPepper: string;
-  readonly ticketKey: TicketKey;
-  readonly approvalKey: ApprovalKey;
+  readonly ticketKey: Seal<TicketKey>;
+  readonly approvalKey: ApprovalSeal<ApprovalKey>;
   readonly bootstrapToken: string;
   readonly signerUrl: string;
   /**
@@ -144,6 +144,22 @@ export function readConfig(env: NodeJS.ProcessEnv): ApiConfig {
     }
   }
 
+  // Rotation, as far as a configuration can take it: a head that signs and one previous
+  // seal still honoured. The previous secret is useless without its id, because the whole
+  // point of naming a key is to be able to say out loud which one is being retired — and a
+  // ring whose members cannot be named is how an operator ends up trusting a secret they
+  // believe they dropped. See `docs/OPERATIONS.md` for the order the two processes go in.
+  const ticketPrevious = env.TICKET_KEY_PREVIOUS ?? '';
+  const approvalPrevious = env.APPROVAL_KEY_PREVIOUS ?? '';
+  if (ticketPrevious.length > 0 && (env.TICKET_KEY_PREVIOUS_ID ?? '').length === 0) {
+    problems.push('TICKET_KEY_PREVIOUS_ID is required when TICKET_KEY_PREVIOUS is set');
+  }
+  if (approvalPrevious.length > 0 && (env.APPROVAL_KEY_PREVIOUS_ID ?? '').length === 0) {
+    problems.push('APPROVAL_KEY_PREVIOUS_ID is required when APPROVAL_KEY_PREVIOUS is set');
+  }
+  if (ticketPrevious.length > 0 && ticketPrevious.length < 32) problems.push('TICKET_KEY_PREVIOUS must be at least 32 characters when set');
+  if (approvalPrevious.length > 0 && approvalPrevious.length < 32) problems.push('APPROVAL_KEY_PREVIOUS must be at least 32 characters when set');
+
   if (problems.length > 0) throw new Error(`ari-api cannot start:\n  - ${problems.join('\n  - ')}`);
 
   const metricsSecret = env.METRICS_TOKEN ?? '';
@@ -158,8 +174,14 @@ export function readConfig(env: NodeJS.ProcessEnv): ApiConfig {
     databaseUrl,
     databaseRole,
     masterPepper,
-    ticketKey: new TicketKey(ticketSecret),
-    approvalKey: new ApprovalKey(approvalSecret),
+    ticketKey: ringOf(
+      new TicketKey(ticketSecret, env.TICKET_KEY_ID ?? 'v1'),
+      ticketPrevious.length === 0 ? undefined : new TicketKey(ticketPrevious, env.TICKET_KEY_PREVIOUS_ID!),
+    ),
+    approvalKey: ringOf(
+      new ApprovalKey(approvalSecret, env.APPROVAL_KEY_ID ?? 'v1'),
+      approvalPrevious.length === 0 ? undefined : new ApprovalKey(approvalPrevious, env.APPROVAL_KEY_PREVIOUS_ID!),
+    ),
     bootstrapToken,
     signerUrl,
     signerDeliveryKey: signerDeliverySecret.length === 0 ? null : signerDeliverySecret,

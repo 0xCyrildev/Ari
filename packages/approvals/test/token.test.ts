@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ringOf } from '@ari/signing';
 import { ApprovalKey, approvalPayload, openApproval, sealApproval, type ApprovalClaims } from '../src/token.js';
 
 const KEY = new ApprovalKey('a'.repeat(48));
@@ -92,5 +93,34 @@ describe('sealing and opening', () => {
     const stale = claims({ expiresAtMs: 1n });
     const opened = openApproval(sealApproval(stale, KEY), KEY);
     expect(opened.ok).toBe(true);
+  });
+});
+
+describe('rotating the approval seal', () => {
+  const OLD = new ApprovalKey('a'.repeat(48), 'v1');
+  const NEW = new ApprovalKey('n'.repeat(48), 'v2');
+
+  it('honours a token sealed before the rotation while the window is open', () => {
+    // An approval token outlives a deploy: it is minted when a human votes and spent when
+    // the agent retries, which can be minutes later. A ring that verified only the head
+    // would refuse a vote that was honestly cast, and the agent would be told its own
+    // approval does not exist.
+    const outstanding = sealApproval(claims(), OLD);
+    const opened = openApproval(outstanding, ringOf(NEW, OLD));
+    expect(opened.ok).toBe(true);
+    if (opened.ok) expect(opened.keyId).toBe('v1');
+  });
+
+  it('seals with the head, so a closed window does not silently stay open', () => {
+    const fresh = sealApproval(claims(), ringOf(NEW, OLD));
+    // Verifiable by the new key alone: if a ring ever sealed with `previous`, retiring it
+    // would strand tokens this process had minted after the retirement decision.
+    expect(openApproval(fresh, NEW)).toMatchObject({ ok: true, keyId: 'v2' });
+  });
+
+  it('refuses the retired seal once it is out of the ring, in the same words as a wrong secret', () => {
+    const retired = sealApproval(claims(), OLD);
+    const wrongSecret = sealApproval(claims(), new ApprovalKey('w'.repeat(48), 'v2'));
+    expect(openApproval(retired, NEW)).toEqual(openApproval(wrongSecret, NEW));
   });
 });

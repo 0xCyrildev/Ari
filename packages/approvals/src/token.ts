@@ -16,6 +16,7 @@
  */
 
 import { ApprovalToken, CanonicalDigest, type CanonicalDigest as Digest } from '@ari/schemas';
+import { headOf, keysOf, type Seal } from '@ari/signing';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 /** The bound fields. Note what is absent: any way to express "approve anything else". */
@@ -74,27 +75,45 @@ export function approvalPayload(claims: ApprovalClaims): string {
   });
 }
 
-export function sealApproval(claims: ApprovalClaims, key: ApprovalKey): ApprovalToken {
+export function sealApproval(claims: ApprovalClaims, seal: Seal<ApprovalKey>): ApprovalToken {
   const payload = base64url(Buffer.from(approvalPayload(claims), 'utf8'));
-  return ApprovalToken.parse(`${payload}.${key.seal(payload)}`);
+  // The head, always — a ring exists so an outstanding token still verifies during a
+  // rotation, not so new authority is minted under a seal somebody is retiring.
+  return ApprovalToken.parse(`${payload}.${headOf(seal).seal(payload)}`);
 }
 
 export type OpenFailure = 'MALFORMED' | 'BAD_SIGNATURE' | 'BAD_CLAIMS';
 
-export type OpenResult = { readonly ok: true; readonly claims: ApprovalClaims } | { readonly ok: false; readonly reason: OpenFailure };
+export type OpenResult =
+  | { readonly ok: true; readonly claims: ApprovalClaims; readonly keyId: string }
+  | { readonly ok: false; readonly reason: OpenFailure };
 
-/** Verify the seal. Checks nothing else — expiry and single use need a clock and a row. */
-export function openApproval(token: string, key: ApprovalKey): OpenResult {
+/**
+ * Verify the seal. Checks nothing else — expiry and single use need a clock and a row.
+ *
+ * A ring is accepted for the same reason the ticket seal takes one, and for the same
+ * price: the token carries no key id, so verification is "does any key here reproduce this
+ * MAC", and a refusal cannot tell an operator "sealed with a key you dropped" from
+ * "sealed by an impostor". See `docs/OPERATIONS.md` for the order that avoids that
+ * ambiguity while rotating.
+ */
+export function openApproval(token: string, seal: Seal<ApprovalKey>): OpenResult {
   const parts = token.split('.');
   if (parts.length !== 2 || parts[0] === undefined || parts[1] === undefined) {
     return { ok: false, reason: 'MALFORMED' };
   }
   const [payload, signature] = parts;
-  const expected = Buffer.from(key.seal(payload!), 'base64url');
   const presented = Buffer.from(signature!, 'base64url');
-  if (expected.byteLength !== presented.byteLength || !timingSafeEqual(expected, presented)) {
-    return { ok: false, reason: 'BAD_SIGNATURE' };
+  let keyId: string | null = null;
+  for (const key of keysOf(seal)) {
+    const expected = Buffer.from(key.seal(payload!), 'base64url');
+    if (expected.byteLength !== presented.byteLength || !timingSafeEqual(expected, presented)) {
+      continue;
+    }
+    keyId = key.id;
+    break;
   }
+  if (keyId === null) return { ok: false, reason: 'BAD_SIGNATURE' };
 
   let raw: unknown;
   try {
@@ -131,6 +150,7 @@ export function openApproval(token: string, key: ApprovalKey): OpenResult {
         expiresAtMs: BigInt(record.expiresAtMs as string),
         nonce: record.nonce as string,
       },
+      keyId,
     };
   } catch {
     // `BigInt('1.5')` is the realistic case: a value that round-tripped through a

@@ -12,6 +12,7 @@
   "dependencies": {
     "@ari/audit": "workspace:*",
     "@ari/schemas": "workspace:*",
+    "@ari/signing": "workspace:*",
     "pg": "8.23.0",
     "@ari/identity": "workspace:*"
   },

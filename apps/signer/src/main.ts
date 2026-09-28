@@ -12,9 +12,12 @@
 import { claimTicket, inspectDatabaseUrl, probeDatabase, withTransaction } from '@ari/ledger';
 import { isLoopbackHost } from '@ari/schemas';
 import {
+  KeyRing,
   MockSigningProvider,
+  ringOf,
   TicketKey,
   redeemAndSign,
+  type Seal,
   type SignerDeps,
   type TicketStore,
 } from '@ari/signing';
@@ -25,7 +28,7 @@ import { createSignerRequestHandler } from './http.js';
 import { createSignerLog, logLevelOf, type LogLevel, type SignerLog } from './log.js';
 
 export interface SignerConfig {
-  readonly ticketKey: TicketKey;
+  readonly ticketKey: Seal<TicketKey>;
   readonly databaseUrl: string;
   /**
    * Same rule as the decision plane, same reason: this process is the one holding the
@@ -61,6 +64,7 @@ export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
   const provider = env.SIGNING_PROVIDER ?? 'mock';
+  const previousSecret = env.TICKET_KEY_PREVIOUS ?? '';
 
   const problems: string[] = [];
   if (secrets.length < 32) problems.push('TICKET_KEY must be at least 32 characters (openssl rand -base64 48)');
@@ -92,10 +96,23 @@ export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
     // real one to everyone downstream.
     problems.push(`SIGNING_PROVIDER=${provider} is not implemented; the Ika adapter is Phase 8`);
   }
+  if (previousSecret.length > 0 && (env.TICKET_KEY_PREVIOUS_ID ?? '').length === 0) {
+    problems.push('TICKET_KEY_PREVIOUS_ID is required when TICKET_KEY_PREVIOUS is set');
+  }
+  if (previousSecret.length > 0 && previousSecret.length < 32) {
+    problems.push('TICKET_KEY_PREVIOUS must be at least 32 characters when set');
+  }
   if (problems.length > 0) throw new Error(`ari-signer cannot start:\n  - ${problems.join('\n  - ')}`);
 
   return {
-    ticketKey: new TicketKey(secrets),
+    // The same ring the decision plane holds. During a rotation the signer must accept the
+    // seal it has been seeing and the one arriving next, and `docs/OPERATIONS.md` fixes the
+    // order the two processes are updated in — signer first, because a signer that only
+    // knows the old key refuses every new ticket.
+    ticketKey: ringOf(
+      new TicketKey(secrets, env.TICKET_KEY_ID ?? 'v1'),
+      previousSecret.length === 0 ? undefined : new TicketKey(previousSecret, env.TICKET_KEY_PREVIOUS_ID!),
+    ),
     databaseUrl,
     databaseRole,
     wallets: new Set(wallets),
@@ -211,6 +228,9 @@ if (process.argv[1]?.endsWith('main.ts') || process.argv[1]?.endsWith('main.js')
     // `on` and `off` rather than true/false, because the word an operator searches for at
     // 3am is the one they typed into the environment.
     deliveryGate: config.deliveryKey === null ? 'off' : 'on',
+    // Which seals this process honours, named. The question at 3am during a rotation is
+    // "is the signer still accepting v1", and it should be answerable from one line.
+    sealIds: config.ticketKey instanceof KeyRing ? config.ticketKey.all.map((key) => key.id) : [config.ticketKey.id],
     version: config.version,
   });
   if (!isLoopbackHost(config.host)) {

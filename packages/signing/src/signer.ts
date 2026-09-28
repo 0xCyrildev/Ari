@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import { CANONICAL_VERSION } from '@ari/transaction-engine';
 import type { CanonicalDigest, ReasonCode } from '@ari/schemas';
 import { openTicket, TICKET_TTL_MS, type TicketKey } from './ticket.js';
+import type { Seal } from './ring.js';
 
 /** How far ahead of this process's clock a ticket's own issue time may claim to be. */
 export const TICKET_CLOCK_SKEW_MS = 5_000n;
@@ -54,7 +55,7 @@ export class InMemoryTicketStore implements TicketStore {
 }
 
 export interface SignerDeps {
-  readonly key: TicketKey;
+  readonly key: Seal<TicketKey>;
   readonly store: TicketStore;
   readonly provider: SigningProvider;
   /**

@@ -27,6 +27,7 @@ import { asTenant, type Connector, type TenantTx } from '@ari/identity';
 import { newId, type CanonicalDigest, type ReasonCode } from '@ari/schemas';
 import { randomBytes } from 'node:crypto';
 import { ApprovalKey, openApproval, sealApproval, type ApprovalClaims } from './token.js';
+import type { Seal } from '@ari/signing';
 
 export type ApprovalSubject = 'transaction' | 'policy_activation';
 export type ApprovalStatus = 'PENDING' | 'GRANTED' | 'REJECTED' | 'EXPIRED' | 'CONSUMED';
@@ -51,7 +52,7 @@ export interface RequestApprovalInput {
    * the composition root is the only place that knows where it came from; putting
    * it on `TenantTx` would put it in scope for every query in the transaction.
    */
-  readonly key: ApprovalKey;
+  readonly key: Seal<ApprovalKey>;
 }
 
 export interface RequestedApproval {
@@ -300,7 +301,7 @@ export async function claimApproval(
   orgId: string,
   token: string,
   presentedDigest: CanonicalDigest,
-  key: ApprovalKey,
+  key: Seal<ApprovalKey>,
 ): Promise<ClaimResult> {
   return asTenant(pool, orgId, (tx) => spendApproval(tx, token, presentedDigest, key));
 }
@@ -318,7 +319,7 @@ export async function spendApproval(
   tx: TenantTx,
   token: string,
   presentedDigest: CanonicalDigest,
-  key: ApprovalKey,
+  key: Seal<ApprovalKey>,
 ): Promise<ClaimResult> {
   const opened = openApproval(token, key);
     if (!opened.ok) {
@@ -379,6 +380,7 @@ export async function spendApproval(
 }
 
 export { ApprovalKey, openApproval, sealApproval, type ApprovalClaims } from './token.js';
+export { KeyRing, ringOf, type Seal } from '@ari/signing';
 
 /**
  * Seal the token for an approval that has reached quorum, from the row.
@@ -403,7 +405,7 @@ export { ApprovalKey, openApproval, sealApproval, type ApprovalClaims } from './
 export async function sealGrantedApproval(
   tx: TenantTx,
   approvalId: string,
-  key: ApprovalKey,
+  key: Seal<ApprovalKey>,
 ): Promise<string | null> {
   const row = await tx.client.query<{
     subject_kind: ApprovalSubject;

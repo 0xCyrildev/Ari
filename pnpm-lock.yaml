@@ -204,6 +204,9 @@ importers:
       '@ari/schemas':
         specifier: workspace:*
         version: link:../schemas
+      '@ari/signing':
+        specifier: workspace:*
+        version: link:../signing
       pg:
         specifier: 8.23.0
         version: 8.23.0

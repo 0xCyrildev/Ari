@@ -20,6 +20,7 @@
 
 import { AuthorizationTicket, TicketClaims, type CanonicalDigest } from '@ari/schemas';
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { headOf, keysOf, type Seal } from './ring.js';
 
 /** Hard ceiling on a ticket's lifetime. A longer seal is refused, not honoured. */
 export const TICKET_TTL_MS = 60_000n;
@@ -60,7 +61,7 @@ export type SealResult = { readonly ok: true; readonly ticket: AuthorizationTick
  * transaction, no key, no signature. A ticket cannot be minted from anything
  * that has not already been decided.
  */
-export function sealTicket(claims: TicketClaims, key: TicketKey): SealResult {
+export function sealTicket(claims: TicketClaims, seal: Seal<TicketKey>): SealResult {
   const parsed = TicketClaims.safeParse(claims);
   if (!parsed.success) {
     return { ok: false, reason: `claims are not well-formed: ${parsed.error.issues[0]?.message ?? 'unknown'}` };
@@ -70,38 +71,49 @@ export function sealTicket(claims: TicketClaims, key: TicketKey): SealResult {
     return { ok: false, reason: `ticket lifetime ${lifetime}ms is outside (0, ${TICKET_TTL_MS}ms]` };
   }
   const payload = base64url(Buffer.from(encodeClaims(parsed.data), 'utf8'));
-  return { ok: true, ticket: AuthorizationTicket.parse(`${payload}.${key.sign(payload)}`) };
+  // The head, always: a ring exists so an old seal still *verifies*, not so new work is
+  // signed with a key an operator is on the way to retiring.
+  return { ok: true, ticket: AuthorizationTicket.parse(`${payload}.${headOf(seal).sign(payload)}`) };
 }
 
 export type OpenResult =
-  | { readonly ok: true; readonly claims: TicketClaims }
+  | { readonly ok: true; readonly claims: TicketClaims; readonly keyId: string }
   | { readonly ok: false; readonly reason: 'MALFORMED' | 'BAD_SIGNATURE' | 'UNPARSEABLE_CLAIMS' };
 
 /**
  * Verify the seal and read the claims. Checks nothing else — expiry and
  * single-use are the signer's, because they depend on a clock and a store that
  * this function deliberately does not own.
+ *
+ * Accepts a ring, and reports which key in it verified. That field is not for the
+ * signature check — any key that reproduces the MAC is enough for that — it is for the
+ * operator mid-rotation, who needs to know that traffic is still arriving under the seal
+ * they intend to retire and when it stops.
  */
-export function openTicket(ticket: string, key: TicketKey): OpenResult {
+export function openTicket(ticket: string, seal: Seal<TicketKey>): OpenResult {
   const parts = ticket.split('.');
   if (parts.length !== 2 || parts[0] === undefined || parts[1] === undefined) {
     return { ok: false, reason: 'MALFORMED' };
   }
   const [payload, signature] = parts;
-  const expected = Buffer.from(key.sign(payload!), 'base64url');
   const presented = Buffer.from(signature!, 'base64url');
-  // Same-length comparison first, because timingSafeEqual throws on a mismatch
-  // and a throw here would read as a malformed ticket rather than a bad seal.
-  if (expected.byteLength !== presented.byteLength || !timingSafeEqual(expected, presented)) {
-    return { ok: false, reason: 'BAD_SIGNATURE' };
+  let verified: { claims: TicketClaims; keyId: string } | null = null;
+  for (const key of keysOf(seal)) {
+    const expected = Buffer.from(key.sign(payload!), 'base64url');
+    // Same-length comparison first, because timingSafeEqual throws on a mismatch
+    // and a throw here would read as a malformed ticket rather than a bad seal.
+    if (expected.byteLength !== presented.byteLength || !timingSafeEqual(expected, presented)) continue;
+    try {
+      const claims = TicketClaims.safeParse(JSON.parse(Buffer.from(payload!, 'base64url').toString('utf8')));
+      if (!claims.success) return { ok: false, reason: 'UNPARSEABLE_CLAIMS' };
+      verified = { claims: claims.data, keyId: key.id };
+      break;
+    } catch {
+      return { ok: false, reason: 'UNPARSEABLE_CLAIMS' };
+    }
   }
-  try {
-    const claims = TicketClaims.safeParse(JSON.parse(Buffer.from(payload!, 'base64url').toString('utf8')));
-    if (!claims.success) return { ok: false, reason: 'UNPARSEABLE_CLAIMS' };
-    return { ok: true, claims: claims.data };
-  } catch {
-    return { ok: false, reason: 'UNPARSEABLE_CLAIMS' };
-  }
+  if (verified === null) return { ok: false, reason: 'BAD_SIGNATURE' };
+  return { ok: true, claims: verified.claims, keyId: verified.keyId };
 }
 
 /**

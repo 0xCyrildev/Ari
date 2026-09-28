@@ -1,4 +1,5 @@
 export { acceptsBearerSecret, bearerToken } from './bearer.js';
+export { headOf, KeyRing, keysOf, ringOf, type Keyed, type Seal } from './ring.js';
 export {
   claimsFor,
   openTicket,
