@@ -25,7 +25,7 @@
  * not decided to use yet.
  */
 
-import { inspectDatabaseUrl } from '@ari/ledger';
+import { inspectDatabaseUrl, tlsVerdict } from '@ari/ledger';
 import { isLoopbackHost } from '@ari/schemas';
 import { Client } from 'pg';
 
@@ -68,13 +68,21 @@ try {
 
 try {
   // --- 2. is the socket actually TLS, as negotiated, not as requested? ------------------
+  // Two views, because they answer different questions and a managed provider separates
+  // them: what we asked for, and what the server's own backend sees. Read the reasoning in
+  // `tlsVerdict` — the short version is that a proxy makes `pg_stat_ssl` lie by omission.
   const ssl = await login.query<{ ssl: boolean; cipher: string | null; version: string | null }>(
     'SELECT ssl, cipher, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()',
   );
-  const row = ssl.rows[0];
-  if (row?.ssl === true) record('PASS', 'TLS as negotiated', `cipher=${row.cipher ?? '?'} protocol=${row.version ?? '?'}`);
-  else if (isLoopbackHost(facts.host)) record('PASS', 'TLS as negotiated', 'plaintext on loopback, which is what the development compose is');
-  else record('FAIL', 'TLS as negotiated', 'the server accepted the connection without TLS at all');
+  const seen = await login.query<{ addr: string | null }>(
+    'SELECT inet_client_addr() AS addr FROM pg_stat_activity WHERE pid = pg_backend_pid()',
+  );
+  const verdict = tlsVerdict(facts.tls, isLoopbackHost(facts.host), {
+    serverReportsSsl: ssl.rows[0]?.ssl === true,
+    seenClientAddr: seen.rows[0]?.addr ?? null,
+  });
+  const cipher = ssl.rows[0]?.cipher ? ` cipher=${ssl.rows[0]?.cipher} protocol=${ssl.rows[0]?.version ?? '?'}` : '';
+  record(verdict.status === 'pass' ? 'PASS' : verdict.status === 'warn' ? 'WARN' : 'FAIL', 'TLS as negotiated', verdict.detail + cipher);
 
   const version = await login.query<{ v: string }>('SELECT version() AS v');
   record('PASS', 'server version', (version.rows[0]?.v ?? '?').split(',')[0] as string);

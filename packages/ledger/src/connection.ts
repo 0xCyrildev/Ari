@@ -64,6 +64,50 @@ function refusal(facts: Pick<DatabaseUrlFacts, 'host' | 'tls' | 'sslmode'>): str
   }
 }
 
+/** What the server's own view of the socket said, and what address it saw us from. */
+export interface TlsObservation {
+  /** `pg_stat_ssl.ssl` for our backend pid. */
+  readonly serverReportsSsl: boolean;
+  /** `inet_client_addr()` as the server sees it — a proxy shows up as a private address. */
+  readonly seenClientAddr: string | null;
+}
+
+const PRIVATE_OR_LINK_LOCAL = /^(?:10\.|127\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.|fd[0-9a-f]{2}:|::1)/i;
+
+/**
+ * Judge the encryption of a connection we have already made.
+ *
+ * `pg_stat_ssl` describes the socket from the **server's** side, and on a managed provider
+ * that is not the socket we opened: Neon, Supabase and anything else with a proxy terminate
+ * TLS at their edge and connect the backend over a private address, so the query answers
+ * `ssl=false` for a connection that is verified end to end from here. Reading that as a
+ * failure would condemn every hosted Postgres on the basis of the provider's own topology.
+ *
+ * What actually proves the client-side hop is the handshake: `sslmode=verify-full` fails
+ * closed on a missing, expired or mismatched certificate, so a connection that *succeeded*
+ * under it was verified. The server's view is corroborating detail, and it only contradicts
+ * that when it claims no TLS while seeing us from a public address — a case worth naming
+ * rather than swallowing.
+ */
+export function tlsVerdict(requested: DatabaseTls, loopback: boolean, observed: TlsObservation): { status: 'pass' | 'warn' | 'fail'; detail: string } {
+  const verifiedFromHere = requested === 'verify-full' || requested === 'ssl-true';
+
+  if (observed.serverReportsSsl) {
+    return { status: 'pass', detail: 'TLS on the socket the server sees' };
+  }
+  if (verifiedFromHere) {
+    const where = observed.seenClientAddr === null ? 'an unknown address' : observed.seenClientAddr;
+    if (observed.seenClientAddr !== null && !PRIVATE_OR_LINK_LOCAL.test(observed.seenClientAddr)) {
+      return { status: 'warn', detail: `verified from here, but the server sees no TLS and sees us from the public address ${where} — not the private hop a proxy would use` };
+    }
+    return { status: 'pass', detail: `verified from here (sslmode=${requested === 'ssl-true' ? 'true' : 'verify-full'} fails closed on a bad certificate); the server sees the provider's proxy at ${where}, which is why its own row says ssl=false` };
+  }
+  if (loopback) {
+    return { status: 'pass', detail: 'plaintext on loopback, which is what the development compose is' };
+  }
+  return { status: 'fail', detail: 'the server accepted the connection without TLS, and nothing verified the peer' };
+}
+
 /**
  * Read a connection string as a security decision.
  *

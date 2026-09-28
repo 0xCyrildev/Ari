@@ -235,6 +235,23 @@ assumption false, and measuring it turned up something worse than a missing `ssl
   `apps/web` had no `"type"` field, so the root program compiled its ESM files as CommonJS and
   `verbatimModuleSyntax` refused them. It is now `"type": "module"`, which is what it always
   was: the package contains no `.js`/`.cjs` files at all, and `next build` passes.
+- **Run against a real provider, the rule held and one of its own checks was wrong.** Neon
+  (`eu-central-1`, direct endpoint, `?sslmode=verify-full&channel_binding=require`):
+  `role-at-connect survives` came back `session_user=neondb_owner, current_user=ari_app`, so a
+  managed Postgres *can* satisfy the design — the pooled/`-pooler` endpoint cannot. But
+  `TLS as negotiated` failed first, because `pg_stat_ssl` for our backend pid answered
+  `ssl=false` while `inet_client_addr()` reported **`10.58.5.100`**: the provider terminates TLS
+  at its own proxy and the backend hop is internal, so the server's view of the socket is not
+  the socket we opened. Reading that as a failure would reject every managed Postgres on earth.
+  `tlsVerdict` now separates the two — a successful `verify-full` handshake *is* the proof, the
+  server's row is corroboration, and the case that genuinely deserves a warning is "no TLS seen
+  from a public address", which is not a proxy story. Four tests, one of them that measured case.
+- **The env file that carries a Postgres URL must quote it.** `DATABASE_URL=postgresql://…?sslmode=…&channel_binding=require`
+  is not a shell assignment — the `&` backgrounds the rest and `.` on the file dies with a parse
+  error, which is how "it works" turned out to mean the check had never run. Double quotes fix
+  it for both readers (verified: shell keeps the value, `node --env-file` strips the quotes), and
+  the pxxl env form wants the value *without* them.
+
 - Two things it caught while being written, both mine: a first version checked "every table
   in `ari`" and failed on `organizations`, which has no `org_id` because it *is* the tenant —
   the invariant is `hasOrgColumn && !rowSecurity` except `signing_tickets`, and the preflight
@@ -695,10 +712,15 @@ Seed to `/tmp/ari-seed.json` (0600), key in `/tmp/ari-keys.env`, drivers in `/tm
   to avoid writing them. **The old note here — "Node 24's global `fetch` on this box cannot reach *any* remote
   HTTPS host" — is false, and was corrected on 2026-09-28 by measurement:** Node reached `cloudflare-eth.com`
   and got `eth_chainId = 0x1` back in 745 ms, plus four other remote HTTPS hosts with response bodies read.
-  What is true about this box is narrower: `curl`'s IPv6-first attempts to Cloudflare-hosted names fail
-  (`curl -4` succeeds, `curl -6` returns 000) while Node's Happy-Eyeballs path falls back and works, so a
-  curl failure against such a host says nothing about what `fetch` can do. A real-chain provider *can* be
-  exercised from here; see open thread 11(b).
+  What is true about this box is narrower and bit twice: **it has no IPv6 default route at all**
+  (`ip -6 route show default` is empty). Cloudflare-hosted names still worked from Node because
+  their A records got tried and answered; Neon's endpoint published AAAA first and a `pnpm seed`
+  run died with `AggregateError [ENETUNREACH]` listing only IPv6 addresses. So the rule here is:
+  prefer IPv4 explicitly (`NODE_OPTIONS=--dns-result-order=ipv4first`) when a target publishes
+  AAAA, and read a `curl -6` failure as a fact about this machine, not about the service — the
+  earlier claim that Node "falls back and works" was too generous and Neon disproved it the same
+  night. This is a laptop property, not a deployment property: pxxl's containers have their own
+  connectivity, and no Ari code should special-case it.
 - **The CLI's commands declare two things about themselves: whether they need a deployment, and every flag
   they read.** Both were claims without mechanisms before: `run()` resolved `--url` before dispatch, so
   `ari verify chain --in export.json` — a command that touches no network — could not run without a URL, and

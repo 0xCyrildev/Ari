@@ -494,4 +494,4 @@ export {
   type DecisionRecord,
   type TicketRow,
 } from './decisions.js';
-export { inspectDatabaseUrl, type DatabaseTls, type DatabaseUrlFacts } from './connection.js';
+export { inspectDatabaseUrl, tlsVerdict, type DatabaseTls, type DatabaseUrlFacts, type TlsObservation } from './connection.js';

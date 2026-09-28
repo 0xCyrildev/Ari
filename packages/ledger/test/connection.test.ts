@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { inspectDatabaseUrl } from '../src/index.js';
+import { inspectDatabaseUrl, tlsVerdict } from '../src/index.js';
 
 const HOSTED = 'postgresql://ari:secret@ep-cool-water-1.us-east-2.aws.neon.tech/ari';
 
@@ -79,5 +79,34 @@ describe('what cannot be connected to at all', () => {
 
   it('names a string that is not a URL', () => {
     expect(inspectDatabaseUrl('not-a-connection-string').problem).toMatch(/parseable/);
+  });
+});
+
+describe('what a live connection proves about TLS', () => {
+  it('passes the Neon case: verified from here, server sees only its own proxy', () => {
+    // Measured against a real Neon endpoint on 2026-09-28: `pg_stat_ssl` answered ssl=false
+    // and `inet_client_addr()` was 10.58.5.100, because TLS terminates at the provider's
+    // proxy and the backend hop is internal. Reading that as a failure would condemn every
+    // managed Postgres on the basis of the provider's topology rather than our own.
+    const v = tlsVerdict('verify-full', false, { serverReportsSsl: false, seenClientAddr: '10.58.5.100' });
+    expect(v.status).toBe('pass');
+    expect(v.detail).toContain('proxy');
+  });
+
+  it('passes when the server itself reports TLS', () => {
+    expect(tlsVerdict('verify-full', false, { serverReportsSsl: true, seenClientAddr: '203.0.113.9' }).status).toBe('pass');
+  });
+
+  it('warns, rather than nodding, when a verifying client meets no TLS from a public address', () => {
+    const v = tlsVerdict('verify-full', false, { serverReportsSsl: false, seenClientAddr: '203.0.113.9' });
+    expect(v.status).toBe('warn');
+    expect(v.detail).toContain('public address');
+  });
+
+  it('accepts plaintext on loopback and refuses it anywhere else', () => {
+    expect(tlsVerdict('absent', true, { serverReportsSsl: false, seenClientAddr: '127.0.0.1' }).status).toBe('pass');
+    const hosted = tlsVerdict('absent', false, { serverReportsSsl: false, seenClientAddr: '203.0.113.9' });
+    expect(hosted.status).toBe('fail');
+    expect(hosted.detail).toContain('without TLS');
   });
 });
