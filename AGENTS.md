@@ -410,12 +410,19 @@ So this was a responsiveness pass: no type scale, palette, spacing or component 
   value column got 84px and the state spilled to `right=334`. Shrinking the label column cannot fix it (labels
   need ~90px; `LAST REQUEST` is 88px), so `.kv` stacks at ≤480: 2px rows bind a value to its label and the `dd`
   margin is what separates one pair from the next.
-- Harness: **`/tmp/sweep.mjs <origin> <port> <widths>`** walks 15 routes × 5 widths and flags only overflow that
-  no ancestor clips — the first detector counted clipped marquee tracks and scrollable tables and produced three
-  phantom bugs. **`/tmp/why-overflow.mjs <origin> <path> <width>`** walks the offender's ancestor chain printing
-  rect, `display`, `min-width`, `white-space`, `grid-template-columns` and `overflow-x`, which is what turned
-  "which box is too wide" from a guess into the two lines above. Result: **75/75 combinations clean, 0 unhunted**,
-  and `web:typecheck` / `web:preflight` / `web:build` pass.
+- Harness, now in the repo: **`pnpm web:sweep [origin] [cdpPort] [widths]`**
+  (`apps/web/scripts/responsive-sweep.mjs`) walks 15 routes × 5 widths and flags only overflow
+  that no ancestor clips — the first detector counted clipped marquee tracks and scrollable
+  tables and produced three phantom bugs. **`pnpm web:why-overflow <origin> <path> <width> <selector>`**
+  walks that element's ancestor chain printing rect, `display`, `min-width`, `white-space`,
+  `grid-template-columns` and `overflow-x`, which is what turned "which box is too wide" from a
+  guess into the two lines above. Result: **75/75 combinations clean, 0 unhunted**, live on the
+  deployed origin at 320 and 390, and `web:typecheck` / `web:preflight` / `web:build` pass. Both
+  exit non-zero on any miss, delete their own Chromium profile (which is what fills `/tmp`),
+  and say in their headers that they measure width only.
+- One thing left alone on purpose: the hero `h1` at 320px sets five lines with "FOR" alone on one. Tightening it
+  means changing the type clamp, which is the design, under an instruction that said keep the design. It is a
+  call for the owner, not a defect to sweep.
 - **`/tmp` here is a 3.8 GiB tmpfs and every Chromium profile dir is ~125 MB.** Fourteen probe runs filled it,
   after which `--headless=new` cannot start and a CDP harness dies with "no DevTools page target" — or worse,
   exits on an unsettled `await` printing *nothing*, which looks exactly like a clean sweep. The sweep now bounds

@@ -24,6 +24,8 @@
     "seed": "node --import tsx --env-file-if-exists=.env scripts/seed-tenant.mts",
     "ari": "node --import tsx --env-file-if-exists=.env apps/cli/src/main.ts",
     "web:preflight": "pnpm --dir apps/web preflight",
+    "web:sweep": "pnpm --dir apps/web sweep",
+    "web:why-overflow": "pnpm --dir apps/web why-overflow",
     "web:dev": "pnpm --dir apps/web dev",
     "web:typecheck": "pnpm --dir apps/web typecheck",
     "web:build": "pnpm --dir apps/web build"

@@ -9,7 +9,9 @@
     "build": "next build",
     "start": "next start -p ${PORT:-3100}",
     "typecheck": "tsc --noEmit",
-    "preflight": "node scripts/preflight.mjs"
+    "preflight": "node scripts/preflight.mjs",
+    "sweep": "node scripts/responsive-sweep.mjs",
+    "why-overflow": "node scripts/why-overflow.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
