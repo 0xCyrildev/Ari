@@ -244,6 +244,10 @@ Cross-cutting controls referenced repeatedly:
 - **Impact:** authority laundering — the delegated action is legitimate, the delegator had no right to ask.
 - **Mitigation:** **[S]** the ticket names its `agent_id` and the signer compares it against the
   transaction's requesting principal, so the deputy cannot be aimed at a principal that did not ask;
+  **[B]** where the socket is not loopback, the signer also refuses any request that does not carry the
+  delivery credential `ari-api` holds (`SIGNER_DELIVERY_KEY`, checked before a body is read) — this says only
+  *whose* request is worth verifying, and the seal stays what authorises a signature; a platform that
+  publishes a hostname for every service makes this the difference between a confused deputy and an open one;
   **[B]** service-to-service calls carry the *originating* principal plus an internal delegation assertion
   with an explicit chain, and each hop re-checks scope rather than inheriting trust; **[S]** no "system"
   bypass identity exists as a construct; internal jobs act as themselves with narrow scopes; **[T]** a test

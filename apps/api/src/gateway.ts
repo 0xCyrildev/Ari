@@ -14,7 +14,7 @@
  */
 
 import { verifyCredential, verifyUserCredential, type Connector } from '@ari/identity';
-import { timingSafeEqual } from 'node:crypto';
+import { acceptsBearerSecret, bearerToken } from '@ari/signing';
 
 export interface Principal {
   readonly orgId: string;
@@ -44,11 +44,8 @@ export interface GatewayDeps {
   readonly nowMs: () => bigint;
 }
 
-function bearer(header: string | undefined): string | null {
-  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return null;
-  const value = header.slice(7).trim();
-  return value.length === 0 ? null : value;
-}
+/** The bearer grammar lives in `@ari/signing`, because so does the other gate that uses it. */
+const bearer = bearerToken;
 
 export async function authenticateAgent(deps: GatewayDeps, header: string | undefined): Promise<AuthResult> {
   const presented = bearer(header);
@@ -73,13 +70,13 @@ export async function authenticateAgent(deps: GatewayDeps, header: string | unde
   };
 }
 
-/** Constant-time on equal lengths; a length mismatch is not a secret worth hiding. */
+/**
+ * The length floor is this gate's own policy — a deployment that named no token has
+ * closed the endpoint, not opened it — and the comparison is the shared one.
+ */
 export function acceptsBootstrapToken(configured: string, header: string | undefined): boolean {
-  const presented = bearer(header);
-  if (configured.length < 16 || presented === null || presented.length !== configured.length) return false;
-  const a = Buffer.from(configured, 'utf8');
-  const b = Buffer.from(presented, 'utf8');
-  return a.byteLength === b.byteLength && timingSafeEqual(a, b);
+  if (configured.length < 16) return false;
+  return acceptsBearerSecret(configured, bearer(header));
 }
 
 /**

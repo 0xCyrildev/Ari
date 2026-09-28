@@ -93,6 +93,11 @@ async function handleOutcome(deps: RouteDeps, orgId: string, outcome: AuthorizeO
       // plane can never honour must go back to the agent's daily total (T13).
       await recordDeliveryOutcome(deps.pipeline, orgId, outcome.requestId, delivered);
       if (!delivered.accepted) {
+        // The caller sees it in the response; the operator sees it here. A parked
+        // delivery writes no audit event on purpose — nothing about the request is final
+        // — and without this line a signing outage is visible only to whoever happens to
+        // ask about one ticket at a time. The code, never the ticket.
+        process.stderr.write(`ari-api: ticket not delivered for ${outcome.requestId}: ${delivered.code}\n`);
         return {
           state: 'TICKET_ISSUED_NOT_DELIVERED',
           requestId: outcome.requestId,

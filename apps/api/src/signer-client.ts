@@ -6,8 +6,11 @@
  * provider reference*. The pipeline hands back a ticket to whoever called it, so
  * if the HTTP layer forwarded that to the agent, the agent would hold a
  * signing capability and the whole boundary would be decorative. Instead the API
- * delivers the ticket itself, over an internal address an agent cannot reach, and
- * tells the caller only what happened.
+ * delivers the ticket itself and tells the caller only what happened — and that delivery
+ * travels over an address the agent has no route to, carrying a delivery credential only
+ * this process holds whenever the deployment names one. The address and the credential
+ * are two controls, not one stated twice: a platform that routes both services
+ * publicly leaves the second one doing the work.
  */
 
 export interface DeliveryRequest {
@@ -24,8 +27,14 @@ export interface SignerClient {
 }
 
 export interface SignerClientOptions {
-  /** Internal only: an address an agent has no route to. */
+  /** An address an agent has no route to, on a deployment that can keep that promise. */
   readonly url: string;
+  /**
+   * The bearer the signer expects. Null sends no `authorization` header at all rather
+   * than an empty one: a header that parses as an empty token is a different refusal from
+   * a missing header, and the gate must not become the thing that distinguishes them.
+   */
+  readonly deliveryKey?: string | null;
   readonly timeoutMs?: number;
   readonly fetchImpl?: typeof fetch;
 }
@@ -33,14 +42,17 @@ export interface SignerClientOptions {
 export function createSignerClient(options: SignerClientOptions): SignerClient {
   const doFetch = options.fetchImpl ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? 5_000;
+  const deliveryKey = options.deliveryKey ?? null;
 
   return {
     async deliver(request) {
       let response: Response;
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (deliveryKey !== null) headers.authorization = `Bearer ${deliveryKey}`;
       try {
         response = await doFetch(options.url, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers,
           body: JSON.stringify(request),
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -58,6 +70,13 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
       const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
       if (response.status === 202) {
         return { accepted: true, state: String(body.state ?? 'SIGNING_PENDING') };
+      }
+      if (response.status === 401) {
+        // Do not read the code out of the body on this path. The signer's own refusal
+        // name is `TICKET_INVALID`-adjacent, and a *terminal* reading of a rejected
+        // delivery credential would give the day's capacity back for what is a fault in
+        // this deployment's configuration rather than an unspendable ticket.
+        return { accepted: false, code: 'SIGNER_UNAUTHENTICATED', detail: 'the signer refused the delivery credential' };
       }
       return {
         accepted: false,

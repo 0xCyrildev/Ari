@@ -1,4 +1,9 @@
 export {
+  acceptsBearerSecret,
+  bearerToken,
+  isLoopbackHost,
+} from './bearer.js';
+export {
   claimsFor,
   openTicket,
   sealTicket,

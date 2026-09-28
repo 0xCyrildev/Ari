@@ -89,6 +89,10 @@ comparison operators, which is the only place an off-by-one moves money.
   does buy is narrower and worth stating exactly — the signer re-derives the digest from the bytes it was
   handed (T10, T11), refuses a lifetime over the TTL even behind a valid seal, spends tickets against a
   database row rather than a flag on a string, and returns a reconciliation ref and never a signature (S16).
+  Where network position does not keep the socket to the decision plane, it also demands a bearer the decision
+  plane holds (`SIGNER_DELIVERY_KEY`, refused before a body is read) — and that is an access control on *who
+  may ask*, not a second seal: a compromised `ari-api` holds the delivery key and the ticket key alike, which
+  is why the claims above stay about what the signer verifies for itself.
   Removing `ari-api`'s minting power entirely means an asymmetric seal, and that is a Phase 8 decision to make
   beside the custody questions in `ASSUMPTIONS.md` §8.5 — not a sentence to leave in a plan.
 - `MockSigningProvider` with an invocation **counter**, and `IkaSigningProvider` as an interface only.

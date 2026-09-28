@@ -58,7 +58,7 @@ The baseline is a modular monolith — with one deliberate, load-bearing excepti
 │                          Decision Engine                                   │
 │                    mints AuthorizationTicket                               │
 └──────────────────────────────────┬─────────────────────────────────────────┘
-                                   │  ticket only. HTTPS + HMAC. One use. TTL 60s.
+                                   │  ticket only. One use. TTL 60s. Sealed digest. Past loopback, a bearer too.
 ┌──────────────────────────────────▼──────────── AUTHORITY PLANE ────────────┐
 │  ari-signer                                                                │
 │   · holds DWalletCap + Sui keypair + fee coins   (delegated wallets)       │

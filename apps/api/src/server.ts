@@ -11,7 +11,7 @@
 import { ApprovalKey } from '@ari/approvals';
 import { behaviouralProvider } from '@ari/risk-engine';
 import { EvmForkProvider, type EvmProviderConfig } from '@ari/simulation';
-import { TicketKey } from '@ari/signing';
+import { TicketKey, isLoopbackHost } from '@ari/signing';
 import fastify from 'fastify';
 import { Pool } from 'pg';
 import type { PipelineDeps } from './authorize.js';
@@ -35,6 +35,13 @@ export interface ApiConfig {
   readonly approvalKey: ApprovalKey;
   readonly bootstrapToken: string;
   readonly signerUrl: string;
+  /**
+   * The bearer this process presents at the authority plane, or null when the signer is
+   * on loopback and the operator accepted no gate. Not optional-with-a-default beyond
+   * loopback: `readConfig` refuses that combination, because the alternative is a ticket
+   * standing alone between a stranger and a signature attempt.
+   */
+  readonly signerDeliveryKey: string | null;
   /**
    * The interface to bind. Loopback by default, because a service that comes up reachable on
    * every interface is a service whose owner did not choose that. A platform that fronts it
@@ -67,6 +74,23 @@ export function readConfig(env: NodeJS.ProcessEnv): ApiConfig {
   // An empty token here means "the endpoint is closed", not "anyone may create a
   // tenant"; the failure mode of a forgotten variable is an outage, never a hole.
   if (bootstrapToken.length < 16) problems.push('ORG_BOOTSTRAP_TOKEN must be at least 16 characters');
+  // The delivery secret is the same value the signer holds, and this is the only process
+  // allowed to send it. Absenting it is an option on loopback alone, where the socket is
+  // already the access control; anything beyond it must name a credential or not start.
+  const signerUrl = env.SIGNER_URL ?? 'http://127.0.0.1:4100/v1/sign';
+  const signerDeliverySecret = env.SIGNER_DELIVERY_KEY ?? '';
+  let signerHost = '';
+  try {
+    signerHost = new URL(signerUrl).hostname;
+  } catch {
+    problems.push('SIGNER_URL must be an absolute URL');
+  }
+  if (signerDeliverySecret.length > 0 && signerDeliverySecret.length < 32) {
+    problems.push('SIGNER_DELIVERY_KEY must be at least 32 characters when set (openssl rand -base64 48)');
+  }
+  if (signerDeliverySecret.length === 0 && signerHost.length > 0 && !isLoopbackHost(signerHost)) {
+    problems.push(`SIGNER_DELIVERY_KEY is required when SIGNER_URL points beyond loopback (${signerHost}): a ticket would be the only thing between a stranger and a signature attempt`);
+  }
   // Simulation is the one plane that may be absent, and its absence is decided here rather
   // than at first use: a half-configured provider (a URL with no chain id) is a
   // configuration error, and the alternative is a process that comes up, silently never
@@ -101,7 +125,8 @@ export function readConfig(env: NodeJS.ProcessEnv): ApiConfig {
     ticketKey: new TicketKey(ticketSecret),
     approvalKey: new ApprovalKey(approvalSecret),
     bootstrapToken,
-    signerUrl: env.SIGNER_URL ?? 'http://127.0.0.1:4100/v1/sign',
+    signerUrl,
+    signerDeliveryKey: signerDeliverySecret.length === 0 ? null : signerDeliverySecret,
     port: Number(env.API_PORT ?? env.PORT ?? '4000'),
     host: env.API_HOST ?? '127.0.0.1',
     simulation,
@@ -179,7 +204,7 @@ export async function startApi(config: ApiConfig, signer?: SignerClient): Promis
   const app = fastify({ logger: false, bodyLimit: 64 * 1024 });
   const routeDeps: RouteDeps = {
     pipeline: deps,
-    signer: signer ?? createSignerClient({ url: config.signerUrl }),
+    signer: signer ?? createSignerClient({ url: config.signerUrl, deliveryKey: config.signerDeliveryKey }),
     bootstrapToken: config.bootstrapToken,
   };
   registerRoutes(app, routeDeps);

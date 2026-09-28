@@ -48,6 +48,42 @@ describe('what ari-signer will refuse to start as', () => {
   });
 });
 
+describe('the delivery gate a signer may start with', () => {
+  const key = 'delivery-secret-for-tests-0123456789abcdef';
+
+  it('allows no gate on loopback, and reports it as absent rather than empty', () => {
+    expect(readConfig(env()).deliveryKey).toBeNull();
+  });
+
+  it('enforces a gate that was configured, even where it is not required', () => {
+    // Presence enforces: a deployment that set the secret on one side only fails at
+    // startup, rather than discovering at first payment that the other side never sends.
+    expect(readConfig(env({ SIGNER_DELIVERY_KEY: key })).deliveryKey).toBe(key);
+  });
+
+  it('refuses a public bind with no delivery secret', () => {
+    expect(() => readConfig(env({ SIGNER_HOST: '0.0.0.0' }))).toThrow(
+      /SIGNER_DELIVERY_KEY is required when SIGNER_HOST=0\.0\.0\.0 binds beyond loopback/,
+    );
+  });
+
+  it('refuses a too-short secret rather than gating with it', () => {
+    expect(() => readConfig(env({ SIGNER_DELIVERY_KEY: 'changeme' }))).toThrow(/SIGNER_DELIVERY_KEY must be at least 32 characters/);
+  });
+
+  it('names the missing gate beside every other problem, not instead of them', () => {
+    let message = '';
+    try {
+      readConfig(env({ SIGNER_HOST: '0.0.0.0', TICKET_KEY: '', DATABASE_URL: '' }));
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('TICKET_KEY');
+    expect(message).toContain('DATABASE_URL');
+    expect(message).toContain('SIGNER_DELIVERY_KEY');
+  });
+});
+
 describe('the request surface', () => {
   const signer = (outcome: SignerOutcome) =>
     createSignHandler({

@@ -13,6 +13,7 @@ import { claimTicket, withTransaction } from '@ari/ledger';
 import {
   MockSigningProvider,
   TicketKey,
+  isLoopbackHost,
   redeemAndSign,
   type SignerDeps,
   type TicketStore,
@@ -20,6 +21,7 @@ import {
 import { createServer } from 'node:http';
 import { Pool } from 'pg';
 import { createSignHandler } from './handler.js';
+import { createSignerRequestHandler } from './http.js';
 
 export interface SignerConfig {
   readonly ticketKey: TicketKey;
@@ -33,14 +35,23 @@ export interface SignerConfig {
   readonly databaseRole: string;
   readonly wallets: ReadonlySet<string>;
   readonly port: number;
-  /** Loopback by default. The signer answers to the decision plane, not to the internet. */
+  /**
+   * Loopback by default, because the signer's designed audience is the decision plane.
+   * A bind beyond loopback is legitimate behind a platform proxy and is refused unless a
+   * delivery secret is configured, so the address that says *who may ask* and the seal
+   * that says *what may be signed* are never one mechanism doing both jobs.
+   */
   readonly host: string;
+  /** Null means "no gate on this socket", which only a loopback bind may ask for. */
+  readonly deliveryKey: string | null;
 }
 
 export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
   const secrets = env.TICKET_KEY ?? '';
   const databaseUrl = env.DATABASE_URL ?? '';
   const databaseRole = env.DATABASE_ROLE ?? 'ari_app';
+  const deliverySecret = env.SIGNER_DELIVERY_KEY ?? '';
+  const host = env.SIGNER_HOST ?? '127.0.0.1';
   const wallets = (env.SIGNER_WALLETS ?? '')
     .split(',')
     .map((entry) => entry.trim())
@@ -52,6 +63,16 @@ export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
   if (databaseUrl.length === 0) problems.push('DATABASE_URL is required: single use is a database fact, not a memory');
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(databaseRole)) problems.push('DATABASE_ROLE must be a plain Postgres role name');
   if (wallets.length === 0) problems.push('SIGNER_WALLETS must name at least one wallet this signer holds capacity for');
+  // Two rules, and the order between them is the point: setting the secret always turns
+  // the gate on, so a deployment that configures one side only fails at startup rather
+  // than discovering at first payment that the other side never sends it. A public bind
+  // without any secret is refused outright.
+  if (deliverySecret.length > 0 && deliverySecret.length < 32) {
+    problems.push('SIGNER_DELIVERY_KEY must be at least 32 characters when set (openssl rand -base64 48)');
+  }
+  if (deliverySecret.length === 0 && !isLoopbackHost(host)) {
+    problems.push(`SIGNER_DELIVERY_KEY is required when SIGNER_HOST=${host} binds beyond loopback: /v1/sign would answer anyone who finds it`);
+  }
   if (provider !== 'mock') {
     // Phase 8 owns the Ika adapter, and `ASSUMPTIONS.md` §6 is still open. An
     // adapter written now would be a guess about a protocol whose source is on
@@ -67,7 +88,8 @@ export function readConfig(env: NodeJS.ProcessEnv): SignerConfig {
     databaseRole,
     wallets: new Set(wallets),
     port: Number(env.SIGNER_PORT ?? env.PORT ?? '4100'),
-    host: env.SIGNER_HOST ?? '127.0.0.1',
+    host,
+    deliveryKey: deliverySecret.length === 0 ? null : deliverySecret,
   };
 }
 
@@ -111,9 +133,7 @@ export async function startSigner(config: SignerConfig): Promise<RunningSigner> 
   };
 
   const handle = createSignHandler({ sign: (request) => redeemAndSign(deps, request) });
-  const server = createServer((req, res) => {
-    void route(handle, req, res);
-  });
+  const server = createServer(createSignerRequestHandler({ handle, deliveryKey: config.deliveryKey }));
   await new Promise<void>((resolve) => server.listen(config.port, config.host, resolve));
 
   return {
@@ -144,73 +164,6 @@ export function guardStore(inner: TicketStore): TicketStore {
   };
 }
 
-/**
- * Answer, whatever happens.
- *
- * The body read and `handle` were both outside any `try`, and the caller discards this
- * promise (`void route(...)`). An aborted upload mid-body, or a provider that throws
- * instead of returning a refusal, therefore did two things at once: left `res` unwritten,
- * so the decision plane sat on its own timeout with no answer to read, and produced an
- * unhandled rejection, which on Node's default kills `ari-signer` outright. A signing
- * outage caused by a client hanging up is the availability half of T13's shape, and the
- * refusal this answers with is the same one the guard store already makes for a failed
- * database — nothing is signed, and the ticket is treated as spent.
- */
-async function route(
-  handle: ReturnType<typeof createSignHandler>,
-  req: import('node:http').IncomingMessage,
-  res: import('node:http').ServerResponse,
-): Promise<void> {
-  try {
-    await respond(handle, req, res);
-  } catch (error) {
-    if (!res.headersSent) {
-      res.writeHead(500, { 'content-type': 'application/json' });
-      // The provider may have been reached before it threw, so the ticket must not be
-      // re-presentable: the message says as much rather than pretending nothing happened.
-      res.end(JSON.stringify({ state: 'REJECTED', code: 'SIGNING_PROVIDER_ERROR', detail: 'the signer could not complete the attempt' }));
-    } else {
-      res.destroy();
-    }
-    console.error(`ari-signer: attempt failed: ${(error as Error).name}`);
-  }
-}
-
-async function respond(
-  handle: ReturnType<typeof createSignHandler>,
-  req: import('node:http').IncomingMessage,
-  res: import('node:http').ServerResponse,
-): Promise<void> {
-  if (req.method !== 'POST' || req.url !== '/v1/sign') {
-    res.writeHead(404, { 'content-type': 'application/json' });
-    res.end('{"state":"NOT_FOUND"}');
-    return;
-  }
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).byteLength;
-    if (size > 128 * 1024) {
-      res.writeHead(413, { 'content-type': 'application/json' });
-      res.end('{"state":"REJECTED","code":"TICKET_INVALID","detail":"request body too large"}');
-      req.destroy();
-      return;
-    }
-    chunks.push(chunk as Buffer);
-  }
-  let body: unknown;
-  try {
-    body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } catch {
-    res.writeHead(400, { 'content-type': 'application/json' });
-    res.end('{"state":"REJECTED","code":"TICKET_INVALID","detail":"expected a JSON body"}');
-    return;
-  }
-  const response = await handle(body);
-  res.writeHead(response.status, { 'content-type': 'application/json' });
-  res.end(JSON.stringify(response.body));
-}
-
 if (process.argv[1]?.endsWith('main.ts') || process.argv[1]?.endsWith('main.js')) {
   let config: SignerConfig;
   try {
@@ -220,7 +173,14 @@ if (process.argv[1]?.endsWith('main.ts') || process.argv[1]?.endsWith('main.js')
     process.exit(2);
   }
   const signer = await startSigner(config);
-  console.log(`ari-signer listening on 127.0.0.1:${config.port}; provider=${signer.deps.provider.name}`);
+  // Say what is enforced, not just where it listens: an operator reading this line at 3am
+  // needs to know whether an unauthenticated caller could reach /v1/sign.
+  console.log(
+    `ari-signer listening on ${config.host}:${config.port}; provider=${signer.deps.provider.name}; delivery-gate=${config.deliveryKey === null ? 'off' : 'on'}`,
+  );
+  if (!isLoopbackHost(config.host)) {
+    process.stderr.write(`ari-signer: bound to ${config.host}, reachable beyond this machine. TLS must terminate in front of it, and only the decision plane should hold its address.\n`);
+  }
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
       void signer.close().then(() => process.exit(0));

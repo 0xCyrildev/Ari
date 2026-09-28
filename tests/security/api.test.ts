@@ -669,6 +669,24 @@ describe('what the ledger does with the signer’s answer', () => {
     expect(await reservationState(requestId)).toBe('HELD');
     expect(await reservedToday(t.orgId, t.agentId)).toBe(usd(500n));
   });
+
+  it('parks it when the signer refused *us*, because that is a fault and not a refusal', async () => {
+    const t = await tenant();
+    const { requestId, body } = await paidWith(t, 'delivery-unauthenticated', {
+      async deliver() {
+        return { accepted: false, code: 'SIGNER_UNAUTHENTICATED', detail: 'the signer refused the delivery credential' };
+      },
+    });
+    // The distinction this asserts is the one the classification in `signer-client.ts`
+    // protects: a rejected delivery credential says this deployment is misconfigured, not
+    // that the ticket is unspendable. Treating it as terminal would give the day's
+    // capacity back *and* leave a minted, unredeemed ticket live to be re-delivered after
+    // the operator fixes the secret — capacity refunded twice over one typo.
+    expect(body.state).toBe('TICKET_ISSUED_NOT_DELIVERED');
+    expect((body as { code?: string }).code).toBe('SIGNER_UNAUTHENTICATED');
+    expect(await reservationState(requestId)).toBe('HELD');
+    expect(await reservedToday(t.orgId, t.agentId)).toBe(usd(500n));
+  });
 });
 
 describe('what the API process itself is allowed to hold', () => {
