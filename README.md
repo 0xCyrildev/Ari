@@ -257,4 +257,6 @@ running it for your own agents are all permitted, so evaluating this properly
 does not require asking anyone.
 
 If you want a different Change Date, a broader grant, or a licence that survives
-being the authorization layer for a payment product, write to hello@ari.systems.
+being the authorization layer for a payment product, open an issue on this
+repository. There is no domain yet, so there is deliberately no mailbox here to
+point at — an address that bounces is worse than no address.
