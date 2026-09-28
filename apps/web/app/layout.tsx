@@ -26,6 +26,12 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
+  // Without `width`, Next emits no device-width meta and phones render this page as a
+  // ~750px desktop layout zoomed to fit — measured on 2026-09-28: a 390px viewport reported a
+  // 753px layout width. Every "it looks funny on mobile" symptom traces back to this line.
+  // No `maximum-scale`: pinning the scale would stop the layout jumping, and stop zooming too.
+  width: 'device-width',
+  initialScale: 1,
   colorScheme: 'light dark',
   themeColor: [
     { media: '(prefers-color-scheme: light)', color: 'white' },

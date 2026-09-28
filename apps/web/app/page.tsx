@@ -119,29 +119,21 @@ export default function Page() {
           <motion.div
             className="page-loader"
             initial={{ opacity: 1 }}
+            animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.55, ease: 'easeInOut' }}
             aria-label="Loading ARI"
             role="status"
           >
-            <motion.img
-              src="/ari-logo.svg"
-              alt="ARI"
-              initial={{ scale: 0.82, opacity: 0, rotate: -12 }}
-              animate={{ scale: 1, opacity: 1, rotate: 0 }}
-              transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
-            />
-            <motion.strong
-              className="loader-wordmark"
-              initial={{ opacity: 0, letterSpacing: '0.6em', y: 10 }}
-              animate={{ opacity: 1, letterSpacing: '0.24em', y: 0 }}
-              transition={{ duration: 0.8, delay: 0.22, ease: [0.22, 1, 0.36, 1] }}
-            >ARI</motion.strong>
-            <motion.span
-              initial={{ width: 0 }}
-              animate={{ width: '100%' }}
-              transition={{ duration: 1.25, delay: 0.15, ease: 'easeInOut' }}
-            />
+            {/* The mark, the word and the bar animate in CSS, not here. Their entrance is the
+                thing a visitor sees while the page is still loading, and a framer-motion
+                `initial` state only exists once React has hydrated — so on a phone, where
+                hydration is the slow part, the loader rendered as a black rectangle with
+                nothing on it. Same durations, same easing, same order; now they run from the
+                first paint. */}
+            <img className="loader-mark" src="/ari-logo.svg" alt="ARI" />
+            <strong className="loader-wordmark">ARI</strong>
+            <span className="loader-bar" />
           </motion.div>
         )}
       </AnimatePresence>
