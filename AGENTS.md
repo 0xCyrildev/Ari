@@ -108,15 +108,18 @@ Decisions from this pass a later session must not quietly reverse:
 
 - **The licence is BUSL-1.1**, with the Additional Use Grant withholding exactly one thing:
   running Ari as a third party's permission infrastructure. Non-production, internal, and
-  own-agents use are permitted, so an evaluator never has to ask. Two things a later session must
-  check before this is legally load-bearing rather than merely present: the **Licensor name is
-  written as "Ari Systems" because that is what the site footer says**, and it must become the
-  actual legal entity; and the **Change License is Apache-2.0, which is what most BUSL holders
-  use but is not GPL-2.0-compatible**, while covenant 1 of the licence text asks for GPL-2.0-or-
-  later or something compatible with it — GPL-3.0+ is the covenant-strict substitution, so
-  switching is a one-line edit if that matters more than the patent grant. `Change Date` is
-  2030-09-27; the licence also converts four years after first public distribution, whichever is
-  sooner, so a Change Date earlier than that is the only one that actually binds.
+  own-agents use are permitted, so an evaluator never has to ask. **Resolved 2026-09-28:** the
+  Licensor is `zeroxcyril` — the handle the owner signs as, there being no company and no
+  domain — and the two site footers' copyright lines were brought into line with it, because a
+  footer reading "© 2026 ARI SYSTEMS" over a licence naming a different holder is the one
+  contradiction a reader can act on. "Ari" stays as the product wordmark; do not reintroduce
+  "ARI SYSTEMS" as if it named an entity. **Still open:** the **Change License is Apache-2.0,
+  which is what most BUSL holders use but is not GPL-2.0-compatible**, while covenant 1 of the
+  licence text asks for GPL-2.0-or-later or something compatible with it — GPL-3.0+ is the
+  covenant-strict substitution, so switching is a one-line edit if that matters more than the
+  patent grant. `Change Date` is 2030-09-27; the licence also converts four years after first
+  public distribution, whichever is sooner, so a Change Date earlier than that is the only one
+  that actually binds.
 
 **Corrected as of the fifth pass.** Done since: the `/record` trace builder
 (`lib/ari/trace.ts` — six stages rebuilt from the row's own events, each stage naming the
