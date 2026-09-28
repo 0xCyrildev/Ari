@@ -1,0 +1,18 @@
+# What must not leave this machine in a deploy archive.
+#
+# Pxxl's own defaults already exclude `.git`, `node_modules`, `dist`, `build`, `.next`,
+# `.turbo`, `.cache`, `*.log`, `.env`, `.env.*` and its own config, so this file is only
+# for what this repository generates that the defaults do not name.
+
+# A live bearer credential for the console, printed once by the operator path. It is
+# gitignored, and it is the one file here that would be a security incident rather than
+# a nuisance if it reached a container image.
+.console-credential
+
+coverage/
+*.tsbuildinfo
+
+# Research and evidence artefacts, kept out of the repository for the same reason.
+audit-export/
+local-proofs/
+.gstack/

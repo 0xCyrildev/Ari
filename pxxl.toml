@@ -1,0 +1,62 @@
+# Ari on Pxxl — one project, three services.
+#
+# These tables pin the *build* only. A service alias here must match a service saved on
+# the project, and Pxxl applies it to that service alone. The public route, the service
+# type and the replica count are not overridable in this file: they are project settings
+# in the dashboard, and the shape this deployment depends on is `web` routed, `api`
+# routed, and `signer` with **Route: No** — because `signer` is the process that holds
+# the sealing key, and Pxxl does not publish a hostname for an unrouted service.
+#
+# Secrets are not in this file and not in the repository. TICKET_KEY, CREDENTIAL_PEPPER,
+# APPROVAL_KEY, ORG_BOOTSTRAP_TOKEN, DATABASE_URL and SIGNER_WALLETS go in the project's
+# environment settings, and both processes read plain environment variables:
+# `--env-file-if-exists` makes the absence of a `.env` in a container a non-event.
+#
+# Each service must bind a routable interface, so `API_HOST` and `SIGNER_HOST` are set to
+# 0.0.0.0 in the dashboard. Both processes print what that means when they start, which is
+# the point rather than an obstacle.
+#
+# Replicas stay at 1 for every service. `ari-api` serialises one tenant's requests behind
+# a transaction-scoped advisory lock, and a second replica multiplies pools against a
+# design measured at p50 ~30 ms per request rather than solving anything.
+
+[build]
+packageManager = "pnpm"
+# The workspace declares `engines.node >= 24`; the platform's default is not this
+# repository's business to assume.
+nodeVersion = "24"
+
+[services.web]
+baseDirectory = "apps/web"
+framework = "nextjs"
+packageManager = "pnpm"
+runtimeVersion = "24"
+# apps/web is its own pnpm project — own lockfile, own workspace file, deliberately
+# outside the root workspace so a Next build never enters `pnpm typecheck` or `pnpm test`.
+installCommand = "pnpm install --frozen-lockfile"
+buildCommand = "next build"
+startCommand = "pnpm run start"
+port = 3000
+
+[services.api]
+baseDirectory = "apps/api"
+packageManager = "pnpm"
+runtimeVersion = "24"
+# The workspace installs from the repository root; the service then runs its own script
+# from its directory. `node --import tsx` finds tsx by walking up to the root
+# node_modules, which is why `tsx` is a dependency and not a devDependency here.
+installCommand = "cd ../.. && pnpm install --frozen-lockfile"
+buildCommand = ""
+startCommand = "pnpm run start"
+port = 4000
+
+[services.signer]
+baseDirectory = "apps/signer"
+packageManager = "pnpm"
+runtimeVersion = "24"
+installCommand = "cd ../.. && pnpm install --frozen-lockfile"
+buildCommand = ""
+# Answers GET /healthz for the platform's readiness check and POST /v1/sign for
+# everything else; 404 for the rest, by design.
+startCommand = "pnpm run start"
+port = 4100
