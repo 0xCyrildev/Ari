@@ -160,6 +160,108 @@ were the dev race, not the effect), and a partial credential is now genuinely us
 approver's secret that lacks `agent:manage` gets a live tenant plus a named refusal for the
 one route, instead of the sample view and an error line nobody could act on.
 
+## State — 2026-09-28 (sixth pass): the delivery gate, and what Pxxl will not do on Free
+
+Two things happened: the first production deploy was attempted, and the platform turned out to paywall
+precisely the shape we designed for. What shipped is in `7d492de` and `a63c6b4`, both on `origin/main`.
+
+### The signer's socket is now a surface with rules of its own
+
+`ari-signer`'s transport moved out of `main.ts` into **`apps/signer/src/http.ts`**, which was worth doing for
+its own reason: the route had **no tests at all** — `handler.test.ts` called `createSignHandler` as a plain
+function, so the 404, the 128 KiB cap, the JSON refusal and the answer-whatever-happens 500 were unasserted
+claims about a socket. They are asserted now over a real server on port 0 (13 cases), which is also the only
+way we learned that the 413 response still reaches the client after `req.destroy()`.
+
+- **`GET /healthz`** answers `{status:'ok'}` before the path table and before any body is read, and it is the
+  only GET. Not cosmetic: Pxxl schedules each service as a Nomad job that must pass an HTTP health check
+  before its route is promoted, and the signer previously 404'd everything including the check.
+- **`SIGNER_DELIVERY_KEY`** gates `/v1/sign` as a bearer, checked before the body, refusing with one
+  non-discriminating code (`SIGNER_UNAUTHENTICATED`) whether nothing or something-nearly-right was presented.
+  **Two rules, and both matter: presence enforces, so a deployment that configured one side only fails at
+  startup rather than at first payment; a non-loopback bind *requires* it, on either process.** Loopback with
+  no key stays legal, which is what the local flows use.
+- **A 401 is mapped without reading the body, and that is the money-bearing line in the file.** The signer's
+  own refusal name is `TICKET_INVALID`-adjacent and `TICKET_INVALID` is in `TERMINAL_REFUSALS`
+  (`apps/api/src/authorize.ts`), so reading through it would have released the day's capacity *and* left a
+  minted, unredeemed ticket live — capacity twice over one typo. `tests/security/api.test.ts` asserts the
+  parked outcome against the real routes, and tonight it was observed on live processes: wrong key →
+  `TICKET_ISSUED_NOT_DELIVERED SIGNER_UNAUTHENTICATED`, reservation `HELD`.
+- `acceptsBearerSecret`/`bearerToken`/`isLoopbackHost` live in `@ari/signing`, and
+  `acceptsBootstrapToken` delegates to them — one comparison, not four. The byte guard is load-bearing:
+  a `string.length` check calls `é` one character and two bytes, and the mismatch it lets through makes
+  `timingSafeEqual` **throw**, turning a denial into a 500.
+- `tsx` moved to `dependencies`: both processes run as `node --import tsx …`, so an install that prunes dev
+  dependencies yields a container that cannot boot — and `@node-rs/argon2` is the only other production
+  dependency, and the thing that hashes credentials.
+- Gates at this revision: `pnpm typecheck` clean, **335** unit, **244** security.
+
+### Pxxl: what was measured, not read
+
+- The CLI and SDK hardcode `https://gateway.pxxl.app/api/v3`, which answers `404 domain_not_connected` —
+  their edge has no origin for that hostname (`api.` and `dashboard.` do too). The live host, from their own
+  dashboard bundle, is `server.pxxl.app/api/v3`, and there the key returns
+  `402 plan_upgrade_required / requiredPlan: "Plus"`: *"The Pxxl SDK and CLI require an active paid plan."*
+  `pxxl login --api-url` throws by design and the SDK's `baseUrl` is `@deprecated` then overwritten
+  (`pxxl/dist/index.js:28`), so there is no local workaround, and 0.1.11 is the newest published CLI.
+- **Multiple Services is real but paid** — `Route: No` (an unrouted service with no public hostname) is
+  exactly what Ari wants for the signer, and it is behind Plus. `deploy()` forwards twelve scalar keys and no
+  `services` array, and `pxxl init` never copies the manifest's `services` into `pxxl.toml`, so the CLI could
+  not express it either. Free tier: 5 projects, 1 domain, 1 database, and the Database/Domain/MCP sidebar
+  entries are lock-iconed. Regions are **Europe only** (`eu-central` Nuremberg default, `eu-west` Paris,
+  `eu-north` Helsinki) despite the positioning. Runtime is Nomad + Consul + gVisor, Caddy at the edge, env
+  via Vault; archives ≤ 220 MiB (this repo measured 2.0 MB).
+- The card failed, so Plus was not available. What follows is the two shapes, ready to type.
+
+**Free — three projects, one repo, commit `a63c6b4`.** The signer is public-by-necessity and the delivery
+gate is what makes that survivable; turn on Pxxl's Password Protection for its hostname too if their edge
+challenge accepts a non-browser client (untested — if it does not, the api's delivery silently parks holds,
+which is why the stderr line exists).
+
+| Project | Working dir | Port | Install | Build | Start |
+|---|---|---|---|---|---|
+| `ari-web` | `apps/web` | 3000 | `pnpm install --frozen-lockfile` | `next build` | `pnpm run start` |
+| `ari-api` | `apps/api` | 4000 | `cd ../.. && pnpm install --frozen-lockfile` | — | `pnpm run start` |
+| `ari-signer` | `apps/signer` | 4100 | `cd ../.. && pnpm install --frozen-lockfile` | — | `pnpm run start` |
+
+Env: `ari-web` `ARI_API_URL=https://<api host>`, `WAITLIST_DATABASE_URL` (optional; unset answers 503 by
+design). `ari-api` `API_HOST=0.0.0.0`, `DATABASE_URL`, `DATABASE_ROLE=ari_app`, `TICKET_KEY`, `APPROVAL_KEY`,
+`CREDENTIAL_PEPPER`, `ORG_BOOTSTRAP_TOKEN`, `SIGNING_PROVIDER=mock`, `SIMULATION_PROVIDER=mock`,
+`SIGNER_URL=https://<signer host>/v1/sign`, `SIGNER_DELIVERY_KEY`. `ari-signer` `SIGNER_HOST=0.0.0.0`,
+`SIGNER_WALLETS`, `TICKET_KEY`, `SIGNER_DELIVERY_KEY`, `DATABASE_URL`, `DATABASE_ROLE=ari_app`,
+`SIGNING_PROVIDER=mock`. Health check path `/healthz` on both backends, `/` on the web. Replicas 1 each.
+`API_HOST`/`SIGNER_HOST=0.0.0.0` are not optional — both bind loopback by default and a container that binds
+loopback starts cleanly, passes its own health check, and 502s from outside.
+
+**Plus — one project, three services**, `pxxl.toml` already pins the build for it, and `Route: No` on
+`signer` is set in the dashboard (the file cannot say it). Then `SIGNER_URL` is the internal alias form —
+measure it from the api container with `curl http://signer:4100/healthz` — and the gate stays on as defence in
+depth at no cost.
+
+**Three measurements decide any Pxxl deploy**, in this order: does the managed login have `rolcreaterole`
+(`migrations/003_audit.sql` runs `CREATE ROLE ari_app NOLOGIN NOINHERIT`, and `scripts/migrate.mts` names the
+fallback); does `options: '-c role=ari_app'` survive their **database router** — probe with
+`SELECT session_user, current_user` and if it is not `ari_app`, the answer is a session-mode endpoint, **never
+dropping `DATABASE_ROLE`**, which is the silent multi-tenant hole the startup refusal exists to prevent; and
+whether an unrouted service is addressable at all.
+
+**Migrations are run from outside the service, once:** `DATABASE_URL='<hosted url>' pnpm db:migrate`. Not
+from the app — `ari_app` holds no DDL rights by design (`008`), and not from a test harness that would skip on
+an unreachable database. It re-applies all fifteen files idempotently, so a rerun is safe and a failure names
+the file.
+
+### Staging that runs tonight, at zero cost
+
+`ari-api` + `ari-signer` + the existing Postgres on this box, with `cloudflared`'s account-free quick tunnel
+in front of the API only — the correct topology, because the signer never leaves `127.0.0.1`. Observed end to
+end over the public HTTPS origin: `preview → DECIDED`, five $900 payments then
+`DENIED AMOUNT_EXCEEDS_DAILY_LIMIT,LIMIT_RESERVATION_FAILED`, `RECIPIENT_NOT_IN_ALLOWLIST`, and the approval
+loop — $2,000 → `APPROVAL_PENDING`, the agent 401'd when it tried to decide its own approval, one approver
+vote → `GRANTED`, the retry with that seal → `COMPLETE` on the same `txr_` id, token absent from every
+agent-readable read. Ledger agreed: `SETTLED` holds, `approval.granted/human=1`, `ticket.minted/agent=4`.
+Seed to `/tmp/ari-seed.json` (0600), key in `/tmp/ari-keys.env`, drivers in `/tmp/ari-staging-proof.mjs` and
+`/tmp/ari-one.mjs`. A quick tunnel is ephemeral and unauthenticated at the edge: it is staging, not a host.
+
 ## Decisions made here, that a later session must not quietly reverse
 
 - **The digest is derived inside the policy engine, never accepted from the caller.** `evaluate()` used to
@@ -542,9 +644,13 @@ one route, instead of the sample view and an error line nobody could act on.
 - **`@ari/simulation` is plain `fetch` JSON-RPC, with no provider SDK.** `viem` and `ethers` both pull a
   dependency that runs code at install time, and `allowBuilds` exists to keep that out of this repository —
   including for `esbuild`. Five methods and an envelope is smaller than the supply-chain decision required
-  to avoid writing them. Note for a later session: Node 24's global `fetch` on this box cannot reach *any*
-  remote HTTPS host (raw TCP to the same addresses connects, `curl` returns 200), so a real-chain provider
-  cannot be exercised here even in principle, and no test should assume it can.
+  to avoid writing them. **The old note here — "Node 24's global `fetch` on this box cannot reach *any* remote
+  HTTPS host" — is false, and was corrected on 2026-09-28 by measurement:** Node reached `cloudflare-eth.com`
+  and got `eth_chainId = 0x1` back in 745 ms, plus four other remote HTTPS hosts with response bodies read.
+  What is true about this box is narrower: `curl`'s IPv6-first attempts to Cloudflare-hosted names fail
+  (`curl -4` succeeds, `curl -6` returns 000) while Node's Happy-Eyeballs path falls back and works, so a
+  curl failure against such a host says nothing about what `fetch` can do. A real-chain provider *can* be
+  exercised from here; see open thread 11(b).
 - **The CLI's commands declare two things about themselves: whether they need a deployment, and every flag
   they read.** Both were claims without mechanisms before: `run()` resolved `--url` before dispatch, so
   `ari verify chain --in export.json` — a command that touches no network — could not run without a URL, and
@@ -835,12 +941,26 @@ assertions about somebody else's chain.
    `timeoutMs` default of 3 000 is time an agent waits before it is told anything, and nothing asserts the
    end-to-end p50/p95 of a simulated request. If that ever matters, it is a benchmark, like the throughput
    claim in 10a, not a test.
-   (b) *It answers about whatever chain it is pointed at.* This box cannot reach a remote RPC at all (Node's
-   fetch, not the network — see `ASSUMPTIONS.md` §1), so `EvmForkProvider` has never seen a chain with real
-   counterparty state on it. The gate that makes that safe is the recorded `chainId`/`blockNumber`/`timestamp`
-   plus the two-directional chain guard; the thing that would make it *useful* is a deployment with a real
-   endpoint, and A10's "blocking once a real provider lands" has **not** been reached — advisory is still the
-   honest setting, because a local anvil's state root proves mechanics and nothing else.
+   (b) *It answers about whatever chain it is pointed at.* The blocker recorded here for weeks — that this box
+   cannot reach a remote RPC at all — **is gone: on 2026-09-28 Node's `fetch` got `eth_chainId = 0x1` from
+   `https://cloudflare-eth.com` in 745 ms.** So `EvmForkProvider` can be pointed at a chain with real
+   counterparty state on it, and nothing has done so yet: what was proven is one `eth_chainId` round trip, not
+   a fork simulation, and `SIM_RPC_URL` has still never been set against a public endpoint in this repository.
+   The gate that makes a real endpoint safe is the recorded `chainId`/`blockNumber`/`timestamp` plus the
+   two-directional chain guard; A10's "blocking once a real provider lands" is now reachable, and advisory is
+   still the honest default until someone runs that experiment and reports what the state root said.
    (c) *The Ika wallets have no address yet.* `wallet create --address` is the only way to give the simulation
    plane a `from`, and a dWallet's address is derived, not typed — Phase 8 needs to write it, and until then
    every Ika-backed wallet is `WALLET_ADDRESS_UNKNOWN`, which is a refusal and not a failure, by design.
+
+12. **Minted-but-never-redeemed tickets accumulate forever.** Counting them during the 2026-09-28 staging run
+    gave **635 redeemed / 3,368 unredeemed** — and that table is the one tenant-bearing table with no
+    `org_id` and no row security (`011`'s documented exception, because the signer redeems across tenants), so
+    the number is *all history on this box*, not one tenant's. Nothing expires, prunes, or reports them: a
+    ticket past `expires_at_ms` is unspendable — the signer's own clock refuses it, which is the point — but the
+    row stays. Two consequences worth owning before Phase 8: an operator cannot ask "how many authorisations were
+    minted and never delivered", which is exactly the question a `TICKET_ISSUED_NOT_DELIVERED` incident wants
+    answered at scale; and the count is a slow leak of dead rows in the one table where a bug would be
+    cross-tenant. The fix is a reconciliation pass that can name them per tenant through the decision row it
+    already joins, not a `DELETE` — `008` withholds that from `ari_app` on purpose, and a one-way door in the
+    schema is worth more than a tidy table.

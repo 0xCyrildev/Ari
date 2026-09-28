@@ -1,5 +1,15 @@
 # Ari on Pxxl — one project, three services.
 #
+# THIS FILE DESCRIBES THE PAID SHAPE. `Multiple Services` is a Plus feature, and on the
+# Free plan a project is one service, so Pxxl finds no saved service whose alias matches
+# `[services.*]` and these tables change nothing. What ships today is therefore three
+# single-service projects — `ari-web`, `ari-api`, `ari-signer` — whose working directory,
+# commands, ports and environment must be typed into each project's dashboard form; the
+# exact values are in `AGENTS.md`, "State — 2026-09-28 (sixth pass)". The consequence of
+# that shape is the one this repository now carries in code: `ari-signer` gets a public
+# hostname, so `SIGNER_DELIVERY_KEY` is what stands between a stranger and `/v1/sign`
+# besides the seal, and it is *required* the moment the signer binds beyond loopback.
+#
 # These tables pin the *build* only. A service alias here must match a service saved on
 # the project, and Pxxl applies it to that service alone. The public route, the service
 # type and the replica count are not overridable in this file: they are project settings
@@ -8,9 +18,10 @@
 # the sealing key, and Pxxl does not publish a hostname for an unrouted service.
 #
 # Secrets are not in this file and not in the repository. TICKET_KEY, CREDENTIAL_PEPPER,
-# APPROVAL_KEY, ORG_BOOTSTRAP_TOKEN, DATABASE_URL and SIGNER_WALLETS go in the project's
-# environment settings, and both processes read plain environment variables:
-# `--env-file-if-exists` makes the absence of a `.env` in a container a non-event.
+# APPROVAL_KEY, ORG_BOOTSTRAP_TOKEN, SIGNER_DELIVERY_KEY, DATABASE_URL and SIGNER_WALLETS
+# go in the project's environment settings, and both processes read plain environment
+# variables: `--env-file-if-exists` makes the absence of a `.env` in a container a
+# non-event.
 #
 # Each service must bind a routable interface, so `API_HOST` and `SIGNER_HOST` are set to
 # 0.0.0.0 in the dashboard. Both processes print what that means when they start, which is
