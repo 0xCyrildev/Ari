@@ -132,6 +132,22 @@ describe('the sign path', () => {
     expect(response.status).toBe(413);
     expect(open.calls()).toBe(before);
   });
+
+  it('is the same route with a query string on it', async () => {
+    // `req.url` carries the query, so a comparison against the bare path made
+    // `/v1/sign?anything` a 404 — and a 404 answers with no refusal code, which the
+    // decision plane then has to guess at. Found on the deployed pair, where a stray
+    // parameter turned a working delivery into an unclassifiable one.
+    const before = open.calls();
+    open.outcomes.push({ status: 'REJECTED', code: 'TICKET_INVALID', detail: 'MALFORMED' });
+    const response = await ask(open, '/v1/sign?cache=1758062400', { method: 'POST', body: jsonBody });
+    expect(response.status).toBe(403);
+    expect(open.calls()).toBe(before + 1);
+
+    const health = await ask(open, '/healthz?ts=1');
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({ status: 'ok' });
+  });
 });
 
 describe('the delivery gate', () => {

@@ -132,6 +132,16 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     return reply.code(500).send({ code: 'INTERNAL' });
   });
 
+  // An unknown route is not a bug in this process, so it gets no description of one.
+  // Fastify's default answers `{"message":"Route GET:/ not found",…}`, which names the
+  // framework and reflects the caller's path back at it — and the same reasoning that put
+  // `setErrorHandler` above says the body a stranger reads is not theirs to have. The
+  // console's proxy already refuses with "a 404 that names nothing"; the payment API is
+  // held to the same standard, including for the one case that is not an error.
+  app.setNotFoundHandler((_request, reply) => {
+    reply.code(404).send({ code: 'NOT_FOUND' });
+  });
+
   app.get('/healthz', async () => ({ status: 'ok' }));
 
   app.post('/v1/organizations', async (request, reply) => {

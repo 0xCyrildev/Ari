@@ -86,9 +86,16 @@ async function respond(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
+  // `req.url` is the whole request target, query string included, so comparing it to a
+  // path makes `/v1/sign?x=1` a different endpoint than `/v1/sign`. Measured on the
+  // deployed pair: a stray parameter or a trailing slash turns the route into a 404, and a
+  // 404 carries no refusal code — leaving the decision plane to guess at what it was told.
+  // The path is the route; the query is not part of it.
+  const path = (req.url ?? '').split('?')[0];
+
   // Readiness is answered first, and before any body is read: a platform health check is
   // a GET, and a check that returns 404 is a service that never gets promoted.
-  if (req.method === 'GET' && req.url === HEALTH_PATH) {
+  if (req.method === 'GET' && path === HEALTH_PATH) {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok' }));
     return;
@@ -109,7 +116,7 @@ async function respond(
     return;
   }
 
-  if (req.method !== 'POST' || req.url !== SIGN_PATH) {
+  if (req.method !== 'POST' || path !== SIGN_PATH) {
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end('{"state":"NOT_FOUND"}');
     return;

@@ -687,6 +687,24 @@ describe('what the ledger does with the signer’s answer', () => {
     expect(await reservationState(requestId)).toBe('HELD');
     expect(await reservedToday(t.orgId, t.agentId)).toBe(usd(500n));
   });
+
+  it('parks it when the signer answered something this client cannot classify', async () => {
+    const t = await tenant();
+    const { requestId, body } = await paidWith(t, 'delivery-unrecognised', {
+      async deliver() {
+        // Exactly what a `SIGNER_URL` with a trailing slash produces: the signer's 404,
+        // which carries a state and no code.
+        return { accepted: false, code: 'SIGNER_ANSWER_UNRECOGNISED', detail: 'signer answered 404 without a code' };
+      },
+    });
+    // The regression this guards is a released hold: on 2026-09-28 the deployed pair refunded
+    // a day's capacity and wrote `reservation.released` for a typo in an environment
+    // variable, because the client's fallback named a *terminal* code. An unclassifiable
+    // answer must leave the money parked and the ticket redeemable.
+    expect(body.state).toBe('TICKET_ISSUED_NOT_DELIVERED');
+    expect(await reservationState(requestId)).toBe('HELD');
+    expect(await reservedToday(t.orgId, t.agentId)).toBe(usd(500n));
+  });
 });
 
 describe('what the API process itself is allowed to hold', () => {
@@ -715,6 +733,25 @@ describe('what the API process itself is allowed to hold', () => {
       }
     } finally {
       client.release();
+    }
+  });
+
+  it('answers an unknown route without naming the framework or echoing the path', async () => {
+    // Fastify's default body for this is `{"message":"Route GET:/not-a-route not
+    // found","error":"Not Found","statusCode":404}` — a product fingerprint plus the
+    // caller's own guess reflected back at it. Observed on the deployed API on 2026-09-28,
+    // which is how the gap was found: `setErrorHandler` had been added for exactly this
+    // reason, and the not-found path was never given the same treatment.
+    for (const [method, url] of [
+      ['GET', '/not-a-route'],
+      ['POST', '/v1/sign'],
+      ['GET', '/v1/users/nope/nope'],
+    ] as const) {
+      const response = await api.app.inject({ method, url });
+      expect(response.statusCode, `${method} ${url}`).toBe(404);
+      expect(response.json()).toEqual({ code: 'NOT_FOUND' });
+      expect(response.body).not.toContain('not-a-route');
+      expect(response.body.toLowerCase()).not.toContain('fastify');
     }
   });
 

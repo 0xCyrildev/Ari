@@ -60,6 +60,21 @@ describe('how the client reads a refusal', () => {
     expect(result).toEqual({ accepted: false, code: 'TICKET_ALREADY_USED', detail: 'redeemed' });
   });
 
+  it('calls an answer with no code "not understood", never a terminal ticket refusal', async () => {
+    const { fetchImpl } = responder(404, { state: 'NOT_FOUND' });
+    const result = await createSignerClient({ url: 'http://127.0.0.1:4100/v1/sign', deliveryKey: key, fetchImpl }).deliver(request);
+    // The default on this path was `TICKET_INVALID`, which is terminal — so a `SIGNER_URL`
+    // with a trailing slash released a day's capacity, wrote `reservation.released`, and
+    // moved the request to `SIGNING_FAILED` while the minted ticket sat unspent and still
+    // spendable. Measured on the deployed pair, 2026-09-28. An answer this client cannot
+    // classify is this client's problem to report, not a refusal the agent cannot honour.
+    expect(result).toEqual({
+      accepted: false,
+      code: 'SIGNER_ANSWER_UNRECOGNISED',
+      detail: 'signer answered 404 without a code',
+    });
+  });
+
   it('reports an unreachable signer as an attempt that did not happen', async () => {
     const fetchImpl = (async () => {
       throw new Error('connect ECONNREFUSED');

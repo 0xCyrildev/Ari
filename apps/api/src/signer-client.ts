@@ -78,9 +78,23 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
         // this deployment's configuration rather than an unspendable ticket.
         return { accepted: false, code: 'SIGNER_UNAUTHENTICATED', detail: 'the signer refused the delivery credential' };
       }
+      const named = typeof body.code === 'string' && body.code.length > 0 ? body.code : null;
+      if (named === null) {
+        // **A missing code is never `TICKET_INVALID`.** Measured on the deployed pair on
+        // 2026-09-28: `SIGNER_URL` carried a trailing slash, the signer answered its 404 —
+        // `{"state":"NOT_FOUND"}`, no `code` — and defaulting the fallback to a terminal
+        // name released the hold, wrote `reservation.released`, and moved the request to
+        // `SIGNING_FAILED` while the ticket it had minted sat there unspent and spendable.
+        // A misconfiguration was booked as a refusal the agent could never honour.
+        //
+        // So an answer this client cannot classify is reported as *not understood*, which is
+        // transient by construction: the hold stays parked, the ticket stays redeemable, and
+        // the operator's log says the truth. Terminal classifications belong to named codes.
+        return { accepted: false, code: 'SIGNER_ANSWER_UNRECOGNISED', detail: `signer answered ${response.status} without a code` };
+      }
       return {
         accepted: false,
-        code: String(body.code ?? 'TICKET_INVALID'),
+        code: named,
         detail: String(body.detail ?? `signer answered ${response.status}`),
       };
     },
