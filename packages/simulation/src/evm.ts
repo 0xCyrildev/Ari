@@ -68,7 +68,13 @@ class RpcFailure extends Error {
   }
 }
 
-const SELECTOR_REVERT_STRING = '0x08c379a0';
+const SELECTOR_REVERT_STRING = '0x08c379a0'; // Error(string)
+// Not hypothetical: **mainnet USDC takes this path.** Verified on-chain 2026-09-29 — a transfer
+// from an empty wallet reverts with `Error(string)` ("ERC20: transfer amount exceeds balance"),
+// while this repository's own anvil fixture deploys a token that uses the custom errors below. So
+// the specific reason an ERC-20 payment failed is reachable by selector on the fixture and
+// deliberately *not* reachable on the token the product actually targets. Weighed and kept: the
+// wording is the contract author's, and it changes without this repository changing.
 
 /**
  * `keccak256(signature)[0:4]` for the reverts worth naming.

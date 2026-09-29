@@ -692,6 +692,8 @@ export interface ActionResult {
   readonly message: string
   /** A minted bearer secret appears exactly once, here, and is never stored or re-read. */
   readonly bearer?: string
+  /** When a minted secret stops working, when the route says. Nothing re-reads it afterwards. */
+  readonly expiresAt?: string
 }
 
 export interface ConsoleApi {
@@ -707,6 +709,12 @@ export interface ConsoleApi {
   createAgent(name: string): Promise<ActionResult>
   revokeAgent(agentId: string): Promise<ActionResult>
   issueAgentCredential(agentId: string, scopes: readonly string[], ttlMs: string): Promise<ActionResult>
+  /**
+   * Mint the next credential for the person already holding this one. The scopes are not sent:
+   * the route restates what the presenting credential holds and refuses anything wider, so a
+   * browser cannot ask for authority on a person's behalf.
+   */
+  rotateOwnCredential(ttlMs: string): Promise<ActionResult>
   registerWallet(input: { displayName: string; mode: 'delegated' | 'user_gated'; signatureTriple: string; provider: string; address: string | null }): Promise<ActionResult>
   grantWallet(agentId: string, walletId: string, policyVersionId: string): Promise<ActionResult>
   applyPolicy(name: string, document: unknown, activate: boolean, justification: string | null): Promise<ActionResult>
@@ -841,10 +849,12 @@ export function ConsoleProvider({ children }: { readonly children: ReactNode }) 
         const answer = await call<Record<string, unknown>>('POST', path, token, body)
         await load(token)
         const bearerValue = typeof answer.bearer === 'string' ? answer.bearer : undefined
+        const expiresValue = typeof answer.expiresAt === 'string' ? answer.expiresAt : undefined
         return {
           ok: true,
           message: bearerValue === undefined ? 'accepted' : 'The credential exists once, here, and cannot be read back afterwards.',
           ...(bearerValue === undefined ? {} : { bearer: bearerValue }),
+          ...(expiresValue === undefined ? {} : { expiresAt: expiresValue }),
         }
       } catch (cause) {
         return { ok: false, message: cause instanceof Error ? cause.message : 'refused' }
@@ -855,7 +865,19 @@ export function ConsoleProvider({ children }: { readonly children: ReactNode }) 
 
   const api = useMemo<ConsoleApi>(
     () => ({
-      view,
+      view:
+        // A credential that cannot read `/v1/summary` never switches the view over, and the view
+        // it never switched away from is the sample tenant. The badge says a secret is attached,
+        // the rows say something else, and the two together are the one thing this file exists to
+        // refuse: a page of fixture rows under a header that reads as live. So the banner is
+        // rewritten to the truth the badge cannot carry on its own.
+        token !== null && view.source !== 'live'
+          ? {
+              ...view,
+              notice:
+                'A credential is attached, but it cannot read this tenant’s summary, so every row below is still the sample tenant, not your data. The settings screen names the refused reads.',
+            }
+          : view,
       loading,
       error,
       connected: token !== null,
@@ -874,6 +896,7 @@ export function ConsoleProvider({ children }: { readonly children: ReactNode }) 
       createAgent: (name) => write('/v1/agents', { name }),
       revokeAgent: (agentId) => write(`/v1/agents/${encodeURIComponent(agentId)}/revoke`, {}),
       issueAgentCredential: (agentId, scopes, ttlMs) => write(`/v1/agents/${encodeURIComponent(agentId)}/credentials`, { scopes, ttlMs }),
+      rotateOwnCredential: (ttlMs) => write('/v1/me/credentials', { ttlMs }),
       registerWallet: (input) => write('/v1/wallets', input.address === null ? { ...input } : input),
       grantWallet: (agentId, walletId, policyVersionId) =>
         write(`/v1/agents/${encodeURIComponent(agentId)}/wallets/${encodeURIComponent(walletId)}`, { policyVersionId }),
