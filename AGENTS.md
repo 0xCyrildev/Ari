@@ -1456,20 +1456,19 @@ assertions about somebody else's chain.
     already joins, not a `DELETE` — `008` withholds that from `ari_app` on purpose, and a one-way door in the
     schema is worth more than a tidy table.
 
-13. **The waitlist is provisioned; the deployment is what is left.** A second, separate database
-    (`ari_waitlist`, on the pooled endpoint of the same hosted project — never the ledger's URL,
-    which is what `SHARES_OPERATIONAL_DATABASE` exists to catch) now exists, and
-    `apps/web/db/waitlist.sql` has been applied to it: `waitlist_signups (id, email UNIQUE not null,
-    created_at)`, table empty, no test rows left. Two things that were assumed got measured instead:
-    `sslmode=verify-full` **does** handshakes against the pooled hostname (the certificate covers
-    it — the earlier worry that only the direct endpoint would was wrong), and `pg_stat_ssl` answers
-    `ssl=false` from the server's side because the provider terminates TLS at its own proxy, which
-    is corroboration and not a failure — the successful verified handshake is the proof. **Still
-    open:** `WAITLIST_DATABASE_URL` is not set on the Vercel deployment, so the live form still
-    answers `503 WAITLIST_UNCONFIGURED` for every address. Setting it and redeploying is the owner's
-    dashboard action; the route itself has been driven end to end against a local `pnpm start` and
-    returns `200 {"ok":true}`, `400` for a malformed address, and absorbs a repeat submission into
-    one row.
+13. **The waitlist is live and verified end to end.** A second, separate database (`ari_waitlist`,
+    on the **pooled** endpoint of the same hosted project — never the ledger's URL, which is what
+    `SHARES_OPERATIONAL_DATABASE` exists to catch) holds `waitlist_signups (id, email UNIQUE not
+    null, created_at)` from `apps/web/db/waitlist.sql` (not from `migrations/`, because
+    `global-setup.ts` re-applies every file there against the ledger schema). `WAITLIST_DATABASE_URL`
+    is set on the Vercel deployment and the public origin was driven with real requests: valid
+    address → `200 {"ok":true}`, the same address in a different case → `200` and **one row** (the
+    route's `toLowerCase()` plus the `UNIQUE` column is what makes `on conflict do nothing` a fact),
+    malformed and empty body → `400`. Test rows were deleted; the table is empty for real signups.
+    Two assumptions got measured on the way: `sslmode=verify-full` **does** handshake against the
+    pooled hostname (the earlier worry that only the direct endpoint would was wrong), and
+    `pg_stat_ssl` answering `ssl=false` from the server's side is the provider's proxy hop —
+    corroboration, not failure; the verified handshake is the proof.
 13a. **The first signup of the day used to fail, and now it takes nine seconds.** Measured against
     that fresh database: with the hosted compute asleep, the first `POST /api/waitlist` failed, an
     **immediate** retry failed the same way inside 4.7 s, and a request a few seconds later
@@ -1484,7 +1483,10 @@ assertions about somebody else's chain.
     - It was honest before the fix and is honest after it: the refused request never filed the
       address, so no one was told a lie. The defect was the lost signup, not a false success.
     - Nine seconds is a slow form. If that ever matters, the fix is to stop the compute suspending,
-      not to shorten the budget — a shorter budget is just a faster refusal.
+      not to shorten the budget — a shorter budget is just a faster refusal. It has now been seen
+      doing exactly that in production: the first request against the deployed origin after a quiet
+      period took **8.8 s and returned 200**, the one after it 1.5 s. Before this change that
+      visitor got a 500.
     And the log line carries `safeErrorSummary`, which is message-truncated and address-redacted,
     because the first version logged `name=Error` with no code and no syscall at all — true, and
     useless to whoever has to tell "down" from "waking".
