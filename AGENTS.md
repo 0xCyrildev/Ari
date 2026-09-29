@@ -1447,12 +1447,15 @@ assertions about somebody else's chain.
    denial. Say so if a later session changes that ordering: it is the reason two clocks are
    tolerable here at all.
 
-11. **Simulation exists; three things about it are still open, and none is a provider.**
+11. **Simulation exists, and has now been pointed at a real chain.** What remains is a coverage gap in
+    the revert classifier (below) and the absent dWallet address; neither is a provider.
    (a) *The bound is on the DB cost, not the latency.* The simulated path is now measured and priced — 36
    statements against 30, delta ≤6 — but what that number cannot see is wall clock: a configured provider's
    `timeoutMs` default of 3 000 is time an agent waits before it is told anything, and nothing asserts the
    end-to-end p50/p95 of a simulated request. If that ever matters, it is a benchmark, like the throughput
-   claim in 10a, not a test.
+   claim in 10a, not a test. Measured once on 2026-09-29 against a keyed mainnet endpoint (see (c)):
+   p50 256 ms per round trip, a whole `simulate()` at 334–1 904 ms against the 3 000 ms default —
+   still asserted by no test, but no longer an unknown.
    (b) *It answers about whatever chain it is pointed at.* The blocker recorded here for weeks — that this box
    cannot reach a remote RPC at all — **is gone: on 2026-09-28 Node's `fetch` got `eth_chainId = 0x1` from
    `https://cloudflare-eth.com` in 745 ms.** *(That inference did not survive the next morning — see (c)
@@ -1480,11 +1483,42 @@ assertions about somebody else's chain.
      block on — which is an argument for advisory that has nothing to do with state roots.
    - The IPv6 hazard in the simulation section fired again, unprompted: a name publishing AAAA first died with
      `UND_ERR_CONNECT_TIMEOUT` listing IPv6 addresses, and `--dns-result-order=ipv4first` is still the fix.
-   - **Not answered: what the state root said.** `EvmForkProvider` was never run against verified mainnet
-     state, because the run needs a token address confirmed on-chain (`eth_call symbol()` → `USDC`) and every
-     gateway that could serve it had begun refusing by the time the address mattered. `SIM_RPC_URL` is still
-     unset in this repository, advisory is still the honest default, and the next attempt should use a keyed
-     endpoint rather than a public one — the rate limit, not the chain, is what stopped this.
+   - **Answered 2026-09-29, against a keyed endpoint.** With an Alchemy mainnet URL in `SIM_RPC_URL`
+     (+ `SIM_CHAIN_ID=1`, which the api requires the moment a URL is present), `EvmForkProvider` was
+     run against real state for the first time. The token address was **verified on-chain, not
+     recalled** — the address recall would have typed (`0xA0b86991c621b4c36E1643A23508E50d912477Ad`)
+     has **zero bytes of code at it**, and the script refuses to simulate until
+     `symbol()` answers `USDC`; the real one is `0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`
+     (2,186 bytes). Every guard behaved as designed:
+     - configured for chain 5 against a chain-1 node → `CHAIN_ID_MISMATCH`, *and no `eth_call` was
+       issued*; the reverse direction (candidate naming `11155111` to a chain-1 node) refused too.
+     - **pinned to block 1, before USDC existed → `TARGET_HAS_NO_CODE`**, and pins at head−500 and
+       head−200 answered with exactly those block numbers. That is the state-root question: a public
+       node honours historical state rather than quietly replying at the head, which is the only
+       thing separating simulation from guesswork.
+     - `maxStalenessSeconds: 1` → `BLOCK_STALE: the block is 12s old`, so the recorded timestamps are
+       real and the bound fires.
+     - Wall clock (the number thread 11a said nothing asserted): raw round trips **p50 256 ms, max
+       1 604 ms**, whole `simulate()` calls 334–1 904 ms against the 3 000 ms `timeoutMs` default.
+       Headroom, but one slow `eth_call` plus five round trips is not nothing.
+   - **And it found something the anvil suite cannot.** A transfer from a genuinely empty wallet
+     (`balanceOf` = 0, no code — checked first, because the first address tried, `0x1111…1111`,
+     turned out to hold 1,109 USDC and the "revert" prediction failed for the mundane reason that the
+     wallet was not broke) returns `SIMULATED_REVERT` with `revert: REVERT_WITH_MESSAGE` and
+     `0x08c379a0…` — **Circle's USDC reverts with a plain `Error(string)`**
+     (`"ERC20: transfer amount exceeds balance"`), not the custom error the repository's own fixture
+     deploys. So every `CUSTOM_ERRORS` entry that names an ERC-20 failure is exercised against an
+     OpenZeppelin-modern token and has **never been seen on the mainnet token the product actually
+     targets**, where the specific reason is unreachable by selector. The behaviour is honest — text
+     matching is deliberately not a fallback — but `tests/security/fixtures/minierc20.json` is not
+     representative, and an operator reading a mainnet simulation gets "it reverted" where the
+     fixture's tests imply "insufficient balance". Worth deciding: map the known OZ revert strings
+     explicitly, or deploy a string-revert fixture so both shapes are actually tested.
+   - Public gateways remain unusable as a substrate: `cloudflare-eth.com` answers `eth_chainId` and
+     refuses the other four methods, and three that worked initially were rate-limiting within two
+     minutes. A keyed endpoint is not a preference here, it is what the measurement needed. Advisory
+     is still the honest default for the *deployment* — this run proves the provider works, not that
+     a public RPC is something to put behind a payment.
    (d) *The Ika wallets have no address yet.* `wallet create --address` is the only way to give the simulation
    plane a `from`, and a dWallet's address is derived, not typed — Phase 8 needs to write it, and until then
    every Ika-backed wallet is `WALLET_ADDRESS_UNKNOWN`, which is a refusal and not a failure, by design.
