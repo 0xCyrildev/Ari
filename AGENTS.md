@@ -758,6 +758,34 @@ change what a browser can reach.
     a check that refused everything would pass a test that only counts refusals.
   - Counts are tenant-scoped and `::int`-cast throughout, per thread 8: an unscoped count in this
     suite counts history, and `count(*)` arrives as a string.
+- **The console screen exists, and it found a pre-existing lie on its own way there.**
+  `/console/settings` now carries a MY CREDENTIAL panel (1/7/30-day lifetimes), `rotateOwnCredential`
+  on the hook, and `ActionResult.expiresAt` so a person knows when to rotate again. Thread 1's
+  remaining half is closed.
+  - **Verified by clicking it in a browser, not by building it.** A real `ucrd_` was put in
+    `sessionStorage`, the page loaded, MINT 7 DAYS was clicked, and a one-time bearer rendered. Twice.
+    Then the trail was read from the database: two `credential.rotated` rows, `actor_type=human`,
+    each naming the secret it replaced. The proxy was checked the same way: `POST
+    /api/ari/v1/me/credentials` answers the upstream's `401 CREDENTIAL_MISSING` while the bootstrap
+    mint answers the proxy's `404 NOT_FOUND` — which is the allowlist working, and the control that
+    proves it isn't passing by accident.
+  - **What that surfaced: a credential with no read scope was being shown the fixture.** The seeded
+    approver holds only `approval:decide`, so six of the seven console reads answer `403
+    SCOPE_REFUSED` and `load()` never switches the view over (by design — `summary` is the read that
+    names the tenant). The result was a screen full of sample rows under a badge reading CONNECTED,
+    which is precisely the failure `console.tsx`'s own comment refuses: *"a screen that flips to the
+    sample the moment one read fails would show fake rows under a banner that says live."* The
+    comment was right and the code did the thing anyway. Fixed where every screen reads it: when a
+    token is attached and `view.source` is still `sample`, the notice is rewritten to say the rows
+    are not your data. The badge no longer contradicts the table.
+  - **The design gate caught my copy.** The console tree carries a **zero** em-dash budget, and the
+    new prose tripped it five times. Rewritten rather than raised — the budget exists because 52
+    dashes in visible copy was one of the diagnosed tells of a generated interface.
+- **Retracted, before any code changed:** the "map the known OpenZeppelin revert strings"
+  recommendation from earlier in this pass was wrong. The path is implemented, reasoned about in
+  `evm.ts`, and already tested with USDC's exact message. What was missing was the empirical fact
+  that mainnet USDC takes it, which now sits beside `SELECTOR_REVERT_STRING`.
+- `~/ari-prod.env`: `SIM_RPC_URL` and `SIM_CHAIN_ID` are quoted now, mode `0600` preserved.
 - **Gates at this revision:** `pnpm typecheck` clean, **415** unit (was 406), **264** security (was
   258), `web:typecheck` / `web:preflight` / `web:build` clean.
 
@@ -1512,8 +1540,14 @@ assertions about somebody else's chain.
      targets**, where the specific reason is unreachable by selector. The behaviour is honest — text
      matching is deliberately not a fallback — but `tests/security/fixtures/minierc20.json` is not
      representative, and an operator reading a mainnet simulation gets "it reverted" where the
-     fixture's tests imply "insufficient balance". Worth deciding: map the known OZ revert strings
-     explicitly, or deploy a string-revert fixture so both shapes are actually tested.
+     fixture's tests imply "insufficient balance". **Decided the same day, against the code rather
+     than the summary: no string table.** The path is implemented, the reason is written beside it
+     ("a reason string is how a project says insufficient funds today and something else next
+     release"), and `packages/simulation/test/simulation.test.ts` already feeds USDC's exact
+     message and asserts the wording never reaches the answer. So this is a documented property,
+     not an oversight — what was genuinely missing was the empirical fact, which now sits next to
+     `SELECTOR_REVERT_STRING`. The recommendation to "map the known OZ strings" was wrong and was
+     retracted before any code changed.
    - Public gateways remain unusable as a substrate: `cloudflare-eth.com` answers `eth_chainId` and
      refuses the other four methods, and three that worked initially were rate-limiting within two
      minutes. A keyed endpoint is not a preference here, it is what the measurement needed. Advisory
