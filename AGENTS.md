@@ -718,6 +718,49 @@ screenshot the harness had ever produced, and not caused by that pass.
   `pnpm web:lines` run *against the live origin* reports 0 stuck and 0 overflowing at 390 and 1440 —
   so the control-plane diagram now renders for visitors, which it never had before.
 
+### Tenth pass — the waitlist's database, its cold start, and a person minting their own credential (2026-09-29 afternoon)
+
+Three pieces of work, all measured rather than assumed, and one decision taken by the owner:
+**self-minted `ucrd_` is in**, which reverses nothing about how the console authenticates but does
+change what a browser can reach.
+
+- **The waitlist went live end to end** — its own database, schema applied, env set, deployment
+  verified against the public origin. Thread 13 is closed; 13a records the cold-start finding and
+  the budget that fixed it.
+- **`POST /v1/me/credentials` — a person rotates their own secret.** `apps/api/src/routes.ts`,
+  six tests in `tests/security/api.test.ts`. This is what thread 1 had been carrying since Phase
+  6: the console's operator was handed a `ucrd_` by someone with a CLI, when `013`'s shape had
+  always been built to be minted server-side.
+  - **It requires no scope, on purpose.** Presenting a live user credential *is* the authority a
+    rotation rests on — the same way changing a password needs no "change password" permission.
+    Inventing `credential:self` would have meant widening `013`'s permitted-scope CHECK to let
+    someone do the one thing they had already proved they could do, and that CHECK is load-bearing
+    for a different boundary.
+  - **What makes it safe to put behind the browser proxy is not a scope check.** Every requested
+    scope must already be held by *this* credential, read from `user_credentials` inside the tenant
+    transaction (`activeUserScopes`, never the value authentication returned), so the route can
+    restate authority and cannot enlarge it. `/v1/users/:id/credentials` stays absent from the
+    allowlist because that one creates human authority from a deployment token with no person on
+    the request yet — the distinction is written into the allowlist entry itself, not left to be
+    inferred from adjacency.
+  - **The old credential stays live.** Revoking the presenting secret in the same breath would lock
+    a client out if the response were lost, and the bearer is printed once and cannot be recovered.
+    The consequence is stated plainly rather than buried: **a stolen credential can extend its own
+    life by rotating itself**, which is true of every session-rotation endpoint ever shipped, and
+    the mitigations that actually exist here are the bounded TTL (one minute to thirty days, the
+    same ceiling the bootstrap route applies) and `rotation_of` in the trail, which makes a chain of
+    self-mints visible to an operator rather than invisible. If that ever stops being acceptable,
+    the fix is a revocation-on-rotate flag decided at the console layer, not a shorter TTL.
+  - **The guard was seen to bite.** With the widening check disabled, exactly the two refusal tests
+    turn red and the four behavioural ones stay green — which is the control that proves the tests
+    are asserting the check rather than the route's mood. The refusal test also asserts the
+    legitimate case beside it (the same caller minting only what it holds still succeeds), because
+    a check that refused everything would pass a test that only counts refusals.
+  - Counts are tenant-scoped and `::int`-cast throughout, per thread 8: an unscoped count in this
+    suite counts history, and `count(*)` arrives as a string.
+- **Gates at this revision:** `pnpm typecheck` clean, **415** unit (was 406), **264** security (was
+  258), `web:typecheck` / `web:preflight` / `web:build` clean.
+
 ## Decisions made here, that a later session must not quietly reverse
 
 - **The digest is derived inside the policy engine, never accepted from the caller.** `evaluate()` used to
@@ -1319,13 +1362,15 @@ assertions about somebody else's chain.
    now the operator's seven — create/list/revoke an agent, issue an agent credential, register a wallet, grant a
    wallet, apply+activate a policy, read the trail — are built, tested at the socket by
    `tests/security/cli.test.ts`, and drivable end to end by `pnpm ari`. `scripts/seed-tenant.mts` remains for
-   nothing more than convenience. Two things are still open here, and neither is a route: a wallet's `address` is
+   nothing more than convenience. Two things were open here; one has become a screen rather than a gap, and
+   the other is still not a route: a wallet's `address` is
    accepted because it matches a grammar, never because anything checked that the wallet *is* that address on the
    chain (a wrong one makes every simulation of that wallet a question about an account holding nothing, which the
    provider will refuse as `TARGET_HAS_NO_CODE` or answer as a revert — it will not say "you typed the wrong
-   wallet"); and Phase 10's dashboard is still where a signed-in person should be *minting* a user credential
-   rather than being handed one by an operator, which is the reason `013`'s shape was built to be minted
-   server-side at all.
+   wallet"); and the *route* for a signed-in person minting their own user credential now exists
+   (`POST /v1/me/credentials`, tenth pass), so what is left of that thread is the console screen that
+   calls it rather than a capability the API lacks. `013`'s shape was built to be minted server-side, and
+   now it is.
 2. **A randomised test that has never failed is not evidence.** `properties.test.ts`'s "a HIGH threshold is
    never looser than a CRITICAL one" asserted that the stricter policy escalates on *every* input where the
    looser one allowed — false at once for any input below the threshold, and it had passed every run so far on
