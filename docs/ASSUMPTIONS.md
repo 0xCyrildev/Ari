@@ -353,6 +353,68 @@ Ari-side and deterministic. They are the honest content of the phrase "Ika integ
 | U-DOC-1 | Is Ika mainnet GA, and is a third party permitted to run a production dWallet commercially? | **Partly answered:** mainnet is a "live beta", not waitlisted, weekly releases (§3.3). Open: ToS/commercial terms | Whether the README can say "signs via Ika" or must say "integrates with Ika" |
 | U-DOC-2 | Rate limits and any access tiering on the coordinator | Docs / testnet observation | Capacity planning |
 
+### 6.1 Phase 8 groundwork (2026-09-29): the access path is established, no experiment has run
+
+Nothing in the table above changed verdict. What follows is what could be settled by reading the
+vendored SDK (`~/ika`, `@ika.xyz/sdk@0.5.0`, clone at `release/mainnet-v1.4.0-3-g6389339c8f`) and
+probing the network from this box, so that Phase 8 starts from traced facts instead of guesses.
+
+**The access path, traced rather than assumed.**
+
+- The coordinator is reached through a **Sui gRPC client**: `docs/content/docs/sdk/ika-client/ika-client.mdx:27`
+  builds `SuiGrpcClient({ baseUrl: 'https://fullnode.testnet.sui.io:443', network: 'testnet' })`, and
+  `:39-40` records that public Sui fullnodes no longer serve JSON-RPC, so a `SuiJsonRpcClient` fails
+  with `Method not found`. That is a transport requirement, not a preference.
+- **There is no API key, project id or plan tier anywhere in the SDK.** `client/types.ts:62-75`
+  (`IkaClientOptions`) takes a config and a client and nothing else. Access is coins: every
+  operation carries IKA and SUI (`ika-transaction.ts:811-812`), so a funded testnet address is the
+  only credential. Object ids come from `client/network-configs.ts` per network; neither `sdk/` nor
+  `docs/` contains an Ika-hosted fullnode url.
+
+**Measured from this box.** The endpoint answers — `getChainIdentifier` returned
+`69WiPg3DAQiw…` — but the transport is **flaky**: between one and three of every four to six calls
+failed with `INTERNAL / fetch failed` before one succeeded. That is a first data point for U-IKA-4,
+and it means an adapter must treat a transient gRPC failure as expected rather than exceptional,
+which is the same shape `@ari/simulation` already gives `RPC_UNREACHABLE`.
+
+**Narrowed by source, still not closed by experiment.**
+
+- **U-IKA-2, first half.** `generated/.../coordinator_inner.ts:228` says the presign capability is
+  "consumed to prevent reuse"; `docs/content/docs/move-integration/protocols/presigning.mdx:18`
+  says one presign is one signature; and `coordinator.move:587` takes `presign_cap:
+  VerifiedPresignCap` **by value** on a type with `has key, store`. By-value on a key is how Sui
+  expresses single use. The second half — whether another party can consume an unredeemed presign —
+  still needs the two-call test.
+- **U-IKA-1, the mechanism.** The SDK never accepts a digest: `ika-transaction.ts:809` takes
+  `message: Uint8Array` with a named `hashScheme`, and `types.ts:173-184` offers
+  `KECCAK256 | SHA256 | DoubleSHA256 | SHA512 | Merlin` with no identity or raw member. On chain
+  `MessageApproval` stores `message: vector<u8>` (`coordinator_inner.move:791-799`). So phase 2
+  supplies **bytes**, and the question is precisely whether the hash of those bytes must match what
+  phase 1 committed. The ambiguity about what is being compared is gone; the answer is not.
+- **The dWallet address is not derivable from the SDK.** `cryptography.ts` ends at
+  `publicKeyFromDWalletOutput` (:537) — keys, not addresses — and
+  `docs/content/docs/sdk/cryptography.mdx:261` says "use this public key to derive addresses"
+  without providing a function. The only working code is an example:
+  `examples/keyspring/backend/src/dkg-executor.ts:72-74`, `computeAddress('0x' + bytesToHex(bytes))`.
+  This is what `WALLET_ADDRESS_UNKNOWN` has been waiting for, and it means Ari writes the derivation
+  against that precedent rather than calling something that exists.
+
+**Prerequisites before the gate can be attempted.**
+
+1. U-IKA-8's own instruction first: bump the clone to `v1.4.1`. The local checkout is one patch
+   behind, the tag is not fetched, and `pnpm-lock.yaml` is modified in `~/ika` — that working change
+   belongs to someone and must not be discarded without asking.
+2. A funded Ika-testnet address (SUI and IKA from a faucet).
+3. **U-IKA-5 cannot be run on this machine as things stand.** There is no `docker-compose` binary
+   and `ika/docker/` holds Dockerfiles only; `dev-docs/playbooks/localnet.md` exists but needs Rust
+   plus a version-matched `sui` cli, which is a build rather than a script.
+
+**One measurement that did not land, recorded so nobody repeats it as fact.** An attempt to confirm
+the pinned coordinator ids over gRPC reported both as absent — including `0x5`, the SUI treasury,
+which exists on every Sui network. The control failed, so the probe was wrong about the response
+shape, and **whether `network-configs.ts` matches the chain is still unknown**.
+
+
 Anything in this table that turns out to be **load-bearing for a security claim** gets promoted into
 `THREAT_MODEL.md` with its mitigation removed until it is closed.
 

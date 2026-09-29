@@ -1556,6 +1556,14 @@ assertions about somebody else's chain.
    (d) *The Ika wallets have no address yet.* `wallet create --address` is the only way to give the simulation
    plane a `from`, and a dWallet's address is derived, not typed — Phase 8 needs to write it, and until then
    every Ika-backed wallet is `WALLET_ADDRESS_UNKNOWN`, which is a refusal and not a failure, by design.
+   **Phase 8 groundwork landed 2026-09-29 in `ASSUMPTIONS.md` §6.1**, and it settles where that address has to
+   come from: the SDK stops at `publicKeyFromDWalletOutput` and its docs say "use this public key to derive
+   addresses" without providing the function, so the only working precedent is
+   `~/ika/examples/keyspring/backend/src/dkg-executor.ts:72-74`. Ari writes the derivation; it does not find
+   one. Also recorded there: the transport is gRPC and public Sui fullnodes no longer serve JSON-RPC, there is
+   no API key anywhere (access is IKA + SUI coins), the endpoint is flaky from this box (1–3 failures in every
+   4–6 calls, which is a U-IKA-4 data point), U-IKA-2's single-use half is answered by a by-value `has key`
+   cap, and **U-IKA-5 cannot be run here at all** without a localnet build.
 
 12. **Minted-but-never-redeemed tickets accumulate forever.** Counting them during the 2026-09-28 staging run
     gave **635 redeemed / 3,368 unredeemed** — and that table is the one tenant-bearing table with no
