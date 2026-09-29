@@ -1366,7 +1366,7 @@ assertions about somebody else's chain.
    denial. Say so if a later session changes that ordering: it is the reason two clocks are
    tolerable here at all.
 
-11. **Simulation exists; two things about it are still open, and neither is a provider.**
+11. **Simulation exists; three things about it are still open, and none is a provider.**
    (a) *The bound is on the DB cost, not the latency.* The simulated path is now measured and priced — 36
    statements against 30, delta ≤6 — but what that number cannot see is wall clock: a configured provider's
    `timeoutMs` default of 3 000 is time an agent waits before it is told anything, and nothing asserts the
@@ -1374,13 +1374,37 @@ assertions about somebody else's chain.
    claim in 10a, not a test.
    (b) *It answers about whatever chain it is pointed at.* The blocker recorded here for weeks — that this box
    cannot reach a remote RPC at all — **is gone: on 2026-09-28 Node's `fetch` got `eth_chainId = 0x1` from
-   `https://cloudflare-eth.com` in 745 ms.** So `EvmForkProvider` can be pointed at a chain with real
+   `https://cloudflare-eth.com` in 745 ms.** *(That inference did not survive the next morning — see (c)
+   below: the gateway answers `eth_chainId` and refuses the four methods a simulation needs.)* So
+   `EvmForkProvider` can be pointed at a chain with real
    counterparty state on it, and nothing has done so yet: what was proven is one `eth_chainId` round trip, not
    a fork simulation, and `SIM_RPC_URL` has still never been set against a public endpoint in this repository.
    The gate that makes a real endpoint safe is the recorded `chainId`/`blockNumber`/`timestamp` plus the
    two-directional chain guard; A10's "blocking once a real provider lands" is now reachable, and advisory is
    still the honest default until someone runs that experiment and reports what the state root said.
-   (c) *The Ika wallets have no address yet.* `wallet create --address` is the only way to give the simulation
+   **(c) Attempted 2026-09-29, and the answer so far is a correction, not a result.** Probed the five methods
+   `EvmForkProvider` actually issues (`eth_chainId`, `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getCode`,
+   `eth_call`) across seven public gateways:
+   - **`cloudflare-eth.com` — the endpoint the paragraph above cites — answers `eth_chainId` (828 ms) and
+     refuses the other four** (`-32603` internal error, `-32046` for `eth_blockNumber`). So "the blocker is
+     gone" was inferred from the single method a public Cloudflare gateway deigns to serve. Reaching a remote
+     RPC is true; *this* RPC cannot carry a simulation, and the fork question it was supposed to have
+     unblocked is as open as it was.
+   - Three gateways served all five methods on a first pass — `ethereum-rpc.publicnode.com` (203–1 224 ms),
+     `1rpc.io/eth` (403–941 ms), `eth.drpc.org` (222–628 ms). Within about two minutes of *light* probing
+     (roughly forty requests, never more than one in flight) `eth.drpc.org` timed out at connect and
+     `1rpc.io/eth` started replying with an HTML error page in place of JSON. `llamarpc` returned
+     non-JSON, `rpc.ankr.com/eth` answered `-32000` for everything but `eth_chainId`, and
+     `ethereum.execution-rpc.org` failed at transport. Public gateways are not a substrate a payment path can
+     block on — which is an argument for advisory that has nothing to do with state roots.
+   - The IPv6 hazard in the simulation section fired again, unprompted: a name publishing AAAA first died with
+     `UND_ERR_CONNECT_TIMEOUT` listing IPv6 addresses, and `--dns-result-order=ipv4first` is still the fix.
+   - **Not answered: what the state root said.** `EvmForkProvider` was never run against verified mainnet
+     state, because the run needs a token address confirmed on-chain (`eth_call symbol()` → `USDC`) and every
+     gateway that could serve it had begun refusing by the time the address mattered. `SIM_RPC_URL` is still
+     unset in this repository, advisory is still the honest default, and the next attempt should use a keyed
+     endpoint rather than a public one — the rate limit, not the chain, is what stopped this.
+   (d) *The Ika wallets have no address yet.* `wallet create --address` is the only way to give the simulation
    plane a `from`, and a dWallet's address is derived, not typed — Phase 8 needs to write it, and until then
    every Ika-backed wallet is `WALLET_ADDRESS_UNKNOWN`, which is a refusal and not a failure, by design.
 
