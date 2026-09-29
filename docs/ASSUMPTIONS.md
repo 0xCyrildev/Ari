@@ -409,6 +409,16 @@ which is the same shape `@ari/simulation` already gives `RPC_UNREACHABLE`.
    and `ika/docker/` holds Dockerfiles only; `dev-docs/playbooks/localnet.md` exists but needs Rust
    plus a version-matched `sui` cli, which is a build rather than a script.
 
+**Decided 2026-09-29: the localnet is not being built on this box.** Costed at two to four hours of
+wall clock against two GiB of free RAM with every validator in one process, and the local `sui`
+binary is `1.77.3` where the workspace pins `mainnet-v1.77.2` — a mismatch the playbook says
+completes DKG and then silently stalls reconfiguration, which is precisely the thing U-IKA-5 exists
+to measure. Building it anyway would risk producing a confident wrong answer about epoch boundaries.
+**Consequence, stated so nobody re-litigates it: U-IKA-5 stays open, and Phase 8's gate cannot be
+completed on this machine.** The epoch experiment belongs on CI or a larger host, not here. U-IKA-1
+and U-IKA-2 need only a funded hosted testnet address, which is the cheaper half and does not
+require any of this.
+
 **One measurement that did not land, recorded so nobody repeats it as fact.** An attempt to confirm
 the pinned coordinator ids over gRPC reported both as absent — including `0x5`, the SUI treasury,
 which exists on every Sui network. The control failed, so the probe was wrong about the response
