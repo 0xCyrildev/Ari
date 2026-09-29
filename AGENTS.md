@@ -565,6 +565,129 @@ questions (and `WAITLIST_DATABASE_URL` is still unset — thread 13), the docs q
 leads with `git clone`, and the items that are decisions rather than edits: a real domain, npm
 for `@ari/client`, a non-mock signer, decoded-effect policy, balance evidence, settlement.
 
+### Eighth pass — the pipeline taught once, and a harness that measures line boxes (2026-09-28 22:00–22:18, landed 2026-09-29)
+
+Four files sat in the tree and in no commit overnight: `apps/web/app/page.tsx`,
+`apps/web/app/globals.css`, `apps/web/scripts/preflight.mjs`, and the untracked
+`apps/web/scripts/line-boxes.mjs`. Re-measured
+2026-09-29 08:45: with these changes applied `pnpm web:preflight` passes over 23 files and
+`pnpm web:typecheck` exits 0. The deployment was **HEAD, not this tree** — proven by the
+differential, not by assumption: `curl https://ari-zeta-seven.vercel.app/ | grep -c checkpoint-list`
+→ 0 while the worktree held it, and `origin-strip` (committed at 20:47) reads 1 in all three. So
+uncommitted here also meant undeployed, and anyone who visited the live site was looking at the page
+this pass decided was wrong.
+
+- **The pipeline and its receipt are one array now.** `stages` and the separate sample-request
+  panel collapsed into `checkpoints`: seven rows, each with the `ask` the checkpoint puts to a
+  request and the `value`/`why` the sample got at that row. This closes the audit item this file
+  recorded as deliberately undone ("the pipeline is still taught several times") — the two
+  sections had *already started to disagree*, which is the whole argument for teaching it once.
+  The figures are the console's own sample tenant row for row: same agent, `treasury-payments` v8,
+  4,200 USDC to Brightline at `0x3f2a1b0c…1a2b3c`. Row 07 keeps its special drawing because
+  acceptance still is not settlement, and the panel's second column of copy became one footnote
+  (`checkpoint-foot`, labelled SAMPLE FIGURES FROM THE CONSOLE'S SAMPLE TENANT: "the words are what
+  the API returns, the numbers are a request that was never made").
+- **An inverted section is a light panel in the dark theme**, so the dark rules could not keep
+  handing it dark-theme greys: `--dark-line` flips to `rgba(17,17,17,.22)` and the text greys inside
+  `.dark-section` / `.sdk-section` are named per element (`side-copy`, `section-kicker`,
+  `architecture span`, `risk-note b`, `window-bar`) instead of inherited. `.receipt-band > div`
+  joins the near-black panel set. `--muted` moved twice — light `#77736d → #6f6b65`, dark
+  `→ #7e7a74` — for contrast against paper, not for taste.
+- **`REQUIRE_HUMAN_APPROVAL` needs `overflow-wrap: anywhere`, not `break-word`**, and the reason is
+  in a CSS comment because it will be reached for again: `break-word` does not change intrinsic
+  sizes, so a flex `strong` will not shrink below min-content — the token then widens the *layout
+  viewport* rather than clipping, which is the exact failure `web:sweep` already reported for the
+  page loader. Below 940px the two columns stack so the break usually is not needed at all.
+- **Six in-page jumps do not fit a header**, so the nav is a `<details>` now — keyboard operable,
+  no custom disclosure widget, no aria state to keep honest by hand. The hero's third action became
+  a sentence that scrolls to the honesty block rather than a fourth button competing with the first
+  two, and the record section is three statements on one 1px-gap hairline grid (the docs' pattern).
+- **`line-boxes.mjs` exists because of one specific miss, and it measures the thing that broke.**
+  The hero defect was sizing against the viewport while a column set the width; an overflow sweep
+  cannot see that (nothing leaves the viewport) and a 390px screenshot does not show the desktop
+  case. So it walks every `h1`/`h2`, takes `getClientRects()` per text node, and reports each line's
+  width against its own container at 320/390/768/900/1024/1440, in either theme, exit-non-zero on
+  any line over its box by >1px. Three operating notes, each earned:
+  `captureBeyondViewport` is bounded at 16,000px and a 12,000px page at scale 0.32 is legible enough
+  to judge rhythm — asking for the whole thing at 1x is how this harness once ate the disk; the
+  beyond-viewport resize re-triggers the reveal observers and photographs a page of invisible
+  sections, so the script forces `.reveal`/`.section-reveal` to their end state and hides
+  `.page-loader` before capturing; and Chromium is still writing its profile when `kill()` returns,
+  so the `rmSync` sleeps 900ms and retries.
+  It has **no `package.json` script** and its default URL (`127.0.0.1:3131`) matches no port
+  anything binds by default — pass the URL of whatever you actually started. **`/tmp/ari-lines` is
+  empty this morning**, so whatever the pass measured at 22:18 is not reproducible from disk: do not
+  repeat "clean at every width" as a current fact; re-run it.
+- **The claims gate learned the word `nothing`.** `NEGATION` gained `nothing` — "nothing here claims
+  a provider settled it" is the plainest refusal this page writes, and a gate that recognises only
+  `no` teaches people to write `no` where `nothing` reads better. The 60-character backward look and
+  the six rules are unchanged.
+
+What this pass does **not** close, still open from the audit: the docs quickstart leading with
+`git clone`, a real domain, npm for `@ari/client`, a non-mock signer, decoded-effect policy, balance
+evidence, settlement.
+
+### Ninth pass — the reveal that could not fire itself, and a harness that had been hiding it (2026-09-29 morning)
+
+The eighth pass was green on two gates and unmeasured on the one thing it had just built. Running
+`line-boxes.mjs` properly found a bug that was **live on the deployed site**, invisible in every
+screenshot the harness had ever produced, and not caused by that pass.
+
+- **`.architecture` — the control-plane diagram — has been invisible to every visitor with motion
+  enabled.** It is `motion.div` with `initial={{ opacity: 0, clipPath: 'inset(0 100% 0 0)' }}` and
+  `whileInView`. An element clipped to zero width has **zero intersection area**, so the observer
+  that watches its visibility can never report it as entering the viewport: the wipe needs the
+  observer, and the observer needs the wipe. Both reveal systems failed it simultaneously — framer's
+  `whileInView` and this page's own `IntersectionObserver` (which never added `is-visible` either).
+  Measured, not inferred: it was the only one of 31 reveal-driven elements stuck after being
+  centred in the viewport, it was stuck identically on `ari-zeta-seven.vercel.app`, and the control
+  — set `clip-path: inset(0 0 0 0)` and touch nothing else — made both observers fire within 3 s.
+  Under `prefers-reduced-motion: reduce` it *was* visible, because the CSS there forces
+  `clip-path: none !important`; that is the only reason nobody saw it, and it is why the reduced-motion
+  path had to be kept when fixing it.
+- **The fix is a rule about who may be observed.** The diagram is a plain `<div>` now and the wipe is
+  CSS keyed on the **section's** `is-visible` (`.section-reveal.is-visible .architecture`), which
+  works because the section is not the clipped box. The reduced-motion block gained `.architecture`
+  explicitly, since it no longer rides in on the `.reveal` class it used to carry.
+- **Same class, smaller consequence, in the networks marquee.** Each cell was its own
+  `motion.a`/`whileInView` inside `.network-strip { overflow: hidden }` on a track that animates.
+  Ancestor clipping counts in the intersection too, so a cell whose turn passed while the section was
+  off-screen stayed at `opacity: 0` until the 34 s loop brought it back — watched live, cells 1–7
+  revealed, cell 0 (mid-slide-out when the strip entered view) never did. The cells are plain `<a>`
+  now and the section fades as one; the stagger was never load-bearing, the blank cells were.
+- **Two real WCAG failures, both in the new checkpoint rows.** `.stage-num`/`.stage-mark` at
+  `#9295aa` on the dark theme's inverted light panel measured **2.55:1** at 10px; `.risk-signal b` at
+  `#77756f` on ink measured **4.10:1**. The first joins the `.dark .dark-section …` inversion group
+  that already existed for exactly this purpose (→ `#5b5b66`, **5.78:1**, no new colour); the second
+  moves to `#8a8680` (**5.22:1**), still dimmer than its `#aaa79d` label (7.84) so the hierarchy
+  survives. Left alone deliberately: the vermilion `·` separator at **3.42:1** — this file already
+  records that the accent lives in a marker glyph and never in a word, and a decorative separator is
+  that rule, not a violation of it.
+- **The harness was part of the bug.** Its forcing style (`.reveal { … !important }`) ran *before*
+  the measurement, so it photographed a page that looked complete while a section nobody could see
+  was in it. The probe now runs **first, unforced**, and reports `STUCK <text at zero opacity>` as a
+  failure; the force still applies afterwards, for the screenshot only. Line widths are unaffected by
+  the reordering — opacity, transform and clip-path do not change a layout box.
+- **`width * 0.62` is not a phone.** At 320px that is a 198px-tall viewport, and a 3,000px section
+  cannot reach a 12 % intersection threshold in it: the first stuck run reported 115 false positives
+  at 320px. Heights are device-shaped now (`≤500 → ×2.1`, `≤1024 → ×1.3`, else ×0.62), and with that
+  the page is **0 stuck, 0 overflowing at all six widths in both themes**.
+- **Three harnesses, two argument orders, one silent failure mode.** `line-boxes` takes
+  `(url, widths, …)`, its siblings `(origin, cdpPort, widths)` — passing widths where the port goes
+  produced `no DevTools page target on :NaN`, which reads like a broken browser and is a broken
+  argument; an empty URL was worse, navigating to `about:blank` and reporting **clean** on a 606px
+  page. All three now validate their numeric args and their URL and exit 2 with usage (verified:
+  each returns 2), and `line-boxes` defaults to the same `127.0.0.1:3120` its siblings use. It is
+  wired as **`pnpm web:lines`** — it had no script entry at all, so it only existed if you remembered
+  it.
+- **Gates at this revision, all re-run against a fresh `pnpm web:build`:** `pnpm typecheck` clean,
+  **406** unit, **258** security (both unchanged from the seventh pass — nothing here touches the
+  backend), `pnpm web:typecheck` clean, `pnpm web:preflight` passes over 23 files, `pnpm web:build`
+  clean, `web:sweep` **75/75, 0 overflow, 0 unhunted**, `web:lines` clean in light and dark.
+- **Not done by this pass, and it is a decision rather than an edit:** none of the eighth or ninth
+  pass is deployed. `Vercel redeploys main by itself` (sixth pass) means the gap closes on **push**,
+  and nothing was pushed here.
+
 ## Decisions made here, that a later session must not quietly reverse
 
 - **The digest is derived inside the policy engine, never accepted from the caller.** `evaluate()` used to
@@ -1290,9 +1413,28 @@ assertions about somebody else's chain.
     staging tenant, so `pnpm db:up`'s local Postgres and the deployed ledger are two different bodies of data,
     and nothing has ever been migrated from one to the other.
 
-15. **Still running on this box, so the ports are not free:** `ari-api` on 127.0.0.1:4000, `ari-signer` on
-    127.0.0.1:4100, a `cloudflared` quick tunnel forwarding the public
-    `camel-heaven-die-supposed.trycloudflare.com` to :4000, `next start` on :3120 serving the local build, and
-    Postgres on :5435. The tunnel is ephemeral, unauthenticated at the edge and needs restarting whenever the
-    DNS name rotates — it is a measurement tool, not a host, and the pxxl/Vercel trio above has replaced it for
-    anything anyone else would visit.
+15. **What is running on this box changed overnight, and the old claim here was stale.** This thread
+    used to assert `ari-api` on :4000, `ari-signer` on :4100, a `cloudflared` quick tunnel, `next
+    start` on :3120 and Postgres on :5435 were all live. Re-measured 2026-09-29 08:45 with
+    `ss -ltnp | grep -E ':(4000|4100|3120|3131|5435)'` and a `ps` sweep: **only Postgres :5435 is
+    listening.** The api, the signer and the local `next start` are gone, and
+    `camel-heaven-die-supposed.trycloudflare.com` answers `HTTP 000` — the DNS rotation this file
+    predicted for an ephemeral quick tunnel. Nothing here needs the ports freed; anything that does
+    needs restarting, and `docs/OPERATIONS.md` is the order to start them in. The deployed trio
+    (Vercel web + two pxxl services) is unaffected: `ari-zeta-seven.vercel.app` → `HTTP 200` in
+    1.5 s.
+16. **A reveal that gates on its own visibility can never fire — and a screenshot harness can hide
+    it.** The `.architecture` clip-path deadlock (ninth pass) is a class, not a one-off: anything with
+    `whileInView`/`IntersectionObserver` whose `initial` gives it zero intersection area — its own
+    `clip-path`, or an ancestor's `overflow: hidden` while it sits off to one side (the marquee) — is
+    invisible forever and photographs as fine. Two rules follow. Never put the hidden state on the
+    observed element: observe an unclipped ancestor and drive the child from its `is-visible`. And
+    never trust a forced screenshot: `pnpm web:lines` measures **before** the force and fails on
+    `STUCK`, which is the only reason this was caught rather than shipped again. A reduced-motion
+    override that un-clips content can mask the whole bug on the one path you would not think to
+    test — check the motion-enabled default.
+17. **Committed, not pushed, so the live site is still the pre-eighth-pass page.** Both passes are in
+    `main` locally; `ari-zeta-seven.vercel.app` redeploys on push (sixth pass), so until someone
+    pushes it, a visitor still reads the layout the outside audit called contradictory and still cannot
+    see the control-plane diagram. Verify with the same differential that settled it here:
+    `curl https://ari-zeta-seven.vercel.app/ | grep -c checkpoint-list` → 0 means undeployed.
