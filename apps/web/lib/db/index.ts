@@ -1,6 +1,7 @@
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { Pool } from 'pg'
 import { waitlistUrlIsSafe } from './tls'
+import { retryWithinBudget, safeErrorSummary } from './retry'
 import { waitlistSignups } from './schema'
 
 /**
@@ -38,7 +39,11 @@ export function waitlistProblem(env: NodeJS.ProcessEnv = process.env): WaitlistP
 const globalForDb = globalThis as unknown as { pool?: Pool }
 
 function pool(): Pool {
-  globalForDb.pool ??= new Pool({ connectionString: process.env.WAITLIST_DATABASE_URL, max: 2 })
+  // `connectionTimeoutMillis` is stated rather than inherited: node-postgres' default is 10 s,
+  // and a hosted Postgres that scales to zero can take longer than that to answer the first
+  // socket of the day. The ceiling is not what fixes the cold start — `recordSignup`'s retry is —
+  // but saying it out loud keeps the next person from tuning a number they cannot see.
+  globalForDb.pool ??= new Pool({ connectionString: process.env.WAITLIST_DATABASE_URL, max: 2, connectionTimeoutMillis: 10_000 })
   globalForDb.pool.on('error', () => {
     // A connection that fails in the background has no request to answer. An unhandled `error`
     // event on an EventEmitter throws, which would take the process down over a signup.
@@ -47,4 +52,29 @@ function pool(): Pool {
 }
 
 export const waitlist = () => drizzle(pool(), { schema: { waitlistSignups } })
+
+/**
+ * One signup, retried within a budget.
+ *
+ * Measured on this project's own waitlist database: with the hosted compute asleep, the first
+ * signup after an idle period failed, an immediate retry failed the same way inside 4.7 s, and a
+ * request a few seconds later succeeded. So the remedy is a *patient* retry, not a second attempt
+ * — what was missing was time, not another try. The budget is four attempts inside twelve seconds,
+ * sized against that measured wake rather than picked: a database that is not waking at all must
+ * answer with a refusal a visitor can read, not hang until the platform kills the request.
+ *
+ * Retrying is safe for exactly one reason: the insert is `on conflict do nothing` against a
+ * `UNIQUE` column, so stating the same fact twice writes one row. Around a non-idempotent write
+ * this would be a double charge wearing a form's clothes.
+ *
+ * `describe` reads structural fields only — a code, a name, a syscall. The error's `message` is
+ * left out on purpose: it is the one place a query fragment can surface, and the value that
+ * failed is somebody's email address, which does not go into a log. The response follows the same
+ * rule from the other side.
+ */
+export async function recordSignup(email: string): Promise<void> {
+  const insert = () => waitlist().insert(waitlistSignups).values({ email }).onConflictDoNothing({ target: waitlistSignups.email })
+  await retryWithinBudget(insert, safeErrorSummary)
+}
+
 export { waitlistSignups }

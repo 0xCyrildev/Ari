@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { waitlist, waitlistProblem, waitlistSignups, type WaitlistProblem } from '@/lib/db'
+import { recordSignup, waitlistProblem, type WaitlistProblem } from '@/lib/db'
 
 /**
  * One code per refusal. A record rather than a ternary chain because a new
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Enter a valid email address.' }, { status: 400 })
     }
 
-    await waitlist().insert(waitlistSignups).values({ email }).onConflictDoNothing({ target: waitlistSignups.email })
+    await recordSignup(email)
     return NextResponse.json({ ok: true })
   } catch {
     // One sentence for "the body was not JSON", "the column refused it" and "the database was
