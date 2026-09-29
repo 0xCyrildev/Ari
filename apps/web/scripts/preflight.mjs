@@ -68,11 +68,6 @@ const forbid = (label, pattern, budget = 0) => {
   else console.log(`  ok   ${label} (${total})`);
 };
 
-const require_ = (label, pattern) => {
-  if (countIn(pattern).total === 0) warns.push(`${label}: not judged here (the console tree does not contain the stylesheet or the provider that satisfy it)`);
-  else console.log(`  ok   ${label}`);
-};
-
 console.log('preflight: apps/web');
 
 // --- Typography tells -------------------------------------------------------
@@ -109,8 +104,10 @@ forbid('scroll or wheel listeners (framer-motion whileInView only)', /addEventLi
 forbid('CSS font imports from a CDN (fonts are self-hosted)', /fonts\.(googleapis|gstatic)\.com/g);
 
 // --- Motion discipline ------------------------------------------------------
-require_('reduced-motion honoured in CSS', /prefers-reduced-motion/);
-require_('reduced-motion honoured in JS (framer-motion)', /useReducedMotion/);
+// The two reduced-motion checks used to sit here and report "not judged here", because this
+// function's file set is the console tree and the media query lives in the marketing stylesheet.
+// A scoping artifact that reads like an absence is worse than no check: it invites someone to
+// conclude the rule is missing. They moved below, to the claims set, where they can see the truth.
 forbid('infinite CSS animation loops (console screens stay still)', /animation:\s*\w+\s+[^;]*infinite/g);
 
 // --- Honesty ----------------------------------------------------------------
@@ -243,6 +240,22 @@ for (const { file, lines } of claims) {
 if (areaHits.length > 0) claimFailures.push(`a whileInView reveal starts with zero visible area, so no observer can ever fire it — ${areaHits.join(', ')}`);
 else console.log('  ok   no reveal gates on an area it zeroes itself');
 
+/**
+ * Reduced motion, over the tree that actually carries it.
+ *
+ * The CSS half is a hard requirement: the marketing stylesheet's `@media
+ * (prefers-reduced-motion: reduce)` block is what un-clips and un-transforms the reveals for a
+ * visitor who asked for stillness, and it is also the reason the `.architecture` deadlock stayed
+ * invisible — the reduce path forced the element visible while the motion path never revealed it.
+ * So the block must exist, and a rule that removes it fails the build.
+ */
+const motionTexts = claims.map((c) => c.text);
+try { motionTexts.push(readFileSync(join(root, 'app/globals.css'), 'utf8')) } catch { /* the check below fails honestly if it is gone */ }
+if (motionTexts.some((text) => /@media[^{]*prefers-reduced-motion/.test(text))) console.log('  ok   reduced motion is honoured in CSS');
+else failures.push('reduced motion: no @media (prefers-reduced-motion) rule in the app tree — the reveals hold content at opacity 0 until an observer fires, so without it a visitor who asked for stillness gets a page that animates at them');
+if (motionTexts.some((text) => /useReducedMotion|reducedMotion=|MotionConfig/.test(text))) console.log('  ok   reduced motion is honoured in JS');
+else warns.push('reduced motion in JS is not explicit: the marketing animations rely on framer-motion\'s own default (`reducedMotion: "user"`, which drops transforms and keeps opacity), and the CSS block is the only stated honour. Worth knowing if a reveal ever depends on a transform alone.');
+
 if (claimFailures.length === 0) console.log(`  ok   claims checked over ${claims.length} files`);
 else failures.push(...claimFailures.map((failure) => `claim: ${failure}`));
 
@@ -253,10 +266,14 @@ else console.log('  ok   only the current token set is referenced');
 
 console.log('');
 if (warns.length > 0) for (const warn of warns) console.log(`  warn ${warn}`);
+// Two scopes, and the report says so: the design rules run over the console tree this repository
+// owns, the claims over marketing and docs too. One number would read as coverage of everything by
+// everything, which is the mistake the last audit made about this gate.
+const scope = `${read.length} files over the design rules, ${claims.length} over the claims`;
 if (failures.length === 0) {
-  console.log(`preflight passed over ${read.length} files.`);
+  console.log(`preflight passed: ${scope}.`);
   process.exit(0);
 }
 for (const failure of failures) console.log(`  FAIL ${failure}`);
-console.log(`\npreflight failed: ${failures.length} check${failures.length === 1 ? '' : 's'} over ${read.length} files.`);
+console.log(`\npreflight failed: ${failures.length} check${failures.length === 1 ? '' : 's'} — ${scope}.`);
 process.exit(1);

@@ -686,17 +686,37 @@ screenshot the harness had ever produced, and not caused by that pass.
   is exactly why the `Reveal` wrapper that uses it has always worked, and a rule that banned it would
   be a rule the next session routes around. Verified the way the other claim rules were: a control
   file carrying the old `.architecture` line verbatim fails the gate at the right file and line
-  number; delete it and the tree passes over 23 files. What the rule cannot see is the marquee shape
+  number; delete it and the tree passes. What the rule cannot see is the marquee shape
   — an element with fine geometry inside an `overflow: hidden` animated track — and that is what
   `pnpm web:lines`' STUCK check is for. The two are complementary: one is static and cheap on every
   build, the other needs a browser and sees the real thing.
+- **The gate's own closing line was under-reporting itself.** It printed `passed over 23 files` while
+  the claims rules had run over 24 — two scopes (the design rules over the console tree this
+  repository owns, the claims over marketing and docs as well) collapsed into one number, which is
+  how a reader concludes everything was checked by everything. It now prints
+  `preflight passed: 23 files over the design rules, 24 over the claims.` Both counts were verified
+  to be real scopes rather than a hole in the walk: every `.ts`/`.tsx` under `app/` is in the claims
+  set.
+- **Two standing "not judged here" warnings were really one absence and one scoping artifact.** The
+  gate's reduced-motion checks scanned the console tree, while the media query that satisfies them
+  lives in the marketing stylesheet — so a check that could have passed printed itself as unknown.
+  Both now scan the claims set plus `app/globals.css`: the CSS half passes for real (and fails the
+  build if the block is ever deleted — control-tested by renaming the query and watching the match
+  go false), and the JS half reports the actual situation, which is that nothing in `apps/web` calls
+  `useReducedMotion` or sets `MotionConfig` and the page relies on framer-motion's default. That
+  turned up a stale claim this file had been carrying since before the v0 rebuild: `motion.tsx`,
+  `motion-pref.tsx`, `public/images/` and the header's motion switch **do not exist any more** —
+  corrected in the decisions section with the grep that proves it.
 - **Gates at this revision, all re-run against a fresh `pnpm web:build`:** `pnpm typecheck` clean,
   **406** unit, **258** security (both unchanged from the seventh pass — nothing here touches the
-  backend), `pnpm web:typecheck` clean, `pnpm web:preflight` passes over 23 files, `pnpm web:build`
+  backend), `pnpm web:typecheck` clean, `pnpm web:preflight` → `passed: 23 files over the design
+  rules, 24 over the claims`, `pnpm web:build`
   clean, `web:sweep` **75/75, 0 overflow, 0 unhunted**, `web:lines` clean in light and dark.
-- **Not done by this pass, and it is a decision rather than an edit:** none of the eighth or ninth
-  pass is deployed. `Vercel redeploys main by itself` (sixth pass) means the gap closes on **push**,
-  and nothing was pushed here.
+- **Deployed, and verified as deployed.** Both passes were pushed to `main` on 2026-09-29 and Vercel
+  rebuilt on its own, as the sixth pass recorded it would. Confirmed the way any deploy claim should
+  be: `curl https://ari-zeta-seven.vercel.app/ | grep -c checkpoint-list` went **0 → 1**, and
+  `pnpm web:lines` run *against the live origin* reports 0 stuck and 0 overflowing at 390 and 1440 —
+  so the control-plane diagram now renders for visitors, which it never had before.
 
 ## Decisions made here, that a later session must not quietly reverse
 
@@ -1182,18 +1202,24 @@ screenshot the harness had ever produced, and not caused by that pass.
   `Acme`/`Northwind` placeholder, or a class from the deleted token set. Run it with the typecheck
   after any screen work; the check is mechanical precisely so that no future session has to remember
   the list.
-- **The landing page runs at MOTION 7, and there is a switch for it.** `components/motion.tsx` holds
-  the kit: a scroll-progress rule, `ParallaxImage`, a pinned `HorizontalPan` for the seven stages, one
-  `Marquee` of reason codes, `CountUp`, `Tilt`, and the reveals. All of it is `useScroll` /
-  `useTransform` on motion values, never a scroll listener and never `useState` tracking a pointer.
-  `app/motion-pref.tsx` resolves whether any of it runs: `auto` follows `prefers-reduced-motion`, and
-  the header control lets a visitor overrule the OS, because "I can't see any motion" turned out to be
-  ambiguous between *the page is too still* and *the desktop has motion switched off*. Three real
-  photographs live in `public/images/` with `CREDITS.md` beside them (Wikimedia Commons: one CC0, one
-  CC BY-SA 3.0 credited in the footer, one public domain); image generation and video are quota-blocked
-  on this box, and stock-aggregator search results are licensed previews, so neither is a source.
-  Reject two candidates on sight rather than shipping them: a "concrete architecture" file that was a
-  church interior, and a `Server_rack` image that was a recording-studio console.
+- **The landing page runs at MOTION 7, and there is a switch for it.** **Superseded as of
+  2026-09-29, and corrected here rather than left to mislead: none of this exists any more.**
+  `components/motion.tsx`, `app/motion-pref.tsx`, `public/images/` and `CREDITS.md` are gone — the
+  hand-built marketing page they animated was replaced by the v0 page (fourth pass), which uses
+  `Reveal`/`whileInView` directly and imports none of that kit: `grep -c
+  'ParallaxImage\|HorizontalPan\|CountUp\|Tilt\|useScroll' app/page.tsx` is **0**, and there is **no
+  motion-preference control in the header** and no `useReducedMotion`/`MotionConfig` anywhere in
+  `apps/web`. What a visitor asking for stillness now gets is the `@media
+  (prefers-reduced-motion: reduce)` block in `app/globals.css` plus framer-motion's own default
+  (which drops transforms and keeps opacity) — which is why that media query is a build requirement
+  now, and why the ninth pass made the gate say so instead of reporting "not judged here". Keep the
+  two judgements that outlived the code: *"I can't see any motion" is ambiguous* between the page
+  being too still and the desktop having motion switched off, so diagnose before changing anything
+  (the `.architecture` deadlock was exactly that second shape, and the CSS un-clip made the
+  reduced-motion path look healthy); and reject a "concrete architecture" stock file that is a
+  church interior, or a `Server_rack` that is a recording-studio console. Image generation and video
+  remain quota-blocked on this box, and stock-aggregator search results are licensed previews, so
+  neither is a source.
 - **Screenshots of a scrolling page need CDP, not `--screenshot`.** `apps/dashboard/scripts/shoot.mjs`
   drives headless Chromium over the DevTools WebSocket (Node's built-in `WebSocket`, no dependency) to
   scroll to a fraction of the document and capture. The CLI flag only ever photographs the top, and a
@@ -1467,8 +1493,14 @@ assertions about somebody else's chain.
     `STUCK`, which is the only reason this was caught rather than shipped again. A reduced-motion
     override that un-clips content can mask the whole bug on the one path you would not think to
     test — check the motion-enabled default.
-17. **Committed, not pushed, so the live site is still the pre-eighth-pass page.** Both passes are in
-    `main` locally; `ari-zeta-seven.vercel.app` redeploys on push (sixth pass), so until someone
-    pushes it, a visitor still reads the layout the outside audit called contradictory and still cannot
-    see the control-plane diagram. Verify with the same differential that settled it here:
-    `curl https://ari-zeta-seven.vercel.app/ | grep -c checkpoint-list` → 0 means undeployed.
+17. **A deploy is a claim, so verify it as one.** Pushing `main` is not evidence that the site
+    changed: Vercel rebuilds on its own (sixth pass), and the check is two commands against the
+    *origin*, not the local build — a markup marker that only exists post-change
+    (`curl https://ari-zeta-seven.vercel.app/ | grep -c checkpoint-list`) and
+    `pnpm web:lines https://ari-zeta-seven.vercel.app/ 390,1440 <theme> /tmp/out`, which measures what
+    a visitor actually gets. Both were run on 2026-09-29 after the ninth-pass push and both agree the
+    live page is the fixed one. **What is still wrong on the live site, and it needs the owner
+    rather than an edit:** thread 13 — `WAITLIST_DATABASE_URL` is unset on the deployment, so the
+    marketing form answers every address with `WAITLIST_UNCONFIGURED` and staging collects nothing.
+    There is no `vercel` CLI on this box and `~/ari-prod.env` carries only the ledger's URL, so
+    provisioning the second database is a dashboard action.
