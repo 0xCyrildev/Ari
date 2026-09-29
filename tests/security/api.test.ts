@@ -1219,3 +1219,112 @@ describe('the approver’s surface', () => {
     expect(completed.requestId).toBe(pending.requestId);
   });
 });
+
+describe('a person rotating their own credential', () => {
+  /**
+   * Scoped to the tenant and cast to int: `count(*)` is a bigint the driver hands back as a
+   * string, and an unscoped count in this suite counts every earlier run of the same file
+   * (thread 8) — which is how a test that must see one row can cheerfully see three.
+   */
+  const credentialRows = async (orgId: string, userId: string): Promise<number> =>
+    (await pool.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM ari.user_credentials WHERE org_id = $1 AND user_id = $2',
+      [orgId, userId],
+    )).rows[0]?.n ?? 0;
+
+  const rotatedBy = async (orgId: string): Promise<{ actor_type: string; rotation_of: string | null }[]> =>
+    (await pool.query<{ actor_type: string; rotation_of: string | null }>(
+      `SELECT e.actor_type AS actor_type, c.rotation_of AS rotation_of
+         FROM ari.audit_events e
+         JOIN ari.user_credentials c ON c.id = e.resource_id
+        WHERE e.org_id = $1 AND e.event_type = 'credential.rotated'`,
+      [orgId],
+    )).rows;
+
+  it('mints a replacement that carries exactly what the caller already held', async () => {
+    const t = await tenant();
+    const holder = await approver(t, { role: 'owner', scopes: DECIDE });
+
+    const minted = await api.app.inject({ method: 'POST', url: '/v1/me/credentials', headers: bearer(holder.bearer), payload: {} });
+    expect(minted.statusCode).toBe(201);
+    const body = minted.json() as { bearer: string; scopes: string[]; rotationOf: string; expiresAt: string; credentialId: string };
+    expect(body.bearer).not.toBe(holder.bearer);
+    expect(body.scopes).toEqual(['approval:decide']);
+    expect(body.rotationOf).toMatch(/^ucrd_/);
+    expect(Date.parse(body.expiresAt)).toBeGreaterThan(Date.now());
+
+    // Both halves of the swap are asserted against the wire, not the response: the new secret
+    // authenticates, and the old one still does. The second is a deliberate property of this
+    // route — revoking the presenting credential mid-rotation would lock a client out of a
+    // secret that is printed once and cannot be recovered — so it is pinned here rather than
+    // left as an assumption someone discovers later.
+    const withNew = await api.app.inject({ method: 'GET', url: '/v1/approvals', headers: bearer(body.bearer) });
+    const withOld = await api.app.inject({ method: 'GET', url: '/v1/approvals', headers: bearer(holder.bearer) });
+    expect(withNew.statusCode).toBe(200);
+    expect(withOld.statusCode).toBe(200);
+
+    expect(await credentialRows(t.orgId, holder.userId)).toBe(2);
+  });
+
+  it('refuses to mint authority the caller does not hold, and writes nothing', async () => {
+    const t = await tenant();
+    const holder = await approver(t, { role: 'owner', scopes: DECIDE });
+    const before = await credentialRows(t.orgId, holder.userId);
+
+    const widened = await api.app.inject({
+      method: 'POST',
+      url: '/v1/me/credentials',
+      headers: bearer(holder.bearer),
+      payload: { scopes: ['approval:decide', 'agent:manage'] },
+    });
+    expect(widened.statusCode).toBe(403);
+    const detail = (widened.json() as { code: string; detail: string }).detail;
+    expect(detail).toContain('agent:manage');
+    // The control beside the refusal: a check that refused everything would pass the assertion
+    // above, so the same caller asking only for what it holds must still succeed afterwards.
+    const honest = await api.app.inject({ method: 'POST', url: '/v1/me/credentials', headers: bearer(holder.bearer), payload: {} });
+    expect(honest.statusCode).toBe(201);
+    expect(await credentialRows(t.orgId, holder.userId)).toBe(before + 1);
+  });
+
+  it('refuses the one scope a human may never carry, in words as well as in a CHECK', async () => {
+    const t = await tenant();
+    const holder = await approver(t, { role: 'owner', scopes: DECIDE });
+    const asked = await api.app.inject({
+      method: 'POST',
+      url: '/v1/me/credentials',
+      headers: bearer(holder.bearer),
+      payload: { scopes: ['transaction:request'] },
+    });
+    expect(asked.statusCode).toBe(403);
+    expect(await credentialRows(t.orgId, holder.userId)).toBe(1);
+  });
+
+  it('is not reachable with an agent secret, because the secret is not that kind of secret', async () => {
+    const t = await tenant();
+    const byAgent = await api.app.inject({ method: 'POST', url: '/v1/me/credentials', headers: bearer(t.presented), payload: {} });
+    expect(byAgent.statusCode).toBe(401);
+    expect((byAgent.json() as { code: string }).code).toBe('UNAUTHENTICATED');
+  });
+
+  it('bounds a lifetime rather than trusting the caller to pick a sane one', async () => {
+    const t = await tenant();
+    const holder = await approver(t, { role: 'owner', scopes: DECIDE });
+    const tooShort = await api.app.inject({ method: 'POST', url: '/v1/me/credentials', headers: bearer(holder.bearer), payload: { ttlMs: '500' } });
+    expect(tooShort.statusCode).toBe(400);
+    const tooLong = await api.app.inject({ method: 'POST', url: '/v1/me/credentials', headers: bearer(holder.bearer), payload: { ttlMs: '999999999999999' } });
+    expect(tooLong.statusCode).toBe(400);
+    const notANumber = await api.app.inject({ method: 'POST', url: '/v1/me/credentials', headers: bearer(holder.bearer), payload: { ttlMs: 1000 } });
+    expect(notANumber.statusCode).toBe(400);
+  });
+
+  it('witnesses the rotation as a person’s act, with the secret it replaced named', async () => {
+    const t = await tenant();
+    const holder = await approver(t, { role: 'owner', scopes: DECIDE });
+    await api.app.inject({ method: 'POST', url: '/v1/me/credentials', headers: bearer(holder.bearer), payload: {} });
+    const rows = await rotatedBy(t.orgId);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.actor_type).toBe('human');
+    expect(rows[0]?.rotation_of).toMatch(/^ucrd_/);
+  });
+});

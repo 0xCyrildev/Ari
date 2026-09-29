@@ -383,10 +383,10 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
    * `user_credentials` inside the tenant transaction — never from what authentication
    * returned, which is a value from before the revocation that may have happened since.
    */
-  const asUser = (requiredScope: string) => async (
+  const asUser = (requiredScope: string | null) => async (
     request: { headers: Record<string, string | string[] | undefined> },
     reply: FastifyReply,
-    fn: (tx: TenantTx, principal: ApproverPrincipal) => Promise<GateReply>,
+    fn: (tx: TenantTx, principal: ApproverPrincipal, heldScopes: readonly string[]) => Promise<GateReply>,
   ): Promise<void> => {
     const auth = await authenticateApprover(gateway, request.headers.authorization as string | undefined);
     if (!auth.ok) {
@@ -396,10 +396,10 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
     const principal = auth.principal;
     const outcome = await asTenant<GateReply>(deps.pipeline.pool, principal.orgId, async (tx) => {
       const scopes = await activeUserScopes(tx, principal.credentialId);
-      if (!scopes.includes(requiredScope)) {
+      if (requiredScope !== null && !scopes.includes(requiredScope)) {
         return { status: 403, body: { code: 'SCOPE_REFUSED', detail: `this route requires ${requiredScope}` } };
       }
-      return fn(tx, principal);
+      return fn(tx, principal, scopes);
     });
     await reply.code(outcome.status).send(outcome.body);
   };
@@ -559,6 +559,77 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDeps): void {
       bearer: issued.presented,
       scopes: issued.scopes,
       expiresAt: issued.expiresAt,
+    });
+  });
+
+  /**
+   * Rotate your own credential, so a person holding one no longer needs an operator with a CLI
+   * to get the next one. This is the shape `013` was built to be minted into and what thread 1
+   * had been carrying as open.
+   *
+   * It asks for no scope, deliberately: presenting a live user credential *is* the authority a
+   * secret rotation rests on, the same way changing a password needs no "change password"
+   * permission. Inventing `credential:self` would have meant widening `013`'s permitted list to
+   * let someone do the one thing they had already proved they could do.
+   *
+   * What makes it safe to put behind the browser proxy is not a scope check either. Every
+   * requested scope has to be held by *this* credential, read from the row inside the tenant
+   * transaction, so the route can restate authority and can never enlarge it — and a scope the
+   * caller does not hold is refused naming the scope, because "you asked for something you don't
+   * have" is the one thing an operator needs to see in a log.
+   *
+   * The old credential stays live. Revoking it in the same breath would lock a client out if the
+   * response were lost, and the secret is printed once and cannot be recovered; that trade is
+   * recorded in the memory as a persistence property, not waved away.
+   */
+  app.post('/v1/me/credentials', async (request, reply) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const ttlText = body.ttlMs ?? '604800000';
+    if (typeof ttlText !== 'string' || !/^\d{1,20}$/.test(ttlText)) {
+      return reply.code(400).send({ code: 'INVALID_REQUEST', detail: 'ttlMs must be a decimal string' });
+    }
+    let ttlMs: bigint;
+    try {
+      ttlMs = BigInt(ttlText);
+    } catch {
+      return reply.code(400).send({ code: 'INVALID_REQUEST', detail: 'ttlMs is not a number' });
+    }
+    // The same bound the bootstrap route applies, for the same reason: `expires_at > created_at`
+    // is the only database-side rule about a lifetime, and a hundred-year credential satisfies it.
+    if (ttlMs < 60_000n || ttlMs > 30n * 24n * 60n * 60n * 1_000n) {
+      return reply.code(400).send({ code: 'INVALID_REQUEST', detail: 'ttlMs must be between one minute and thirty days' });
+    }
+    if (body.scopes !== undefined && (!Array.isArray(body.scopes) || !body.scopes.every((s) => typeof s === 'string' && isScope(s)))) {
+      return reply.code(400).send({ code: 'INVALID_REQUEST', detail: 'scopes must be an array of names from the vocabulary' });
+    }
+
+    return asUser(null)(request, reply, async (tx, principal, held) => {
+      const requested = (body.scopes as Scope[] | undefined) ?? ([...held] as Scope[]);
+      if (requested.length === 0) {
+        return { status: 400, body: { code: 'INVALID_REQUEST', detail: 'a credential with no scopes is not a credential' } };
+      }
+      const widening = requested.filter((scope) => !held.includes(scope));
+      if (widening.length > 0) {
+        return { status: 403, body: { code: 'SCOPE_REFUSED', detail: `this credential does not hold ${widening.join(', ')} and cannot mint it` } };
+      }
+      const issued = await issueUserCredential(tx, {
+        userId: principal.userId,
+        scopes: requested,
+        ttlMs,
+        masterPepper: deps.pipeline.masterPepper,
+        actor: principal.userId,
+        rotationOf: principal.credentialId,
+      });
+      return {
+        status: 201,
+        body: {
+          credentialId: issued.credentialId,
+          bearer: issued.presented,
+          scopes: issued.scopes,
+          expiresAt: issued.expiresAt,
+          rotationOf: principal.credentialId,
+        },
+      };
     });
   });
 

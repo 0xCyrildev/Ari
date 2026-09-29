@@ -49,6 +49,13 @@ const ALLOWED: readonly { readonly method: string; readonly path: RegExp }[] = [
   { method: 'POST', path: /^\/v1\/agents$/ },
   { method: 'POST', path: new RegExp(`^\\/v1\\/agents\\/${ID}\\/revoke$`) },
   { method: 'POST', path: new RegExp(`^\\/v1\\/agents\\/${ID}\\/credentials$`) },
+  // A person rotating their own secret. This is the one minting route here that produces *human*
+  // authority, so it earns its place on a specific argument rather than by resemblance to the
+  // line above it: the caller must already present a live user credential, and the upstream route
+  // refuses any scope that credential does not already hold — it can restate authority, never
+  // enlarge it. `/v1/users/:id/credentials` stays absent because that one creates human authority
+  // from a deployment token, with no person on the other side of the request yet.
+  { method: 'POST', path: /^\/v1\/me\/credentials$/ },
   { method: 'POST', path: /^\/v1\/wallets$/ },
   { method: 'POST', path: new RegExp(`^\\/v1\\/agents\\/${ID}\\/wallets\\/${ID}$`) },
   { method: 'POST', path: /^\/v1\/policies$/ },
