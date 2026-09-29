@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "preflight": "node scripts/preflight.mjs",
     "sweep": "node scripts/responsive-sweep.mjs",
-    "why-overflow": "node scripts/why-overflow.mjs"
+    "why-overflow": "node scripts/why-overflow.mjs",
+    "lines": "node scripts/line-boxes.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

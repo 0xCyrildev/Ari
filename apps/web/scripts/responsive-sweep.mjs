@@ -19,6 +19,12 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 const ORIGIN = process.argv[2] ?? 'http://127.0.0.1:3120'
 const PORT = Number(process.argv[3] ?? 9471)
 const WIDTHS = (process.argv[4] ?? '320,390,768,1024,1440').split(',').map(Number)
+// The second positional is the CDP port, not the widths — and getting that wrong used to produce
+// "no DevTools page target on :NaN", which reads like a broken browser and is a broken argument.
+if (!Number.isFinite(PORT) || PORT <= 0 || !WIDTHS.length || WIDTHS.some((w) => !Number.isFinite(w) || w <= 0)) {
+  console.error(`bad arguments: cdpPort=${JSON.stringify(process.argv[3] ?? '')} widths=${JSON.stringify(process.argv[4] ?? '')}\nusage: node scripts/responsive-sweep.mjs [origin] [cdpPort] [widths]`)
+  process.exit(2)
+}
 const PATHS = [
   '/', '/docs',
   '/console', '/console/agents', '/console/agents/treasury-agent', '/console/approvals',

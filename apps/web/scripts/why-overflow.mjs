@@ -17,6 +17,10 @@ const PATH = process.argv[3] ?? '/console/agents/treasury-agent'
 const W = Number(process.argv[4] ?? 320)
 const SELECTOR = process.argv[5] ?? '.state'
 const PORT = Number(process.argv[6] ?? 9481)
+if (!Number.isFinite(W) || W <= 0 || !Number.isFinite(PORT) || PORT <= 0) {
+  console.error(`bad arguments: width=${JSON.stringify(process.argv[4] ?? '')} cdpPort=${JSON.stringify(process.argv[6] ?? '')}\nusage: node scripts/why-overflow.mjs [origin] [path] [width] [selector] [cdpPort]`)
+  process.exit(2)
+}
 const PROFILE = `/tmp/ari-why-${Date.now()}`
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 

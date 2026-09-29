@@ -179,10 +179,13 @@ const forbidClaim = (label, pattern, files = claims) => {
  * schema itself uses (`010`), and the tone map that colours it is copy about a row, not a claim
  * about money — so only the prose forms `[Ss]ettled` are matched. And a sentence that *refuses*
  * the claim ("will not dress a mock signature up as a settled payment", "None of it says a
+ * payment settled", "nothing here claims a provider settled it" — `nothing` is in the list because
+ * it is the plainest way this page refuses the claim, and a gate that only recognises "no" teaches
+ * people to write "no" where "nothing" reads better).
  * payment settled") is the honest use, which is why the check looks backwards 60 characters for
  * a negation instead of banning the word.
  */
-const NEGATION = /\b(not|never|none|without|refuse|refused|stops? at|cannot|no)\b/i;
+const NEGATION = /\b(not|never|none|nothing|without|refuse|refused|stops? at|cannot|no)\b/i;
 const settledHits = [];
 for (const { file, lines } of claims) {
   lines.forEach((line, index) => {

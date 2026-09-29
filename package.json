@@ -26,6 +26,7 @@
     "web:preflight": "pnpm --dir apps/web preflight",
     "web:sweep": "pnpm --dir apps/web sweep",
     "web:why-overflow": "pnpm --dir apps/web why-overflow",
+    "web:lines": "pnpm --dir apps/web lines",
     "web:dev": "pnpm --dir apps/web dev",
     "web:typecheck": "pnpm --dir apps/web typecheck",
     "web:build": "pnpm --dir apps/web build"
