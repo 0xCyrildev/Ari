@@ -223,6 +223,26 @@ for (const { file, lines } of claims) {
 if (chainHits.length > 0) claimFailures.push(`an unsupported chain is named without saying it is unsupported — ${chainHits.join(', ')}`);
 else console.log('  ok   every unsupported chain is named alongside its refusal');
 
+/**
+ * A reveal that starts with no visible area can never be revealed by a thing that measures area.
+ * `clip-path: inset(0 100% 0 0)` and `scaleX(0)` leave an element with a zero intersection rect,
+ * so `IntersectionObserver` reports "not in view" forever: the wipe needs the observer and the
+ * observer needs the wipe. This is how the control-plane diagram shipped invisible to every
+ * motion-enabled visitor while the reduced-motion CSS — which un-clips — made it look fine.
+ *
+ * `opacity: 0` is deliberately absent: it costs no area, which is why the `Reveal` wrapper that
+ * uses it has never had this problem.
+ */
+const ZERO_AREA = /clipPath:\s*['"]inset\([^)]*100%|scaleX\(0\)|scale:\s*0[,\s}]/;
+const areaHits = [];
+for (const { file, lines } of claims) {
+  lines.forEach((line, index) => {
+    if (/whileInView/.test(line) && ZERO_AREA.test(line)) areaHits.push(`${file}:${index + 1}`);
+  });
+}
+if (areaHits.length > 0) claimFailures.push(`a whileInView reveal starts with zero visible area, so no observer can ever fire it — ${areaHits.join(', ')}`);
+else console.log('  ok   no reveal gates on an area it zeroes itself');
+
 if (claimFailures.length === 0) console.log(`  ok   claims checked over ${claims.length} files`);
 else failures.push(...claimFailures.map((failure) => `claim: ${failure}`));
 

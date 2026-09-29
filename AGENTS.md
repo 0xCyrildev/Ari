@@ -680,6 +680,16 @@ screenshot the harness had ever produced, and not caused by that pass.
   each returns 2), and `line-boxes` defaults to the same `127.0.0.1:3120` its siblings use. It is
   wired as **`pnpm web:lines`** — it had no script entry at all, so it only existed if you remembered
   it.
+- **The gate can catch this class without a browser now.** `web:preflight` refuses a JSX element
+  that pairs `whileInView` with an `initial` that zeroes its own area (`clip-path: inset(… 100%`,
+  `scaleX(0)`, `scale: 0`). `opacity: 0` is deliberately *not* in the list — it costs no area, which
+  is exactly why the `Reveal` wrapper that uses it has always worked, and a rule that banned it would
+  be a rule the next session routes around. Verified the way the other claim rules were: a control
+  file carrying the old `.architecture` line verbatim fails the gate at the right file and line
+  number; delete it and the tree passes over 23 files. What the rule cannot see is the marquee shape
+  — an element with fine geometry inside an `overflow: hidden` animated track — and that is what
+  `pnpm web:lines`' STUCK check is for. The two are complementary: one is static and cheap on every
+  build, the other needs a browser and sees the real thing.
 - **Gates at this revision, all re-run against a fresh `pnpm web:build`:** `pnpm typecheck` clean,
   **406** unit, **258** security (both unchanged from the seventh pass — nothing here touches the
   backend), `pnpm web:typecheck` clean, `pnpm web:preflight` passes over 23 files, `pnpm web:build`
