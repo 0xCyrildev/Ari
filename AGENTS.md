@@ -29,7 +29,16 @@ still has no safe path.
 | 7 simulation | done | `packages/simulation`: `eth_call` against a real anvil, advisory by A10, and the digest binding asserted from both sides — see "Ran against a chain" below |
 | 9 CLI | done | `apps/cli`: the operator's and the approver's tool, 16 commands, `policy validate` against a 23-case corpus, and its own socket-level suite |
 | 4, 8, 11 | not started | intent, Ika (blocked on §6), security review |
-| 10 dashboard | built, not wired | `apps/dashboard`: React 19 + Vite 8 + Tailwind 4, 18 source files, landing page plus the ten control-center screens, rebuilt once against the design gate below. Gates: `pnpm typecheck:ui`, `pnpm ui:preflight`, `pnpm ui:build`. The vocabulary is the engine's own — every status, reason code, signal and event type is copied from a named package — and the data is one labelled sample tenant. No route is wired to `ari-api` yet. |
+| 10 dashboard | **live, partly wired** | `apps/web` — Next.js, `app/console` is the control plane, `app/api` the routes. Gates that exist: `pnpm web:typecheck`, `pnpm web:preflight`, `pnpm web:build` (also `web:dev`, `web:lines`, `web:sweep`). Prove it with `ls apps/` → `api cli signer web`. **`apps/dashboard` was deleted** in the 2026-09-27 pass below, and its Vite-era gates (`typecheck:ui`, `ui:preflight`, `ui:build`) are gone from `package.json` — do not run them. The vocabulary rule still holds: every status, reason code, signal and event type is copied from a named package, and the console's data is one labelled sample tenant. |
+
+**Path drift in this file:** several later sections still name `apps/dashboard/...` paths — the domain
+types file, `scripts/preflight.mjs`, `scripts/shoot.mjs`. Those are historical: the directory is gone.
+Verified replacements: `apps/web/scripts/preflight.mjs`, run as `pnpm web:preflight` and scoped to
+`app/console`, `components/console`, `lib/ari`; `apps/web/scripts/` also holds `responsive-sweep.mjs`,
+`line-boxes.mjs`, `live-probe.mjs` and `why-overflow.mjs`. Whether a **`shoot.mjs` equivalent exists is
+unverified** — elsewhere here the CDP screenshot tool is recorded as having died with the dashboard and
+needing re-adding, so do not assume one is present. Where a passage says "the dashboard", read "the
+console". Prove the directory itself with `ls apps/` → `api cli signer web`.
 
 `pnpm test` is **536 tests / 30 files**, in two halves that add up to it: `pnpm test:unit` is the
 **305** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **231** that
