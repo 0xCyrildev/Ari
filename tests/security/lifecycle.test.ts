@@ -50,6 +50,7 @@ beforeAll(async () => {
       mode: 'delegated',
       signatureTriple: `0x${'11'.repeat(32)}`,
       provider: 'mock',
+      address: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266',
       actor: 'system',
     });
     return { agent, wallet };

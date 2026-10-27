@@ -80,6 +80,13 @@ const app: Connector = {
 };
 
 const API = readConfig({
+  // Mandatory since `017`, with no defaults on purpose: a suite that wants a config states which
+  // chains, fee bounds and tokens it signs for, exactly as a deployment must.
+  EVM_ALLOWED_CHAIN_IDS: '1',
+  EVM_MAX_GAS_LIMIT: '500000',
+  EVM_MAX_FEE_COST_WEI: '100000000000000000',
+  ARI_NETWORK_NAME: 'mainnet',
+  EVM_ASSET_REGISTRY: new URL('./fixtures/evm-assets.json', import.meta.url).pathname,
   // The same database the fixtures write their tenants into, read from the same place
   // the rest of the suite reads it. A literal here once made this file pass against a
   // long-lived database while its fixtures wrote to a fresh one: the API answered 401
@@ -174,6 +181,7 @@ async function tenant(cap = usd(5_000n)): Promise<Tenant> {
       mode: 'delegated',
       signatureTriple: 'SECP256K1/ECDSASecp256k1/KECCAK256',
       provider: 'mock',
+      address: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266',
       actor: owner,
     });
     const document: PolicyDocument = {

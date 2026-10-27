@@ -10,6 +10,7 @@ import { KeyRing, TicketKey } from '@ari/signing';
 import { readConfig } from '../src/server.js';
 
 const LOCAL = 'postgresql://ari:ari@127.0.0.1:5435/ari';
+const REGISTRY = new URL('./fixtures/evm-assets.json', import.meta.url).pathname;
 
 function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
@@ -18,6 +19,15 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     TICKET_KEY: 't'.repeat(48),
     APPROVAL_KEY: 'a'.repeat(48),
     ORG_BOOTSTRAP_TOKEN: 'bootstrap-token-for-tests',
+    // The chain binding became mandatory with `017`: a ticket now names the bytes it authorises, and
+    // those bytes have a fee bound and a token identity behind them. Every suite that wants a valid
+    // config has to state them, which is the point — a default would be this process writing a limit
+    // nobody set.
+    EVM_ALLOWED_CHAIN_IDS: '1',
+    EVM_MAX_GAS_LIMIT: '500000',
+    EVM_MAX_FEE_COST_WEI: '100000000000000000',
+    ARI_NETWORK_NAME: 'mainnet',
+    EVM_ASSET_REGISTRY: REGISTRY,
     ...overrides,
   };
 }
@@ -25,6 +35,21 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
 describe('what ari-api refuses to start as', () => {
   it('accepts the local development database exactly as written', () => {
     expect(readConfig(env()).databaseUrl).toBe(LOCAL);
+  });
+
+  it('refuses to start when the chain binding is missing a key, and names every one that is missing', () => {
+    expect(() => readConfig(env({ EVM_ASSET_REGISTRY: '', EVM_MAX_GAS_LIMIT: '' })))
+      .toThrow(/EVM_ASSET_REGISTRY.*EVM_MAX_GAS_LIMIT|EVM_MAX_GAS_LIMIT.*EVM_ASSET_REGISTRY/s);
+  });
+
+  it('refuses a registry it cannot read, rather than minting tickets for an asset nobody declared', () => {
+    expect(() => readConfig(env({ EVM_ASSET_REGISTRY: '/nonexistent/assets.json' })))
+      .toThrow(/EVM_ASSET .*unreadable|EVM_ASSET_REGISTRY .*unreadable/);
+  });
+
+  it('refuses a fee or gas bound that is not a positive integer', () => {
+    expect(() => readConfig(env({ EVM_MAX_GAS_LIMIT: '0' }))).toThrow(/EVM_MAX_GAS_LIMIT/);
+    expect(() => readConfig(env({ EVM_MAX_FEE_COST_WEI: '-5' }))).toThrow(/EVM_MAX_FEE_COST_WEI/);
   });
 
   it('has no metrics route unless a token is configured, and refuses a short one', () => {

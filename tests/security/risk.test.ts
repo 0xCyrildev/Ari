@@ -151,6 +151,7 @@ async function world(
       mode: 'delegated',
       signatureTriple: 'SECP256K1/ECDSASecp256k1/KECCAK256',
       provider: 'mock',
+      address: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266',
       actor: owner,
     });
     const created = await createPolicy(tx, { name: 'risk-fixture', document: documentFor(walletId, conditions, riskFallback), actor: owner });
@@ -302,6 +303,7 @@ describe('what counts as behaviour', () => {
         mode: 'delegated',
         signatureTriple: 'SECP256K1/ECDSASecp256k1/KECCAK256',
         provider: 'mock',
+        address: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266',
         actor: w.owner,
       });
       return walletId;

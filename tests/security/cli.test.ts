@@ -28,6 +28,13 @@ const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
 const RECIPIENT = '0x3f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c';
 
 const CONFIG = readConfig({
+  // Mandatory since `017`, with no defaults on purpose: a suite that wants a config states which
+  // chains, fee bounds and tokens it signs for, exactly as a deployment must.
+  EVM_ALLOWED_CHAIN_IDS: '1',
+  EVM_MAX_GAS_LIMIT: '500000',
+  EVM_MAX_FEE_COST_WEI: '100000000000000000',
+  ARI_NETWORK_NAME: 'mainnet',
+  EVM_ASSET_REGISTRY: new URL('./fixtures/evm-assets.json', import.meta.url).pathname,
   DATABASE_URL,
   DATABASE_ROLE: 'ari_app',
   CREDENTIAL_PEPPER: 'cli-test-pepper-0123456789abcdef0123456789ab',

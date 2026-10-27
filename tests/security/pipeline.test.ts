@@ -174,6 +174,7 @@ async function world(mode: 'delegated' | 'user_gated' = 'delegated', cap = usd(5
       mode,
       signatureTriple: 'SECP256K1/ECDSASecp256k1/KECCAK256',
       provider: 'mock',
+      address: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266',
       actor: people.owner,
     });
     const created = await createPolicy(tx, { name: 'pipeline', document: policyDocument(walletId, mode, cap), actor: people.owner });

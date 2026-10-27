@@ -380,6 +380,7 @@ describe('the tenant boundary holds below the application', () => {
         mode: 'delegated',
         signatureTriple: 'SECP256K1/ECDSASecp256k1/KECCAK256',
         provider: 'mock',
+        address: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266',
         actor: 'tester',
       });
       await grantWalletToAgent(tx, { agentId: agent, walletId: wallet, policyVersionId: newId('ppv'), actor: 'tester' });
