@@ -15,3 +15,8 @@ local-proofs/
 
 # Local dev bearer for the console, printed once by the operator path.
 .console-credential
+
+# Rust worker: build artifacts only. The sources under rust/ are checked in; the
+# target/ tree is 100+ MB of cargo output and must never land in a commit.
+rust/target/
+rust/Cargo.lock.bak

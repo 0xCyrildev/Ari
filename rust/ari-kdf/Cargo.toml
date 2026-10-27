@@ -1,0 +1,12 @@
+[package]
+name = "ari-kdf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Argon2id verify/hash worker for the credential gate, on real threads"
+
+[dependencies]
+# `parallel` is deliberately NOT enabled: it routes Argon2's lane work onto rayon's global pool, which
+# would fight this process's own worker count and oversubscribe the machine. Parallelism here is across
+# requests (one derivation per thread, p lanes inside it), not inside a single hash.
+argon2 = { version = "0.6.0", features = ["password-hash", "getrandom", "rand_core"] }

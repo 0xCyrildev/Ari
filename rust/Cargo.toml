@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["ari-kdf"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "BUSL-1.1"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+# Deliberately NOT panic = "abort": this process serves many tenants' credential checks, and a panic
+# on one request must cost that request, not every request in flight. `main.rs` catches unwinds and
+# answers with a failure line.
+panic = "unwind"
