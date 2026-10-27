@@ -6,7 +6,7 @@ Global tier + this file must fit 32,768 bytes. Moved **verbatim**; the rules sti
 | Read | Before you |
 |---|---|
 | `~/ari.AGENTS.threads.md` | resuming work here — this is the live to-do list, read it first |
-| `~/ari.SESSION.2026-10-25.md` | touching `packages/chain-core` or `packages/chain-sui` — the uncommitted adapter work, its five defects, and the session plan |
+| `~/ari.SESSION.2026-10-25.md` | touching `packages/chain-core`, `packages/chain-sui`, `packages/chain-evm`, `rust/`, or `packages/client` — the uncommitted adapter work, its five defects, the session plan, the Argon2id worker, and the `@ari/client` packaging decision |
 | `~/ari.AGENTS.decisions.md` | changing policy evaluation, digests, ticket sealing, the signer, the ledger or the console |
 | `~/ari.AGENTS.passlogs.md` | following a reference to a specific numbered pass |
 
