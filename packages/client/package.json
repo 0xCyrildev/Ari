@@ -1,21 +1,46 @@
 {
   "name": "@ari/client",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "private": false,
   "type": "module",
-  "exports": {
-    ".": "./src/index.ts"
+  "license": "Apache-2.0",
+  "description": "The agent-facing client for Ari: evaluate, authorize, status. There is no sign method.",
+  "keywords": ["ari", "payments", "agent", "authorization"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xCyrildev/Ari.git",
+    "directory": "packages/client"
   },
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
-    "test": "vitest run"
+    "build": "tsc -p ../schemas/tsconfig.build.json && tsc -p tsconfig.build.json && node scripts/vendor.mjs",
+    "test": "vitest run",
+    "prepublishOnly": "pnpm build && pnpm test"
   },
   "dependencies": {
-    "@ari/schemas": "workspace:*",
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@ari/schemas": "workspace:*",
     "@types/node": "24.10.1",
     "typescript": "5.9.3",
     "vitest": "5.0.1"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

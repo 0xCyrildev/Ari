@@ -290,13 +290,13 @@ importers:
 
   packages/client:
     dependencies:
-      '@ari/schemas':
-        specifier: workspace:*
-        version: link:../schemas
       zod:
         specifier: 4.6.5
         version: 4.6.5
     devDependencies:
+      '@ari/schemas':
+        specifier: workspace:*
+        version: link:../schemas
       '@types/node':
         specifier: 24.10.1
         version: 24.10.1
