@@ -46,6 +46,13 @@ export type UnavailableReason =
   | 'NOT_SUPPORTED_BY_PROVIDER'
   | 'WALLET_ADDRESS_UNKNOWN'
   /**
+   * The amount cannot become an ABI word — it does not fit a `uint256`. Not a question about the
+   * chain: `amount.raw` is an unbounded non-negative bigint, and the encoder used to answer with a
+   * 68.5-byte calldata for it, which a node reports on as a revert. A malformed call we produced must
+   * never be readable as a fact the chain asserted, so it is refused here, before any `eth_call`.
+   */
+  | 'VALUE_NOT_UINT256'
+  /**
    * The address being called has no code on this chain. `eth_call` answers `0x` for a
    * call to a plain account, which is indistinguishable from a token that returns nothing
    * on success — so without this check a payment to an EOA, or to a contract that was

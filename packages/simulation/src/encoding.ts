@@ -61,6 +61,12 @@ export function pad32(hexNoPrefix: string): string {
 
 export function uint256Hex(value: bigint): string {
   if (value < 0n) throw new Error('a uint256 word cannot be negative');
+  // The upper bound is not pedantry. `pad32` pads and never truncates, so without this check an amount
+  // of 2^256 produced a **68.5-byte** calldata — odd-length hex, not a call anyone can decode — and the
+  // node's answer about it came back as a revert. That is a defect in our encoder reported as a fact
+  // about the chain, which is the one thing this package's `available` distinction exists to prevent.
+  // `amount.raw` is an unbounded non-negative bigint by design, so the reach is a caller's.
+  if (value >= 1n << 256n) throw new Error(`the amount ${value} does not fit a uint256 word`);
   return value.toString(16);
 }
 
@@ -84,7 +90,11 @@ export function encodeTransfer(recipient: string, amountRaw: bigint): string {
  */
 export function encodeCall(subject: SimulationSubject):
   | { readonly ok: true; readonly call: CallRequest }
-  | { readonly ok: false; readonly reason: 'NOT_SUPPORTED_BY_PROVIDER' | 'WALLET_ADDRESS_UNKNOWN'; readonly detail: string } {
+  | {
+      readonly ok: false;
+      readonly reason: 'NOT_SUPPORTED_BY_PROVIDER' | 'WALLET_ADDRESS_UNKNOWN' | 'VALUE_NOT_UINT256';
+      readonly detail: string;
+    } {
   const { candidate, walletAddress } = subject;
 
   if (candidate.kind === 'unknown') {
@@ -136,11 +146,21 @@ export function encodeCall(subject: SimulationSubject):
     };
   }
 
+  let data: string;
+  try {
+    data = encodeTransfer(candidate.recipient.address, candidate.amount.raw);
+  } catch (error) {
+    // A refusal with a name, not a throw: a caller that catches an exception here cannot tell this
+    // apart from a broken wallet address, and the two have different answers for an operator.
+    const message = error instanceof Error ? error.message : 'the ABI word could not be encoded';
+    return { ok: false, reason: 'VALUE_NOT_UINT256', detail: message };
+  }
+
   return {
     ok: true,
     call: {
       to: candidate.asset.contract,
-      data: encodeTransfer(candidate.recipient.address, candidate.amount.raw),
+      data,
       from: walletAddress,
       value: '0x0',
       what: 'erc20-transfer',
