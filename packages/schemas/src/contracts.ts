@@ -16,6 +16,7 @@
  */
 
 import { z } from 'zod';
+import { ChainFamily, ChainTransactionDigest } from '@ari/chain-core';
 import { AgentId, Money, PolicyVersionId, RawBigIntNonNeg, RequestId, TransactionRequestId, WalletId } from './primitives.js';
 import { CanonicalDigest, CandidateTransaction } from './transaction.js';
 import { WalletAuthorityMode } from './policy.js';
@@ -284,6 +285,25 @@ export const TicketClaims = z
     walletId: WalletId,
     policyVersionId: PolicyVersionId,
     digest: CanonicalDigest,
+    /**
+     * What the authorisation is *about* on the chain, sealed alongside the semantic digest.
+     *
+     * `digest` commits to what the agent said it meant; these commit to the bytes a signature will
+     * cover. Before them the two could not be compared anywhere, because the ticket named no chain
+     * artifact and the signer was handed no bytes — so "the signing boundary enforces authorization
+     * against the chain artifact" (Invariant 3) had no referent.
+     *
+     * `signingDigest` is the one both planes can compute independently; `bytesSha256` pins the exact
+     * serialized payload; `txDigest` is **nullable because it does not exist yet** on EVM — the
+     * transaction hash covers the signature, so inventing one would hand reconciliation a receipt key
+     * that resolves to nothing. A ticket that cannot name bytes is a ticket that cannot be minted:
+     * there is no optional form of this, because an optional security field is a default of "unchecked".
+     */
+    chain: ChainFamily,
+    signingDigest: ChainTransactionDigest,
+    txDigest: ChainTransactionDigest.nullable(),
+    bytesSha256: z.string().regex(/^[0-9a-f]{64}$/, 'bytesSha256 is sha256 of the serialized payload, lowercase hex'),
+    byteLength: RawBigIntNonNeg,
     /** Raw amount carried in the claim so the signer can double-check the digest it is about to sign. */
     amountRaw: RawBigIntNonNeg,
     issuedAtMs: RawBigIntNonNeg,

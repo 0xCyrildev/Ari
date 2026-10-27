@@ -1,4 +1,7 @@
 import { CandidateTransaction, newId } from '@ari/schemas';
+import { chainDigestOf } from '@ari/chain-core';
+/** Built through the only constructor, not cast — that is what the brand exists to force. */
+const sealedDigest = (fill: number) => chainDigestOf('evm/keccak256-signing-v1', new Uint8Array(32).fill(fill));
 import { canonicalize, computeDigest } from '@ari/transaction-engine';
 import { claimsFor, TICKET_TTL_MS, type TicketRequest } from '../src/index.js';
 
@@ -45,6 +48,12 @@ export function request(overrides: Partial<TicketRequest> = {}): TicketRequest {
     walletId,
     policyVersionId,
     digest,
+    chain: 'evm',
+    signingDigest: sealedDigest(0xa1),
+    // Null, as every EVM ticket is: the transaction hash covers a signature that does not exist yet.
+    txDigest: null,
+    bytesSha256: 'b2'.repeat(32),
+    byteLength: 114n,
     amountRaw: 2000000000n,
     issuedAtMs: ISSUED_AT,
     authorityMode: 'delegated',

@@ -12,6 +12,9 @@
  */
 
 import { CandidateTransaction, PolicyDocument, newId, type CandidateTransaction as Candidate } from '@ari/schemas';
+import { chainDigestOf } from '@ari/chain-core';
+/** Built through the only constructor, not cast — that is what the brand exists to force. */
+const sealedDigest = (fill: number) => chainDigestOf('evm/keccak256-signing-v1', new Uint8Array(32).fill(fill));
 import { compilePolicy, evaluate, type EvaluationState } from '@ari/policy-engine';
 import { canonicalize, computeDigest } from '@ari/transaction-engine';
 import { describe, expect, it } from 'vitest';
@@ -144,6 +147,11 @@ async function mintAndRedeem(
       walletId,
       policyVersionId,
       digest: decided.digest,
+      chain: 'evm',
+      signingDigest: sealedDigest(0xc3),
+      txDigest: null,
+      bytesSha256: 'd4'.repeat(32),
+      byteLength: 52n,
       amountRaw: decided.candidate.kind === 'transfer' ? decided.candidate.amount.raw : 0n,
       issuedAtMs: NOW,
       authorityMode: 'delegated',

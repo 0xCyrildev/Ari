@@ -54,3 +54,30 @@ export async function connect(
   }
   return pool;
 }
+
+/**
+ * The chain binding a security-suite deployment pretends to have.
+ *
+ * Mandatory in the type, so every suite that mints a ticket has to say which tokens exist and what fee
+ * it will tolerate — which is the point of making it required. These are test values, and the contract is
+ * the same USDC address every suite already builds candidates against.
+ */
+export const TEST_ARTIFACT = {
+  chain: 'evm' as const,
+  signingDigest: 'evm/keccak256-signing-v1:' + 'a1'.repeat(32),
+  // Null because it is EVM and nothing has signed these bytes — the same answer production gives.
+  txDigest: null,
+  bytesSha256: 'b2'.repeat(32),
+  byteLength: 114n,
+};
+
+export const TEST_USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+
+export const testChainBinding = {
+  supported: ['evm'] as const,
+  networkName: 'mainnet' as const,
+  allowedChainIds: ['1'],
+  maxFeeCostWei: 10n ** 17n,
+  maxGasLimit: 500_000n,
+  tokens: { [TEST_USDC]: { decimals: 6n, symbol: 'USDC' } },
+};

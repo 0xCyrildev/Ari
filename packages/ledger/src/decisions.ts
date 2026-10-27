@@ -38,12 +38,27 @@ export async function recordDecision(
   return { ...input, id };
 }
 
+/**
+ * The chain artifact a ticket is about, as stored. `txDigest` is null where the chain has not
+ * produced one yet — every EVM ticket, until something signs it — and the column is nullable for
+ * that reason, not as a convenience.
+ */
+export interface ChainArtifact {
+  readonly chain: 'evm' | 'sui' | 'solana';
+  readonly signingDigest: string;
+  readonly txDigest: string | null;
+  readonly bytesSha256: string;
+  readonly byteLength: bigint;
+}
+
 export interface TicketRow {
   readonly id: string;
   readonly decisionId: string;
   readonly digest: string;
   readonly walletId: string;
   readonly expiresAtMs: bigint;
+  /** Required on the way in: a ticket that names no bytes cannot be minted (Invariant 3). */
+  readonly artifact: ChainArtifact;
 }
 
 /**
@@ -62,11 +77,17 @@ export async function mintTicket(tx: LedgerTx, input: Omit<TicketRow, 'id'>): Pr
   // the column would otherwise be there to prevent. `002`'s trigger still refuses a row
   // with no ALLOW behind it; this statement refuses one with no decision at all.
   const minted = await tx.client.query(
-    `INSERT INTO ari.signing_tickets (id, org_id, decision_id, digest, wallet_id, expires_at_ms)
-     SELECT $1, d.org_id, d.id, $3, $4, $5
+    `INSERT INTO ari.signing_tickets
+         (id, org_id, decision_id, digest, wallet_id, expires_at_ms,
+          chain, signing_digest, tx_digest, bytes_sha256, byte_length)
+     SELECT $1, d.org_id, d.id, $3, $4, $5, $6, $7, $8, $9, $10
        FROM ari.authorization_decisions d
       WHERE d.id = $2`,
-    [id, input.decisionId, input.digest, input.walletId, input.expiresAtMs.toString()],
+    [
+      id, input.decisionId, input.digest, input.walletId, input.expiresAtMs.toString(),
+      input.artifact.chain, input.artifact.signingDigest, input.artifact.txDigest,
+      input.artifact.bytesSha256, input.artifact.byteLength.toString(),
+    ],
   );
   if ((minted.rowCount ?? 0) === 0) {
     throw new Error(`ticket cannot be minted against decision ${input.decisionId}: no such decision`);

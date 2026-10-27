@@ -12,6 +12,7 @@ import { newId } from '@ari/schemas';
 import { claimTicket, mintTicket, recordDecision, withTransaction } from '@ari/ledger';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { connect } from './database.js';
+import { TEST_ARTIFACT } from './database.js';
 
 let pool: Awaited<ReturnType<typeof connect>>;
 
@@ -45,6 +46,7 @@ describe('a ticket needs an ALLOW underneath it', () => {
         decisionId: allowed.id,
         digest: DIGEST,
         walletId,
+        artifact: TEST_ARTIFACT,
         expiresAtMs: 1_761_400_060_000n,
       });
     });
@@ -55,7 +57,7 @@ describe('a ticket needs an ALLOW underneath it', () => {
     await expect(
       withTransaction(pool, async (tx) => {
         const denied = await recordDecision(tx, decision('DENY'));
-        return mintTicket(tx, { decisionId: denied.id, digest: DIGEST, walletId, expiresAtMs: 1_761_400_060_000n });
+        return mintTicket(tx, { decisionId: denied.id, digest: DIGEST, walletId, artifact: TEST_ARTIFACT, expiresAtMs: 1_761_400_060_000n });
       }),
     ).rejects.toThrow(/not backed by an ALLOW decision/);
   });
@@ -64,7 +66,7 @@ describe('a ticket needs an ALLOW underneath it', () => {
     await expect(
       withTransaction(pool, async (tx) => {
         const review = await recordDecision(tx, decision('REQUIRE_HUMAN_APPROVAL'));
-        return mintTicket(tx, { decisionId: review.id, digest: DIGEST, walletId, expiresAtMs: 1_761_400_060_000n });
+        return mintTicket(tx, { decisionId: review.id, digest: DIGEST, walletId, artifact: TEST_ARTIFACT, expiresAtMs: 1_761_400_060_000n });
       }),
     ).rejects.toThrow(/not backed by an ALLOW decision/);
   });
@@ -79,6 +81,7 @@ describe('a ticket needs an ALLOW underneath it', () => {
           decisionId: allowed.id,
           digest: OTHER_DIGEST,
           walletId,
+          artifact: TEST_ARTIFACT,
           expiresAtMs: 1_761_400_060_000n,
         });
       }),
@@ -93,7 +96,7 @@ describe('a ticket needs an ALLOW underneath it', () => {
     // message differs; neither is a constraint name the operator has to decode.
     await expect(
       withTransaction(pool, (tx) =>
-        mintTicket(tx, { decisionId: newId('dec'), digest: DIGEST, walletId, expiresAtMs: 1_761_400_060_000n }),
+        mintTicket(tx, { decisionId: newId('dec'), digest: DIGEST, walletId, artifact: TEST_ARTIFACT, expiresAtMs: 1_761_400_060_000n }),
       ),
     ).rejects.toThrow(/no such decision/);
   });
@@ -112,6 +115,7 @@ describe('single use is a row, not a flag', () => {
         decisionId: allowed.id,
         digest: DIGEST,
         walletId,
+        artifact: TEST_ARTIFACT,
         expiresAtMs: 1_761_400_060_000n,
       });
       return row.id;
@@ -130,6 +134,7 @@ describe('single use is a row, not a flag', () => {
         decisionId: allowed.id,
         digest: DIGEST,
         walletId,
+        artifact: TEST_ARTIFACT,
         expiresAtMs: 1_761_400_060_000n,
       })).id;
     });
@@ -146,6 +151,7 @@ describe('single use is a row, not a flag', () => {
         decisionId: allowed.id,
         digest: DIGEST,
         walletId,
+        artifact: TEST_ARTIFACT,
         expiresAtMs: 1_761_400_060_000n,
       })).id;
     });
@@ -169,6 +175,7 @@ describe('single use is a row, not a flag', () => {
         decisionId: allowed.id,
         digest: DIGEST,
         walletId,
+        artifact: TEST_ARTIFACT,
         expiresAtMs: 1_761_400_060_000n,
       })).id;
     });
@@ -203,6 +210,7 @@ describe('a minted ticket cannot be rewritten', () => {
           decisionId: allowed.id,
           digest: DIGEST,
           walletId,
+          artifact: TEST_ARTIFACT,
           expiresAtMs: 1_761_400_060_000n,
         })
       ).id;
@@ -264,7 +272,7 @@ describe('a minted ticket cannot be rewritten', () => {
     const ticketId = await withTransaction(pool, async (tx) => {
       const allowed = await recordDecision(tx, decision('ALLOW'));
       return (
-        await mintTicket(tx, { decisionId: allowed.id, digest: DIGEST, walletId, expiresAtMs: 1_761_400_060_000n })
+        await mintTicket(tx, { decisionId: allowed.id, digest: DIGEST, walletId, artifact: TEST_ARTIFACT, expiresAtMs: 1_761_400_060_000n })
       ).id;
     });
     expect(await withTransaction(pool, (tx) => claimTicket(tx, ticketId, DIGEST, INSIDE_WINDOW))).toBe(true);
@@ -278,7 +286,7 @@ describe('a minted ticket cannot be rewritten', () => {
     const ticketId = await withTransaction(pool, async (tx) => {
       const allowed = await recordDecision(tx, decision('ALLOW'));
       return (
-        await mintTicket(tx, { decisionId: allowed.id, digest: DIGEST, walletId, expiresAtMs: 1_761_400_060_000n })
+        await mintTicket(tx, { decisionId: allowed.id, digest: DIGEST, walletId, artifact: TEST_ARTIFACT, expiresAtMs: 1_761_400_060_000n })
       ).id;
     });
     await expect(

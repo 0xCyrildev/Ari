@@ -36,7 +36,9 @@ import { behaviouralProvider } from '@ari/risk-engine';
 import { CandidateTransaction, PolicyDocument, newId } from '@ari/schemas';
 import { TicketKey } from '@ari/signing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { connect, DATABASE_URL } from './database.js';
+import { connect, DATABASE_URL,
+  testChainBinding,
+} from './database.js';
 
 const PEPPER = 'reconciliation-test-pepper-0123456789abcdef';
 const TICKET_KEY = new TicketKey('r'.repeat(48));
@@ -200,6 +202,7 @@ beforeAll(async () => {
   pool = await connect();
   appPool = await connect(4);
   deps = {
+    chain: testChainBinding,
     pool: appPool,
     ticketKey: TICKET_KEY,
     approvalKey: APPROVAL_KEY,

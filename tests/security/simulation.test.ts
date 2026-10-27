@@ -44,7 +44,9 @@ import { readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { connect as connectPool } from './database.js';
+import { connect as connectPool,
+  testChainBinding,
+} from './database.js';
 
 const PORT = 8561;
 const HOST = '127.0.0.1';
@@ -281,6 +283,7 @@ function candidateFor(world: World, amount: bigint, overrides: Record<string, un
 
 function depsWith(simulation: PipelineDeps['simulation']): PipelineDeps {
   return {
+    chain: testChainBinding,
     pool: app,
     ticketKey: new TicketKey('k'.repeat(48)),
     approvalKey: new ApprovalKey('a'.repeat(48)),

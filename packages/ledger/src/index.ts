@@ -491,6 +491,7 @@ export {
   mintTicket,
   recordDecision,
   type DecisionOutcome,
+  type ChainArtifact,
   type DecisionRecord,
   type TicketRow,
 } from './decisions.js';

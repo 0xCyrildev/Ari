@@ -13,6 +13,7 @@ export {
   Asset,
   AuthorityExercise,
   ChainDigestAlgorithm,
+  ChainFamily,
   ChainTransactionDigest,
   Effect,
   Expiry,

@@ -53,7 +53,16 @@ export const ChainDigestAlgorithm = z.enum([
 ]);
 export type ChainDigestAlgorithm = z.infer<typeof ChainDigestAlgorithm>;
 
-const CHAIN_OF: Record<ChainDigestAlgorithm, 'sui' | 'solana' | 'evm'> = {
+/**
+ * The chain families this contract knows. Named once: it appeared as three inline
+ * `z.enum(['evm','sui','solana'])` copies, and the ticket binding is the fourth place
+ * that would have had to restate it — a family a caller can write that the digest tag
+ * cannot produce is a refusal that never fires.
+ */
+export const ChainFamily = z.enum(['evm', 'sui', 'solana']);
+export type ChainFamily = z.infer<typeof ChainFamily>;
+
+const CHAIN_OF: Record<ChainDigestAlgorithm, ChainFamily> = {
   'sui/blake2b256-txdata-v1': 'sui',
   'sui/blake2b256-intent-v1': 'sui',
   'solana/sha256-message-v1': 'solana',
@@ -101,7 +110,7 @@ export function chainDigestBytes(digest: ChainTransactionDigest): Uint8Array {
 }
 
 /** Which chain a sealed digest belongs to — read off the tag, never trusted from a sibling field. */
-export function chainOfDigest(digest: ChainTransactionDigest): 'evm' | 'sui' | 'solana' {
+export function chainOfDigest(digest: ChainTransactionDigest): ChainFamily {
   const parsed = /^([^/]+)\//.exec(digest);
   if (parsed === null) throw new Error('a chain digest without a chain tag is not a chain digest');
   const chain = parsed[1];
@@ -180,7 +189,7 @@ export const NetworkId = z.object({
 export type NetworkId = z.infer<typeof NetworkId>;
 
 export const Asset = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('native'), chain: z.enum(['evm', 'sui', 'solana']), unit: z.string().min(1).max(32) }).strict(),
+  z.object({ kind: z.literal('native'), chain: ChainFamily, unit: z.string().min(1).max(32) }).strict(),
   z
     .object({
       kind: z.literal('erc20'),
@@ -357,7 +366,7 @@ export type Expiry = z.infer<typeof Expiry>;
 export const ValidatedTransaction = z
   .object({
     supported: z.literal(true),
-    chain: z.enum(['evm', 'sui', 'solana']),
+    chain: ChainFamily,
     network: NetworkId,
     /**
      * The identifier the chain itself will use for this transaction, **where one exists yet**.

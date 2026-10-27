@@ -33,7 +33,9 @@ import { ApprovalKey } from '@ari/approvals';
 import { TicketKey } from '@ari/signing';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { connect } from './database.js';
+import { connect,
+  testChainBinding,
+} from './database.js';
 
 let pool: Pool;
 let appPool: Pool;
@@ -59,6 +61,8 @@ const usd = (whole: bigint) => whole * 1_000_000n;
 const DAY = 86_400_000n;
 
 const deps: PipelineDeps = {
+  // Mandatory in the type: the suite has to say which tokens exist, as the deployment must.
+  chain: testChainBinding,
   pool: app,
   ticketKey: TICKET_KEY,
   approvalKey: APPROVAL_KEY,

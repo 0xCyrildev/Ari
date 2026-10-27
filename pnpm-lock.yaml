@@ -90,6 +90,12 @@ importers:
       '@ari/audit':
         specifier: workspace:*
         version: link:../../packages/audit
+      '@ari/chain-core':
+        specifier: workspace:*
+        version: link:../../packages/chain-core
+      '@ari/chain-evm':
+        specifier: workspace:*
+        version: link:../../packages/chain-evm
       '@ari/identity':
         specifier: workspace:*
         version: link:../../packages/identity
@@ -459,6 +465,9 @@ importers:
 
   packages/schemas:
     dependencies:
+      '@ari/chain-core':
+        specifier: workspace:*
+        version: link:../chain-core
       zod:
         specifier: 4.6.5
         version: 4.6.5
@@ -478,6 +487,9 @@ importers:
 
   packages/signing:
     dependencies:
+      '@ari/chain-core':
+        specifier: workspace:*
+        version: link:../chain-core
       '@ari/schemas':
         specifier: workspace:*
         version: link:../schemas

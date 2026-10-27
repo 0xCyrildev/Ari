@@ -18,6 +18,8 @@ import fastify from 'fastify';
 import type { FastifyBaseLogger } from 'fastify';
 import { Pool } from 'pg';
 import type { PipelineDeps } from './authorize.js';
+import type { ChainBindingConfig } from './chain-artifact.js';
+import { chainBindingFromEnv } from './chain-config.js';
 import { ApiMetrics } from './metrics.js';
 import { fastifyOptions, logLevelOf, registerRequestId, type LogLevel } from './observe.js';
 import { registerRoutes, type RouteDeps } from './routes.js';
@@ -35,6 +37,8 @@ export interface ApiConfig {
    * running as the owner and working fine is not.
    */
   readonly databaseRole: string;
+  /** Mandatory. A deployment that cannot name its fee bounds and its tokens does not start. */
+  readonly chain: ChainBindingConfig;
   readonly masterPepper: string;
   readonly ticketKey: Seal<TicketKey>;
   readonly approvalKey: ApprovalSeal<ApprovalKey>;
@@ -173,6 +177,7 @@ export function readConfig(env: NodeJS.ProcessEnv): ApiConfig {
   return {
     databaseUrl,
     databaseRole,
+    chain: chainBindingFromEnv(env),
     masterPepper,
     ticketKey: ringOf(
       new TicketKey(ticketSecret, env.TICKET_KEY_ID ?? 'v1'),
@@ -250,6 +255,7 @@ export async function startApi(config: ApiConfig, signer?: SignerClient, logger?
   }
   const deps: PipelineDeps = {
     pool,
+    chain: config.chain,
     ticketKey: config.ticketKey,
     approvalKey: config.approvalKey,
     masterPepper: config.masterPepper,

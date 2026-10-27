@@ -32,7 +32,9 @@ import { MockSimulationProvider } from '@ari/simulation';
 import { computeDigest } from '@ari/transaction-engine';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { connect } from './database.js';
+import { connect,
+  testChainBinding,
+} from './database.js';
 
 let pool: Pool;
 let appPool: Pool;
@@ -55,6 +57,8 @@ const NOVEL = '0x9bc1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9';
 const UNIT = 'usdc-6dp';
 
 const deps: PipelineDeps = {
+  // Mandatory in the type: the suite has to say which tokens exist, as the deployment must.
+  chain: testChainBinding,
   pool: app,
   ticketKey: TICKET_KEY,
   approvalKey: APPROVAL_KEY,

@@ -24,7 +24,9 @@
     "@ari/transaction-engine": "workspace:*",
     "fastify": "5.7.4",
     "pg": "8.23.0",
-    "@ari/simulation": "workspace:*"
+    "@ari/simulation": "workspace:*",
+    "@ari/chain-evm": "workspace:*",
+    "@ari/chain-core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "24.10.1",

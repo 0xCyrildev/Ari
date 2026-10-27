@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@ari/schemas": "workspace:*",
-    "@ari/transaction-engine": "workspace:*"
+    "@ari/transaction-engine": "workspace:*",
+    "@ari/chain-core": "workspace:*"
   },
   "devDependencies": {
     "@ari/policy-engine": "workspace:*",

@@ -39,12 +39,15 @@ import {
   releaseForRequest,
   reserve,
   settleForRequest,
+  type ChainArtifact,
   type ReservationResult,
 } from '@ari/ledger';
 import { evaluate, type CompiledPolicy, type EvaluationState } from '@ari/policy-engine';
 import { loadVersion, type StoredVersion } from '@ari/policies';
 import { CanonicalDigest, Decision, type AuthorizationTicket, type CandidateTransaction, type ReasonCode } from '@ari/schemas';
 import { TicketKey, claimsFor, sealTicket, type Seal, TICKET_TTL_MS } from '@ari/signing';
+import type { ChainTransactionDigest } from '@ari/chain-core';
+import { chainArtifactFor, type ChainBindingConfig } from './chain-artifact.js';
 import type { RiskProvider } from '@ari/risk-engine';
 import { kernelProjection, unavailable, type SimulationProvider, type SimulationResult } from '@ari/simulation';
 import { canTransition, canonicalize, computeDigest, LifecycleState } from '@ari/transaction-engine';
@@ -58,6 +61,15 @@ export interface PipelineDeps {
    * routine rotation into an outage.
    */
   readonly ticketKey: Seal<TicketKey>;
+  /**
+   * Mandatory, and it is a refusal rather than a default when a piece is missing.
+   *
+   * Every field here is a claim about the deployment — which chains it signs for, what fee it will
+   * tolerate, which tokens exist and with what decimals. A default would be this process inventing an
+   * asset identity the operator never declared, and the asset identity is what every limit is compared
+   * against.
+   */
+  readonly chain: ChainBindingConfig;
   readonly approvalKey: Seal<ApprovalKey>;
   /** Out of the pipeline's hands entirely — the gateway verifies, this evaluates. */
   readonly masterPepper: string;
@@ -301,7 +313,7 @@ async function within(
   }
   const policy = version.compiled;
 
-  return evaluateAndIssue(deps, tx, orgId, input, version, policy, simulation);
+  return evaluateAndIssue(deps, tx, orgId, input, version, policy, simulation, grant.walletAddress);
 }
 
 /**
@@ -321,6 +333,8 @@ async function evaluateAndIssue(
   policy: CompiledPolicy,
   /** Computed by `authorize`, before the tenant transaction existed. */
   simulation: SimulationResult | null,
+  /** The wallet's chain address, already read with the grant. No extra statement: see the note at `chainArtifactFor`. */
+  walletAddress: string | null,
 ): Promise<AuthorizeOutcome> {
   const nowMs = deps.nowMs();
   const context = { policyVersionId: version.id };
@@ -340,6 +354,15 @@ async function evaluateAndIssue(
 
   const canonical = canonicalize(candidate, context);
   const digest = computeDigest(candidate, context);
+  // The chain artifact is derived from the *same* candidate the digest was computed over, so the bytes
+  // and the semantic commitment cannot describe different payments. It is refused here, before any row
+  // is written: an ALLOW decision with no mintable ticket would be a half-state the rollback exists to
+  // prevent, and a REFUSED that wrote nothing is the only honest answer to "this deployment cannot name
+  // the bytes this request would sign".
+  const artifact = chainArtifactFor(candidate, walletAddress, deps.chain);
+  if (!artifact.ok) {
+    return { status: 'REFUSED', requestId: input.candidate.requestId, reason: `${artifact.reason}: ${artifact.detail}` };
+  }
   const isTransfer = candidate.kind === 'transfer';
   // What this request moves. For a contract call that is *nothing*, and saying so with
   // `null` rather than `0n` is the point: `0` is a computed amount that the kernel
@@ -601,6 +624,7 @@ async function evaluateAndIssue(
     amountRaw,
     decision,
     from,
+    artifact: artifact.artifact,
   });
 }
 
@@ -613,6 +637,8 @@ interface IssueArgs {
   readonly amountRaw: bigint | null;
   readonly decision: Decision;
   readonly from: string;
+  /** What the ticket names on-chain. Required — a ticket that cannot point at bytes is not minted. */
+  readonly artifact: ChainArtifact;
 }
 
 /**
@@ -732,6 +758,7 @@ async function issue(
     digest: args.digest,
     walletId: input.candidate.walletId,
     expiresAtMs: deps.nowMs() + 60_000n,
+    artifact: args.artifact,
   });
 
   const sealed = sealTicket(
@@ -742,6 +769,11 @@ async function issue(
       walletId: input.candidate.walletId,
       policyVersionId: args.version.id,
       digest: args.digest,
+      chain: args.artifact.chain,
+      signingDigest: args.artifact.signingDigest as ChainTransactionDigest,
+      txDigest: args.artifact.txDigest === null ? null : (args.artifact.txDigest as ChainTransactionDigest),
+      bytesSha256: args.artifact.bytesSha256,
+      byteLength: args.artifact.byteLength,
       // A ticket always seals a number, and for a request that moves no token amount the
       // honest number is zero. The distinction that matters — "no amount" rather than
       // "an amount that happens to be zero" — lives on the reservation and approval rows,
@@ -790,6 +822,33 @@ async function issue(
  * been superseded in the meantime, and re-deciding a request that already has an
  * answer is how a denial becomes a yes on the second try (§4's terminal states).
  */
+/**
+ * The chain artifact stored on a ticket row, or null when the row predates byte binding.
+ *
+ * Read from the row and never re-derived from the retry's candidate: a retry that rebuilt the artifact
+ * from whatever payload arrived would let a caller change the bytes an already-issued authorisation
+ * points at by editing its second request.
+ */
+function storedArtifact(row: {
+  chain: string | null;
+  signing_digest: string | null;
+  tx_digest: string | null;
+  bytes_sha256: string | null;
+  byte_length: string | null;
+}): ChainArtifact | null {
+  if (row.chain === null || row.signing_digest === null || row.bytes_sha256 === null || row.byte_length === null) {
+    return null;
+  }
+  if (row.chain !== 'evm' && row.chain !== 'sui' && row.chain !== 'solana') return null;
+  return {
+    chain: row.chain,
+    signingDigest: row.signing_digest,
+    txDigest: row.tx_digest,
+    bytesSha256: row.bytes_sha256,
+    byteLength: BigInt(row.byte_length),
+  };
+}
+
 async function replay(
   tx: TenantTx,
   orgId: string,
@@ -805,8 +864,14 @@ async function replay(
     approval_id: string;
     approval_expires_at: Date;
     ticket_expires_at_ms: string | null;
+    chain: string | null;
+    signing_digest: string | null;
+    tx_digest: string | null;
+    bytes_sha256: string | null;
+    byte_length: string | null;
   }>(
     `SELECT r.lifecycle_state, r.digest, t.id AS ticket_id, t.expires_at_ms AS ticket_expires_at_ms,
+            t.chain, t.signing_digest, t.tx_digest, t.bytes_sha256, t.byte_length,
             r.agent_id,
             d.policy_version_id, a.id AS approval_id, a.expires_at AS approval_expires_at
        FROM ari.transaction_requests r
@@ -855,6 +920,13 @@ async function replay(
         reason: 'the authorisation window has lapsed; submit the request to be evaluated again',
       };
     }
+    const replayArtifact = storedArtifact(stored);
+    if (replayArtifact === null) {
+      // Refuse rather than seal a ticket that names no bytes. Before this column existed that was the
+      // only shape available; now it is a hole, and re-sealing an old row would mint a capability whose
+      // chain artifact is 'unrecorded' — which is the claim Invariant 3 exists to make impossible.
+      return { status: 'REFUSED', requestId, reason: 'the stored ticket names no chain artifact; it predates byte binding and cannot be re-sealed' };
+    }
     const sealed = sealTicket(
       claimsFor({
         ticketId: stored.ticket_id,
@@ -867,6 +939,11 @@ async function replay(
         // a truncated write, a value from before the digest grammar existed — has to
         // refuse here rather than be asserted into a valid-looking ticket.
         digest: replayDigest,
+        chain: replayArtifact.chain,
+        signingDigest: replayArtifact.signingDigest as ChainTransactionDigest,
+        txDigest: replayArtifact.txDigest === null ? null : (replayArtifact.txDigest as ChainTransactionDigest),
+        bytesSha256: replayArtifact.bytesSha256,
+        byteLength: replayArtifact.byteLength,
         amountRaw: BigInt(amount.rows[0]?.amount_raw ?? '0'),
         // Back-computed so that `issuedAt + TTL` is exactly the stored expiry: the
         // seal's lifetime stays inside the window the ledger row already records, and

@@ -19,6 +19,7 @@
  */
 
 import { AuthorizationTicket, TicketClaims, type CanonicalDigest } from '@ari/schemas';
+import type { ChainFamily, ChainTransactionDigest } from '@ari/chain-core';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { headOf, keysOf, type Seal } from './ring.js';
 
@@ -130,6 +131,11 @@ export interface TicketRequest {
   readonly walletId: string;
   readonly policyVersionId: string;
   readonly digest: CanonicalDigest;
+  readonly chain: ChainFamily;
+  readonly signingDigest: ChainTransactionDigest;
+  readonly txDigest: ChainTransactionDigest | null;
+  readonly bytesSha256: string;
+  readonly byteLength: bigint;
   readonly amountRaw: bigint;
   readonly issuedAtMs: bigint;
   readonly authorityMode: 'delegated' | 'user_gated';
