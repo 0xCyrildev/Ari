@@ -89,7 +89,7 @@ function transfer(address: string, rawAmount: bigint) {
     asset: { kind: 'erc20', chain: 'ethereum', contract: USDC, symbol: 'USDC', decimals: 6 },
     amount: { raw: rawAmount, unit: UNIT },
     recipient: { chain: 'ethereum', address },
-    replayProtection: { scheme: 'account_sequence', nonce: '12', chainId: '1', gasLimit: null, maxFeePerUnit: null },
+    replayProtection: { scheme: 'account_sequence', nonce: '12', chainId: '1', gasLimit: '21000', maxFeePerUnit: '20000000000', maxPriorityFeePerUnit: '1000000000' },
   });
   const context = { policyVersionId };
   return { candidate: parsed, canonical: canonicalize(parsed, context), digest: computeDigest(parsed, context) };

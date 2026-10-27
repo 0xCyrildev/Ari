@@ -27,7 +27,7 @@ export function candidate(overrides: Record<string, unknown> = {}) {
     asset: { kind: 'erc20', chain: 'ethereum', contract: USDC, symbol: 'USDC', decimals: 6 },
     amount: { raw: '2000000000', unit: 'usdc-6dp' },
     recipient: { chain: 'ethereum', address: RECIPIENT },
-    replayProtection: { scheme: 'account_sequence', nonce: '12', chainId: '1', gasLimit: null, maxFeePerUnit: null },
+    replayProtection: { scheme: 'account_sequence', nonce: '12', chainId: '1', gasLimit: '21000', maxFeePerUnit: '20000000000', maxPriorityFeePerUnit: '1000000000' },
     ...overrides,
   });
   if (!parsed.success) throw new Error(`candidate fixture invalid: ${parsed.error.message}`);

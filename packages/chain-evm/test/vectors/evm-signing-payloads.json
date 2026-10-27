@@ -1,0 +1,114 @@
+{
+  "generatedBy": "scripts/gen-evm-signing-vectors.mts",
+  "rpc": "http://127.0.0.1:8572",
+  "vectors": [
+    {
+      "name": "native-transfer",
+      "what": "the simplest thing a wallet signs: value, no calldata",
+      "provenance": {
+        "signer": "anvil 1.8.1 eth_signTransaction",
+        "node": "anvil 1.8.1, chainId 31337, dev account #0",
+        "accepted": "eth_sendRawTransaction, then mined; receipt status recorded below",
+        "crossCheck": "an independent hand-written Python RLP encoder reproduced the same payload bytes on 2026-10-27"
+      },
+      "request": {
+        "chainId": "31337",
+        "nonce": "4",
+        "gasLimit": "21000",
+        "maxFeePerGas": "20000000000",
+        "maxPriorityFeePerGas": "1000000000",
+        "to": "0x3f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c",
+        "value": "1000000000000000000",
+        "data": "0x"
+      },
+      "constructed": {
+        "payload": "0x02f2827a6904843b9aca008504a817c800825208943f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c880de0b6b3a764000080c0",
+        "byteLength": 52,
+        "signingDigest": "evm/keccak256-signing-v1:3959e0b8b51fe6417004c52c6ca990a80b7e5078b0f6c0ccd352f4cbb7ad8b52"
+      },
+      "node": {
+        "signedRaw": "0x02f875827a6904843b9aca008504a817c800825208943f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c880de0b6b3a764000080c080a0270c2dee6bc6e5c3c395a9cf3c4c0b6a5349be2083689b93fb79c369716654bfa06d3e83402f044151a856be36b763096d9ea33a11a1f5357db01a5e769f6c8540",
+        "transactionHash": "0xd07e77856697538ff5349f06da96f441ef64b6d21eb59ef88c42f7e9ab934610",
+        "from": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "receiptStatus": "0x1",
+        "blockNumber": "0x5"
+      },
+      "digests": {
+        "txHashFromRaw": "evm/keccak256-txhash-v1:d07e77856697538ff5349f06da96f441ef64b6d21eb59ef88c42f7e9ab934610",
+        "signingDigestFromSignedEnvelope": "evm/keccak256-signing-v1:3959e0b8b51fe6417004c52c6ca990a80b7e5078b0f6c0ccd352f4cbb7ad8b52"
+      }
+    },
+    {
+      "name": "erc20-transfer-68-byte-calldata",
+      "what": "the shape a USDC payment is: 68 bytes of calldata, which is RLP long-form string territory",
+      "provenance": {
+        "signer": "anvil 1.8.1 eth_signTransaction",
+        "node": "anvil 1.8.1, chainId 31337, dev account #0",
+        "accepted": "eth_sendRawTransaction, then mined; receipt status recorded below",
+        "crossCheck": "an independent hand-written Python RLP encoder reproduced the same payload bytes on 2026-10-27"
+      },
+      "request": {
+        "chainId": "31337",
+        "nonce": "5",
+        "gasLimit": "64776",
+        "maxFeePerGas": "20000000000",
+        "maxPriorityFeePerGas": "1000000000",
+        "to": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "value": "0",
+        "data": "0xa9059cbb0000000000000000000000003f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c0000000000000000000000000000000000000000000000000000000077359400"
+      },
+      "constructed": {
+        "payload": "0x02f86f827a6905843b9aca008504a817c80082fd0894a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4880b844a9059cbb0000000000000000000000003f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c0000000000000000000000000000000000000000000000000000000077359400c0",
+        "byteLength": 114,
+        "signingDigest": "evm/keccak256-signing-v1:c24717409b086450c7059efe559921a90c184075508b3fb069edb4b8a94cdc11"
+      },
+      "node": {
+        "signedRaw": "0x02f8b2827a6905843b9aca008504a817c80082fd0894a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4880b844a9059cbb0000000000000000000000003f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c0000000000000000000000000000000000000000000000000000000077359400c001a0bfb7236b31bfa64b302d6d0690bf50d3255f4c2c404c4176aba06d0b334a7a72a0779be436cf718eea2f243a25b253a5c74705bcc187725bd7dccd2d4469bc022f",
+        "transactionHash": "0x88dd7d9789662862a77710d602a47b840eb537d5a79c59148e45c508c094d16a",
+        "from": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "receiptStatus": "0x1",
+        "blockNumber": "0x6"
+      },
+      "digests": {
+        "txHashFromRaw": "evm/keccak256-txhash-v1:88dd7d9789662862a77710d602a47b840eb537d5a79c59148e45c508c094d16a",
+        "signingDigestFromSignedEnvelope": "evm/keccak256-signing-v1:c24717409b086450c7059efe559921a90c184075508b3fb069edb4b8a94cdc11"
+      }
+    },
+    {
+      "name": "erc20-approve-unlimited",
+      "what": "an approve to type(uint256).max — the unlimited-allowance case the AuthorityExercise names",
+      "provenance": {
+        "signer": "anvil 1.8.1 eth_signTransaction",
+        "node": "anvil 1.8.1, chainId 31337, dev account #0",
+        "accepted": "eth_sendRawTransaction, then mined; receipt status recorded below",
+        "crossCheck": "an independent hand-written Python RLP encoder reproduced the same payload bytes on 2026-10-27"
+      },
+      "request": {
+        "chainId": "31337",
+        "nonce": "6",
+        "gasLimit": "50000",
+        "maxFeePerGas": "30000000000",
+        "maxPriorityFeePerGas": "100000000",
+        "to": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "value": "0",
+        "data": "0x095ea7b30000000000000000000000001111111111111111111111111111111111111111ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "constructed": {
+        "payload": "0x02f86f827a69068405f5e1008506fc23ac0082c35094a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4880b844095ea7b30000000000000000000000001111111111111111111111111111111111111111ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc0",
+        "byteLength": 114,
+        "signingDigest": "evm/keccak256-signing-v1:d81be8c29d1b18b0968470ed8abcf53ff8328402019b14c4b457a1beb96b439c"
+      },
+      "node": {
+        "signedRaw": "0x02f8b2827a69068405f5e1008506fc23ac0082c35094a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4880b844095ea7b30000000000000000000000001111111111111111111111111111111111111111ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc080a0d35bdc0112c6f0a2e76941bd3894677ad0bbe77b01ee7fdef329f022f3f9968ea06a085f7a3a29f2f26eb528271e119293c49f93237c511301d106f511f9cedb0a",
+        "transactionHash": "0xed6ffda188152328013a0841801add33d0ccd0f2da6c83f9e3cf2bce7ba9cb0c",
+        "from": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "receiptStatus": "0x1",
+        "blockNumber": "0x7"
+      },
+      "digests": {
+        "txHashFromRaw": "evm/keccak256-txhash-v1:ed6ffda188152328013a0841801add33d0ccd0f2da6c83f9e3cf2bce7ba9cb0c",
+        "signingDigestFromSignedEnvelope": "evm/keccak256-signing-v1:d81be8c29d1b18b0968470ed8abcf53ff8328402019b14c4b457a1beb96b439c"
+      }
+    }
+  ]
+}

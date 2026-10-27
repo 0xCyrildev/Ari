@@ -39,8 +39,24 @@ export const ReplayProtection = z.discriminatedUnion('scheme', [
       /** Assigned by Ari, serialised per (wallet, chain, sender). Never by the caller. */
       nonce: RawBigIntNonNeg,
       chainId: z.string().min(1).max(32),
-      gasLimit: RawBigIntNonNeg.nullable(),
-      maxFeePerUnit: RawBigIntNonNeg.nullable(),
+      /**
+       * Required, not nullable — and digested, because `replayProtection` is in
+       * `DIGEST_FIELD_ALLOWLIST` as a whole object.
+       *
+       * Ari now *builds* the bytes a signature covers, and an EIP-1559 payload has no slot for an
+       * absent fee cap. A nullable field was harmless while the pipeline hashed only a semantic
+       * description of intent; the moment a ticket seals `keccak256(0x02 ‖ rlp(…))`, a `null` here
+       * means somebody chose a number the human approving the payment never saw. So there is no
+       * `null` to reach: these three values are the envelope's three values, and `@ari/chain-evm`
+       * refuses any of them above the deployment's bounds instead of defaulting one.
+       *
+       * `maxPriorityFeePerUnit` is the tip cap, and separate because EIP-1559 charges
+       * `min(maxFeePerGas, maxPriorityFeePerGas + baseFee)` — folding it into the fee cap would
+       * silently rewrite what the wallet can actually pay.
+       */
+      gasLimit: RawBigIntNonNeg,
+      maxFeePerUnit: RawBigIntNonNeg,
+      maxPriorityFeePerUnit: RawBigIntNonNeg,
     })
     .strict(),
   z

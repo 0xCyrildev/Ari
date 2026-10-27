@@ -179,8 +179,9 @@ describe('CandidateTransaction', () => {
         scheme: 'account_sequence',
         nonce: '12',
         chainId: '1',
-        gasLimit: null,
-        maxFeePerUnit: null,
+        gasLimit: '21000',
+        maxFeePerUnit: '20000000000',
+        maxPriorityFeePerUnit: '1000000000',
       },
     });
     expect(parsed.success).toBe(true);
@@ -197,7 +198,7 @@ describe('CandidateTransaction', () => {
         chain: 'ethereum',
         address: '0x3F2A1B0C4D5E6F708192A3B4C5D6E7F8091A2B3C',
       },
-      replayProtection: { scheme: 'account_sequence', nonce: '1', chainId: '1', gasLimit: null, maxFeePerUnit: null },
+      replayProtection: { scheme: 'account_sequence', nonce: '1', chainId: '1', gasLimit: '21000', maxFeePerUnit: '20000000000', maxPriorityFeePerUnit: '1000000000' },
     });
     expect(parsed.success).toBe(false);
   });
@@ -226,8 +227,9 @@ describe('CandidateTransaction', () => {
         scheme: 'account_sequence',
         nonce: '18446744073709551615',
         chainId: '1',
-        gasLimit: null,
-        maxFeePerUnit: null,
+        gasLimit: '21000',
+        maxFeePerUnit: '20000000000',
+        maxPriorityFeePerUnit: '1000000000',
       },
     });
     expect(parsed.success).toBe(true);

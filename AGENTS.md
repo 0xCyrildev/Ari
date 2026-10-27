@@ -6,6 +6,7 @@ Global tier + this file must fit 32,768 bytes. Moved **verbatim**; the rules sti
 | Read | Before you |
 |---|---|
 | `~/ari.AGENTS.threads.md` | resuming work here — this is the live to-do list, read it first |
+| `~/ari.SESSION.2026-10-25.md` | touching `packages/chain-core` or `packages/chain-sui` — the uncommitted adapter work, its five defects, and the session plan |
 | `~/ari.AGENTS.decisions.md` | changing policy evaluation, digests, ticket sealing, the signer, the ledger or the console |
 | `~/ari.AGENTS.passlogs.md` | following a reference to a specific numbered pass |
 
@@ -68,13 +69,50 @@ unverified** — elsewhere here the CDP screenshot tool is recorded as having di
 needing re-adding, so do not assume one is present. Where a passage says "the dashboard", read "the
 console". Prove the directory itself with `ls apps/` → `api cli signer web`.
 
-`pnpm test` is **536 tests / 30 files**, in two halves that add up to it: `pnpm test:unit` is the
-**305** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **231** that
-need Postgres and do not skip without it. `tests/security/simulation.test.ts` needs Postgres **and**
+`pnpm test` is **811 tests / 47 files**, in two halves that add up to it: `pnpm test:unit` is the
+**546** that need no database (`packages`, `tests/unit`, `apps`), `pnpm test:security` is the **265** that
+need Postgres and do not skip without it. Both re-measured on 2026-10-27 — the 415/680 figures this file
+carried were from before `packages/chain-*` was added, and a count nobody re-runs becomes a claim.
+`tests/security/simulation.test.ts` needs Postgres **and**
 `anvil`; it starts its own on 127.0.0.1:8561 and refuses to run if that port is already taken. They did not always add up: `test:security` was
 `vitest run --dir tests/security`, which on vitest 5 matches **no files** at all. Positional filters are
 used now, and the two numbers are written down because "the security gate is green" has to mean the
 security gate ran.
+
+**One `test:security` failure is a load artifact, and it is now recorded rather than rediscovered.**
+`tests/security/audit.test.ts` → "appends concurrently for a colliding pair" timed out at 30 s in a full
+16-file run, and passes alone in 10.1 s (17/17). It asks Postgres for a 32-bit `hashtext` collision by
+aggregating `generate_series(1, 200000)`, twice — once per test that needs the pair — while fifteen other
+workers share one database. It builds no candidate, so nothing in the schema or chain packages reaches it.
+The honest fix is to compute the pair once per suite, not to raise a timeout until the symptom disappears.
+
+**Ari now builds the bytes a signature covers — and the agent names the fee.** `packages/chain-evm/src/construct.ts`
+turns a parsed candidate into an unsigned EIP-1559 signing payload, and `packages/chain-evm/test/vectors/evm-signing-payloads.json`
+holds three payloads that **anvil 1.8.1 signed, and that a block accepted**: the digest recomputed from the node's
+own signed envelope must equal the digest of the bytes construction produced, so a wrong byte anywhere makes the
+suite fail rather than make the suite agree with itself. Two consequences. (1) **A wire change**: `account_sequence`
+now requires `gasLimit`, `maxFeePerUnit` **and** a new `maxPriorityFeePerUnit` — they were nullable, and a request
+that omits them is a 400. They are required because EIP-1559 charges `min(feeCap, tipCap + base)`, so a transaction
+whose tip nobody stated has a fee the human approving it never saw; all three are inside the digest
+(`replayProtection` is digested as a whole object). (2) `ValidatedTransaction.txDigest` is **nullable** — an unsigned
+EVM payload has no transaction hash, because the hash covers the signature, and inventing one by reusing the signing
+hash would hand reconciliation a receipt key that resolves to nothing forever. The ticket binds `signingDigest` and
+`bytesSha256` instead. **None of this is enforced yet.** `TicketClaims` still carries only `canon/v1`, `SignRequest`
+still carries only `{ticket, canonical}`, and `signer.ts:156` still hashes the caller-supplied canonical *string*:
+Invariant 3 is reachable but not wired, and the remaining step needs a source of token metadata that does not exist
+(a deployment-supplied registry, not a caller-supplied one). `~/ari.SESSION.2026-10-25.md` is the hand-off.
+
+**No credential function takes a caller's clock** (decided 2026-10-24, after a security test
+failed one run in five). `revoked_at` and `expires_at` are both written by the database, so
+`verifyCredential` / `verifyUserCredential` read both verdicts back from SQL
+(`revoked_at <= now()`, `expires_at <= now()`) instead of comparing a timestamp against
+`Date.now()`. Two bugs had the same shape and the flaky test was the witness for both: a process
+whose clock ran behind kept a **retired credential authenticating**, and `CHECK (expires_at >
+created_at)` (`004:77`) meant the same process **could not mint a credential at all**. Do not
+reintroduce a `nowMs` parameter into `@ari/identity`'s credential functions. And do not move
+those booleans into the lookup views: `global-setup.ts` replays every migration on every run,
+`004` replays `CREATE OR REPLACE VIEW`, and **Postgres refuses to drop a column from a view** —
+which turns a successfully-applied migration into an unreplayable database.
 
 `pnpm typecheck && pnpm test` — needs no database for the unit half. `test:security` needs
 `pnpm db:up` (Postgres on **127.0.0.1:5435**, Redis 6381; 5432/5433/6380 belong to other projects on this

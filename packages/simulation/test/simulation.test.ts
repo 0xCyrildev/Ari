@@ -41,7 +41,7 @@ function transfer(overrides: Record<string, unknown> = {}): CandidateTransaction
     asset: { kind: 'erc20', chain: 'ethereum', contract: TOKEN, symbol: 'USDC', decimals: 6n },
     amount: { raw: 2_000_000_000n, unit: 'usdc-6dp' },
     recipient: { chain: 'ethereum', address: RECIPIENT },
-    replayProtection: { scheme: 'account_sequence', nonce: 1n, chainId: '31337', gasLimit: null, maxFeePerUnit: null },
+    replayProtection: { scheme: 'account_sequence', nonce: 1n, chainId: '31337', gasLimit: 21_000n, maxFeePerUnit: 20_000_000_000n, maxPriorityFeePerUnit: 1_000_000_000n },
     ...overrides,
   });
 }
@@ -61,7 +61,7 @@ function approveCall(): CandidateTransaction {
     selector: ERC20_APPROVE_SELECTOR,
     calldata: '0x000000000000000000000000' + WALLET.slice(2) + '0'.repeat(64),
     value: 0n,
-    replayProtection: { scheme: 'account_sequence', nonce: 1n, chainId: '31337', gasLimit: null, maxFeePerUnit: null },
+    replayProtection: { scheme: 'account_sequence', nonce: 1n, chainId: '31337', gasLimit: 21_000n, maxFeePerUnit: 20_000_000_000n, maxPriorityFeePerUnit: 1_000_000_000n },
   });
 }
 
@@ -269,7 +269,7 @@ describe('the provider, before it reaches a network', () => {
     });
     try {
       const result = await new EvmForkProvider({ url: 'http://127.0.0.1:8561', chainId: '31337' }).simulate(
-        subject(transfer({ replayProtection: { scheme: 'account_sequence', nonce: 1n, chainId: '1', gasLimit: null, maxFeePerUnit: null } })),
+        subject(transfer({ replayProtection: { scheme: 'account_sequence', nonce: 1n, chainId: '1', gasLimit: 21_000n, maxFeePerUnit: 20_000_000_000n, maxPriorityFeePerUnit: 1_000_000_000n } })),
       );
       expect(result.reason).toBe('CHAIN_ID_MISMATCH');
       expect(result.warnings.join(' ')).toMatch(/candidate names chain 1/);

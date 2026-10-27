@@ -144,7 +144,7 @@ function candidate(walletId: string, agentId: string, address: string, amount: b
     asset: { kind: 'erc20', chain: 'ethereum', contract: USDC, symbol: 'USDC', decimals: 6 },
     amount: { raw: amount.toString(), unit: UNIT },
     recipient: { chain: 'ethereum', address },
-    replayProtection: { scheme: 'account_sequence', nonce: '1', chainId: '1', gasLimit: null, maxFeePerUnit: null },
+    replayProtection: { scheme: 'account_sequence', nonce: '1', chainId: '1', gasLimit: '21000', maxFeePerUnit: '20000000000', maxPriorityFeePerUnit: '1000000000' },
   };
   // Checked here rather than discovered later as an unexplained 400: a fixture the
   // parser refuses is a broken test, not a tested behaviour.

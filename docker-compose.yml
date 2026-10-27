@@ -22,9 +22,12 @@ services:
   redis:
     image: redis:7-alpine
     container_name: ari-redis
-    # Redis is a rate-limiting cache in the gateway and nothing else. No limit,
-    # reservation or authorization state lives here (ASSUMPTIONS A3), so an
-    # empty flush is an availability event, never a security one.
+    # NOT YET WIRED TO ANYTHING (measured 2026-10-24): no package depends on a Redis client and
+    # no source file connects to this port, so the gateway rate limit this container was started
+    # for does not exist yet. What still binds is ASSUMPTIONS A3's actual rule — no limit,
+    # reservation or authorization state lives here — which is why an empty flush remains an
+    # availability event and never a security one. Kept running so the day a limiter lands, the
+    # port and this contract are already agreed.
     command: ['redis-server', '--save', '', '--appendonly', 'no']
     ports:
       - '127.0.0.1:6381:6379'

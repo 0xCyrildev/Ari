@@ -112,7 +112,7 @@ function candidate(walletId: string, agentId: string, amount: bigint, key: strin
     asset: { kind: 'erc20', chain: 'ethereum', contract: USDC, symbol: 'USDC', decimals: 6 },
     amount: { raw: amount.toString(), unit: UNIT },
     recipient: { chain: 'ethereum', address: RECIPIENT },
-    replayProtection: { scheme: 'account_sequence', nonce: '1', chainId: '1', gasLimit: null, maxFeePerUnit: null },
+    replayProtection: { scheme: 'account_sequence', nonce: '1', chainId: '1', gasLimit: '21000', maxFeePerUnit: '20000000000', maxPriorityFeePerUnit: '1000000000' },
   });
   if (!parsed.success) throw new Error(`candidate rejected: ${parsed.error.message}`);
   return parsed.data;

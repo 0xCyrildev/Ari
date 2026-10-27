@@ -35,13 +35,12 @@ import {
   type Scope,
 } from '@ari/identity';
 import { Pool, type PoolClient } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { connect, DATABASE_URL } from './database.js';
 
 const PEPPER = 'test-master-pepper-0123456789abcdef';
 const SCOPES: readonly Scope[] = ['transaction:request'];
 const TTL = 3_600_000n;
-const NOW = () => BigInt(Date.now());
 
 let pool: Pool;
 /**
@@ -118,7 +117,7 @@ describe('credentials', () => {
     expect(stored?.secret_hash).not.toContain(issued.presented);
     expect(stored?.secret_hash).not.toContain(issued.presented.split('.')[2] ?? 'absent');
 
-    const verified = await verifyCredential(app, issued.presented, PEPPER, NOW);
+    const verified = await verifyCredential(app, issued.presented, PEPPER);
     expect(verified).toMatchObject({ ok: true, orgId, agentId });
     if (!verified.ok) return;
     expect(verified.scopes).toEqual([...SCOPES]);
@@ -136,8 +135,8 @@ describe('credentials', () => {
     const orgId = await tenant();
     const { issued } = await setup(orgId);
     const [org, key] = issued.presented.split('.');
-    const wrongSecret = await verifyCredential(app, `${org}.${key}.${'x'.repeat(43)}`, PEPPER, NOW);
-    const unknownKey = await verifyCredential(app, `${org}.${newId('crd')}.${'x'.repeat(43)}`, PEPPER, NOW);
+    const wrongSecret = await verifyCredential(app, `${org}.${key}.${'x'.repeat(43)}`, PEPPER);
+    const unknownKey = await verifyCredential(app, `${org}.${newId('crd')}.${'x'.repeat(43)}`, PEPPER);
     expect(wrongSecret).toEqual({ ok: false, reason: 'AGENT_NOT_FOUND' });
     expect(wrongSecret).toEqual(unknownKey);
   });
@@ -147,7 +146,7 @@ describe('credentials', () => {
     const otherOrg = await tenant();
     const { issued } = await setup(orgId);
     const [, key, secret] = issued.presented.split('.');
-    expect(await verifyCredential(app, `${otherOrg}.${key}.${secret}`, PEPPER, NOW)).toEqual({
+    expect(await verifyCredential(app, `${otherOrg}.${key}.${secret}`, PEPPER)).toEqual({
       ok: false,
       reason: 'AGENT_NOT_FOUND',
     });
@@ -164,7 +163,7 @@ describe('credentials', () => {
     const stale = await asTenant(app, orgId, (tx) =>
       issueCredential(tx, { agentId, scopes: SCOPES, ttlMs: 1n, masterPepper: PEPPER, actor: 'tester' }),
     );
-    expect(await verifyCredential(app, stale.presented, PEPPER, NOW)).toEqual({
+    expect(await verifyCredential(app, stale.presented, PEPPER)).toEqual({
       ok: false,
       reason: 'CREDENTIAL_EXPIRED',
     });
@@ -172,14 +171,14 @@ describe('credentials', () => {
     const { issued: live } = await setup(orgId);
     const revoked = await revokeCredential(app, orgId, live.credentialId);
     expect(revoked).toMatchObject({ revoked: true });
-    expect(await verifyCredential(app, live.presented, PEPPER, NOW)).toEqual({
+    expect(await verifyCredential(app, live.presented, PEPPER)).toEqual({
       ok: false,
       reason: 'CREDENTIAL_REVOKED',
     });
 
     await asTenant(app, orgId, (tx) => setAgentStatus(tx, { agentId, status: 'PAUSED', actor: 'tester' }));
     const { issued: pausedWith } = await setup(orgId, agentId);
-    expect(await verifyCredential(app, pausedWith.presented, PEPPER, NOW)).toEqual({
+    expect(await verifyCredential(app, pausedWith.presented, PEPPER)).toEqual({
       ok: false,
       reason: 'AGENT_PAUSED',
     });
@@ -188,7 +187,7 @@ describe('credentials', () => {
     // Retirement answers before revocation does, even though retiring the agent
     // also revoked the credential: the wider reason is the true one, and an
     // operator told "your credential is revoked" would go and mint another.
-    expect(await verifyCredential(app, pausedWith.presented, PEPPER, NOW)).toEqual({
+    expect(await verifyCredential(app, pausedWith.presented, PEPPER)).toEqual({
       ok: false,
       reason: 'AGENT_REVOKED',
     });
@@ -265,8 +264,8 @@ describe('credentials', () => {
       }),
     );
 
-    expect((await verifyCredential(app, successor.presented, PEPPER, NOW)).ok).toBe(true);
-    expect(await verifyCredential(app, issued.presented, PEPPER, NOW)).toEqual({
+    expect((await verifyCredential(app, successor.presented, PEPPER)).ok).toBe(true);
+    expect(await verifyCredential(app, issued.presented, PEPPER)).toEqual({
       ok: false,
       reason: 'CREDENTIAL_REVOKED',
     });
@@ -288,6 +287,54 @@ describe('credentials', () => {
     ).rejects.toThrow(/could not be superseded/);
     const listed = await asTenant(app, orgId, (tx) => listCredentials(tx, agentId));
     expect(listed.filter((entry) => entry.status === 'ACTIVE')).toHaveLength(1);
+  });
+
+  it('decides revocation and expiry on the database clock, not on this process\'s', async () => {
+    // The regression this pins. `revoked_at` and `expires_at` are both written by the
+    // database, so both are judged there. Before, `verifyCredential` compared each to a
+    // caller-supplied time, and a process whose clock ran behind kept a retired credential
+    // authenticating for as long as it took to catch up — a window with no bound and no
+    // attacker in it.
+    //
+    // Every parameter that used to decide the verdict is now gone from the signature, so the
+    // only way to test the property is to make this process's clock disagree with the
+    // database's on purpose. All writes happen on the real clock; the fake one is turned on
+    // only for the reads, so nothing is dated by a lie. Both final assertions return `ok:
+    // true` against the old comparison, which is what makes them the test rather than a demo.
+    const orgId = await tenant();
+    const { agentId, issued } = await setup(orgId);
+
+    await asTenant(app, orgId, (tx) =>
+      rotateCredential(tx, {
+        agentId,
+        supersedeId: issued.credentialId,
+        scopes: SCOPES,
+        ttlMs: TTL,
+        masterPepper: PEPPER,
+        actor: 'tester',
+      }),
+    );
+    const stale = await asTenant(app, orgId, (tx) =>
+      issueCredential(tx, { agentId, scopes: SCOPES, ttlMs: 1n, masterPepper: PEPPER, actor: 'tester' }),
+    );
+    // Past its own one-millisecond instant by the database's clock already.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2000-01-01T00:00:00.000Z'));
+
+      expect(await verifyCredential(app, issued.presented, PEPPER)).toEqual({
+        ok: false,
+        reason: 'CREDENTIAL_REVOKED',
+      });
+      expect(await verifyCredential(app, stale.presented, PEPPER)).toEqual({
+        ok: false,
+        reason: 'CREDENTIAL_EXPIRED',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('refuses a credential with no scopes, and one that cannot expire', async () => {

@@ -116,14 +116,29 @@ export async function issueCredential(
   // fall back to Argon2i or Argon2d would be an S11 regression nobody would notice
   // until a credential table leaked.
   const secretHash = await hash(salted(input.masterPepper, tx.orgId, secret));
-  const expiresAt = new Date(Number(tx.startedAtMs) + Number(input.ttlMs)).toISOString();
 
-  await tx.client.query(
+  // Dated by the database and read back from it, rather than computed from
+  // `tx.startedAtMs`. The reason is the same one `revokeCredential` already states for
+  // `revoked_at`, and it cuts both ways: a value written in one clock and judged in another
+  // is only ever as consistent as the two agree. `verifyCredential` decides expiry on this
+  // clock now, so a reader whose clock runs backwards can no longer hold a credential live
+  // past the instant the row says it ended — and the string handed back to the caller is the
+  // row's own, not a nearby approximation of it.
+  const inserted = await tx.client.query<{ expires_at: Date }>(
     `INSERT INTO ari.agent_credentials
        (id, org_id, agent_id, key_id, secret_hash, scopes, expires_at, rotation_of)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [keyId, tx.orgId, input.agentId, keyId, secretHash, [...input.scopes], expiresAt, input.rotationOf ?? null],
+     VALUES ($1, $2, $3, $4, $5, $6, now() + ($7 * interval '1 millisecond'), $8)
+     RETURNING expires_at`,
+    [keyId, tx.orgId, input.agentId, keyId, secretHash, [...input.scopes], Number(input.ttlMs), input.rotationOf ?? null],
   );
+  const row = inserted.rows[0];
+  if (row === undefined) {
+    // `INSERT … RETURNING` yields a row or the statement fails, so this is not a state with
+    // a legitimate reading. Asserting it anyway: minting a credential whose expiry nobody can
+    // name would put an unbounded secret in a caller's hands.
+    throw new Error(`credential ${keyId} was inserted without a returned expiry`);
+  }
+  const expiresAt = row.expires_at.toISOString();
 
   // The event names the credential and its scopes; never the secret, and never a
   // value derived from it that an attacker could replay. `credentialId` is the
@@ -156,21 +171,29 @@ interface CredentialRow {
   readonly agent_id: string;
   readonly secret_hash: string;
   readonly scopes: string[];
-  readonly expires_at: Date;
-  readonly revoked_at: Date | null;
   readonly agent_status: string;
+  /**
+   * Both verdicts computed in SQL, on the database clock — the clock that writes
+   * `revoked_at` and the clock that now writes `expires_at`. The timestamps themselves are
+   * deliberately not carried into this process: a row that hands back an instant invites a
+   * comparison against whichever clock is nearest to hand, and that comparison is the defect.
+   */
+  readonly revoked_now: boolean;
+  readonly expired_now: boolean;
 }
 
 /**
  * Verify a presented credential, with no tenant assumed and no row leaked either
  * way: an unknown `keyId` and a wrong secret produce the same refusal, so the
  * endpoint cannot be used to enumerate which agents exist (T8's enumeration half).
+ *
+ * It takes no clock, and that is the point. Both live/dead decisions are made where the
+ * values were written; a caller cannot choose the answer by presenting a favourable time.
  */
 export async function verifyCredential(
   pool: Connector,
   presented: string,
   masterPepper: string,
-  nowMs: () => bigint,
 ): Promise<CredentialResult> {
   const parsed = parsePresented(presented);
   if (parsed === null) return { ok: false, reason: 'AGENT_NOT_FOUND' };
@@ -184,8 +207,14 @@ export async function verifyCredential(
   const client = await pool.connect();
   let row: CredentialRow | undefined;
   try {
+    // Computed in the reader's statement rather than as a view column, because `004` replays
+    // `CREATE OR REPLACE VIEW` on every run and Postgres will not let that drop a column: a
+    // view that gains a field cannot be replayed by the file that created it, which is how
+    // this change first presented itself — as an unreplayable development database.
     const found = await client.query<CredentialRow>(
-      `SELECT id, org_id, agent_id, secret_hash, scopes, expires_at, revoked_at, agent_status
+      `SELECT id, org_id, agent_id, secret_hash, scopes, agent_status,
+              (revoked_at IS NOT NULL AND revoked_at <= now()) AS revoked_now,
+              (expires_at <= now()) AS expired_now
          FROM ari.credential_lookup
         WHERE key_id = $1`,
       [parsed.keyId],
@@ -211,10 +240,13 @@ export async function verifyCredential(
 
   if (row.agent_status === 'REVOKED') return { ok: false, reason: 'AGENT_REVOKED' };
   if (row.agent_status === 'PAUSED') return { ok: false, reason: 'AGENT_PAUSED' };
-  if (row.revoked_at !== null && row.revoked_at.getTime() <= Number(nowMs())) {
-    return { ok: false, reason: 'CREDENTIAL_REVOKED' };
-  }
-  if (row.expires_at.getTime() <= Number(nowMs())) return { ok: false, reason: 'CREDENTIAL_EXPIRED' };
+  // Two refusals that used to be decided by this process's clock, and now are not. A revoked
+  // credential is dead the instant the revocation commits, and an expired one is dead at the
+  // instant its own row says — neither answer can be talked into "live" by a clock that runs
+  // behind, which is the direction that mattered: the old expiry comparison let a lagging
+  // reader honour a credential the database had already retired.
+  if (row.revoked_now) return { ok: false, reason: 'CREDENTIAL_REVOKED' };
+  if (row.expired_now) return { ok: false, reason: 'CREDENTIAL_EXPIRED' };
 
   return {
     ok: true,
@@ -248,7 +280,11 @@ export async function revokeCredential(
         RETURNING id`,
       [credentialId],
     );
-    const remaining = await tx.client.query<{ count: string; agent_id: string }>(
+    // Now genuinely comparable to `verifyCredential`, because `expires_at` is written by this
+    // same clock: "still active" here and "still authenticates" there are the one predicate,
+    // read off the one clock. Before, an operator could be told `0 remaining` about a
+    // credential the service was still honouring.
+    const remaining = await tx.client.query<{ count: string }>(
       `SELECT count(*) AS count FROM ari.agent_credentials
         WHERE agent_id = (SELECT agent_id FROM ari.agent_credentials WHERE id = $1)
           AND revoked_at IS NULL AND expires_at > now()`,
@@ -356,9 +392,10 @@ interface UserCredentialRow {
   readonly user_id: string;
   readonly secret_hash: string;
   readonly scopes: string[];
-  readonly expires_at: Date;
-  readonly revoked_at: Date | null;
   readonly user_status: string;
+  /** The same two SQL-decided verdicts as the agent half, on the same clock. */
+  readonly revoked_now: boolean;
+  readonly expired_now: boolean;
 }
 
 export async function issueUserCredential(
@@ -384,14 +421,18 @@ export async function issueUserCredential(
   const keyId = newId('ucrd');
   const secret = randomBytes(32).toString('base64url');
   const secretHash = await hash(salted(input.masterPepper, tx.orgId, secret));
-  const expiresAt = new Date(Number(tx.startedAtMs) + Number(input.ttlMs)).toISOString();
-
-  await tx.client.query(
+  const inserted = await tx.client.query<{ expires_at: Date }>(
     `INSERT INTO ari.user_credentials
        (id, org_id, user_id, key_id, secret_hash, scopes, expires_at, rotation_of)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [keyId, tx.orgId, input.userId, keyId, secretHash, [...input.scopes], expiresAt, input.rotationOf ?? null],
+     VALUES ($1, $2, $3, $4, $5, $6, now() + ($7 * interval '1 millisecond'), $8)
+     RETURNING expires_at`,
+    [keyId, tx.orgId, input.userId, keyId, secretHash, [...input.scopes], Number(input.ttlMs), input.rotationOf ?? null],
   );
+  const insertedRow = inserted.rows[0];
+  if (insertedRow === undefined) {
+    throw new Error(`user credential ${keyId} was inserted without a returned expiry`);
+  }
+  const expiresAt = insertedRow.expires_at.toISOString();
 
   await appendEvent(tx, {
     orgId: tx.orgId,
@@ -422,7 +463,6 @@ export async function verifyUserCredential(
   pool: Connector,
   presented: string,
   masterPepper: string,
-  nowMs: () => bigint,
 ): Promise<UserCredentialResult> {
   const parsed = parsePresented(presented, 'ucrd_');
   if (parsed === null) return { ok: false, reason: 'USER_NOT_FOUND' };
@@ -431,7 +471,9 @@ export async function verifyUserCredential(
   let row: UserCredentialRow | undefined;
   try {
     const found = await client.query<UserCredentialRow>(
-      `SELECT id, org_id, user_id, secret_hash, scopes, expires_at, revoked_at, user_status
+      `SELECT id, org_id, user_id, secret_hash, scopes, user_status,
+              (revoked_at IS NOT NULL AND revoked_at <= now()) AS revoked_now,
+              (expires_at <= now()) AS expired_now
          FROM ari.user_credential_lookup
         WHERE key_id = $1`,
       [parsed.keyId],
@@ -453,10 +495,10 @@ export async function verifyUserCredential(
   // values and nothing ever consulted them, so suspending a person was a database write
   // with no security consequence and an operator who believed they had stopped someone.
   if (row.user_status === 'SUSPENDED') return { ok: false, reason: 'USER_SUSPENDED' };
-  if (row.revoked_at !== null && row.revoked_at.getTime() <= Number(nowMs())) {
-    return { ok: false, reason: 'CREDENTIAL_REVOKED' };
-  }
-  if (row.expires_at.getTime() <= Number(nowMs())) return { ok: false, reason: 'CREDENTIAL_EXPIRED' };
+  // The same single-clock rule as `verifyCredential`: an approver's retired secret is dead on
+  // the clock that retired it, and no reading of this process's time can make it live again.
+  if (row.revoked_now) return { ok: false, reason: 'CREDENTIAL_REVOKED' };
+  if (row.expired_now) return { ok: false, reason: 'CREDENTIAL_EXPIRED' };
 
   return {
     ok: true,

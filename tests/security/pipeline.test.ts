@@ -141,8 +141,9 @@ function transfer(input: { address: string; amount: bigint; idempotencyKey: stri
       scheme: 'account_sequence',
       nonce: (input.nonce ?? '1').toString(),
       chainId: '1',
-      gasLimit: null,
-      maxFeePerUnit: null,
+      gasLimit: '21000',
+      maxFeePerUnit: '20000000000',
+      maxPriorityFeePerUnit: '1000000000',
     },
   });
   if (!parsed.success) throw new Error(`candidate rejected: ${parsed.error.message}`);

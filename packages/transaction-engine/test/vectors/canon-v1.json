@@ -32,12 +32,13 @@
           "scheme": "account_sequence",
           "nonce": "12",
           "chainId": "1",
-          "gasLimit": null,
-          "maxFeePerUnit": null
+          "gasLimit": "21000",
+          "maxFeePerUnit": "20000000000",
+          "maxPriorityFeePerUnit": "1000000000"
         }
       },
-      "canonical": "o{s15:__policyVersion=>s40:ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s7:agentId=>s40:agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s6:amount=>o{s3:raw=>b2000000000,s4:unit=>s8:usdc-6dp},s5:asset=>o{s5:chain=>s8:ethereum,s8:contract=>s42:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48,s8:decimals=>b6,s4:kind=>s5:erc20,s6:symbol=>s4:USDC},s5:chain=>s8:ethereum,s8:deadline=>s24:2026-09-25T12:00:00.000Z,s4:kind=>s8:transfer,s9:recipient=>o{s7:address=>s42:0x3f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c,s5:chain=>s8:ethereum},s16:replayProtection=>o{s7:chainId=>s1:1,s8:gasLimit=>n,s13:maxFeePerUnit=>n,s5:nonce=>b12,s6:scheme=>s16:account_sequence},s8:walletId=>s40:wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b}",
-      "digest": "canon/v1:c70d14c2e517b012058e4f6a270fdb138e5338cb27227b323a4e2c458f12ee4f"
+      "canonical": "o{s15:__policyVersion=>s40:ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s7:agentId=>s40:agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s6:amount=>o{s3:raw=>b2000000000,s4:unit=>s8:usdc-6dp},s5:asset=>o{s5:chain=>s8:ethereum,s8:contract=>s42:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48,s8:decimals=>b6,s4:kind=>s5:erc20,s6:symbol=>s4:USDC},s5:chain=>s8:ethereum,s8:deadline=>s24:2026-09-25T12:00:00.000Z,s4:kind=>s8:transfer,s9:recipient=>o{s7:address=>s42:0x3f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c,s5:chain=>s8:ethereum},s16:replayProtection=>o{s7:chainId=>s1:1,s8:gasLimit=>b21000,s13:maxFeePerUnit=>b20000000000,s21:maxPriorityFeePerUnit=>b1000000000,s5:nonce=>b12,s6:scheme=>s16:account_sequence},s8:walletId=>s40:wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b}",
+      "digest": "canon/v1:ff739a8207bcdd6b551194ad639b818752235fa0f375bb7dfb9e5aea34f8dce7"
     },
     {
       "name": "native-transfer-max-nonce",
@@ -72,11 +73,12 @@
           "nonce": "18446744073709551615",
           "chainId": "11155111",
           "gasLimit": "21000",
-          "maxFeePerUnit": "20000000000"
+          "maxFeePerUnit": "20000000000",
+          "maxPriorityFeePerUnit": "1000000000"
         }
       },
-      "canonical": "o{s15:__policyVersion=>s40:ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s7:agentId=>s40:agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s6:amount=>o{s3:raw=>b18446744073709551615,s4:unit=>s3:wei},s5:asset=>o{s5:chain=>s8:ethereum,s4:kind=>s6:native},s5:chain=>s8:ethereum,s8:deadline=>s24:2026-12-31T23:59:59.000Z,s4:kind=>s8:transfer,s9:recipient=>o{s7:address=>s42:0x9bc1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9,s5:chain=>s8:ethereum},s16:replayProtection=>o{s7:chainId=>s8:11155111,s8:gasLimit=>b21000,s13:maxFeePerUnit=>b20000000000,s5:nonce=>b18446744073709551615,s6:scheme=>s16:account_sequence},s8:walletId=>s40:wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b}",
-      "digest": "canon/v1:b1574b4a856ccde31cf0c76e51d01f41ba4486c02d056eb44f3a64d2f55da896"
+      "canonical": "o{s15:__policyVersion=>s40:ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s7:agentId=>s40:agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s6:amount=>o{s3:raw=>b18446744073709551615,s4:unit=>s3:wei},s5:asset=>o{s5:chain=>s8:ethereum,s4:kind=>s6:native},s5:chain=>s8:ethereum,s8:deadline=>s24:2026-12-31T23:59:59.000Z,s4:kind=>s8:transfer,s9:recipient=>o{s7:address=>s42:0x9bc1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9,s5:chain=>s8:ethereum},s16:replayProtection=>o{s7:chainId=>s8:11155111,s8:gasLimit=>b21000,s13:maxFeePerUnit=>b20000000000,s21:maxPriorityFeePerUnit=>b1000000000,s5:nonce=>b18446744073709551615,s6:scheme=>s16:account_sequence},s8:walletId=>s40:wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b}",
+      "digest": "canon/v1:3ea8ae368c5b4ecec56bd18af7c6b770f58b0eb29dd34c4402f8429b31701086"
     },
     {
       "name": "contract-call-with-calldata",
@@ -99,11 +101,12 @@
           "nonce": "7",
           "chainId": "1",
           "gasLimit": "21000",
-          "maxFeePerUnit": "20000000000"
+          "maxFeePerUnit": "20000000000",
+          "maxPriorityFeePerUnit": "1000000000"
         }
       },
-      "canonical": "o{s15:__policyVersion=>s40:ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s7:agentId=>s40:agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s8:calldata=>s74:0xa9059cbb0000000000000000000000003f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c,s5:chain=>s8:ethereum,s8:contract=>s42:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48,s8:deadline=>s24:2026-09-25T12:00:00.000Z,s4:kind=>s13:contract_call,s16:replayProtection=>o{s7:chainId=>s1:1,s8:gasLimit=>b21000,s13:maxFeePerUnit=>b20000000000,s5:nonce=>b7,s6:scheme=>s16:account_sequence},s8:selector=>s10:0xa9059cbb,s5:value=>b0,s8:walletId=>s40:wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b}",
-      "digest": "canon/v1:0f7dd41b2aaa510318b5e5a90f3243e4e3fcf04100d2373ab109006d11da5c15"
+      "canonical": "o{s15:__policyVersion=>s40:ppv_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s7:agentId=>s40:agt_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b,s8:calldata=>s74:0xa9059cbb0000000000000000000000003f2a1b0c4d5e6f708192a3b4c5d6e7f8091a2b3c,s5:chain=>s8:ethereum,s8:contract=>s42:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48,s8:deadline=>s24:2026-09-25T12:00:00.000Z,s4:kind=>s13:contract_call,s16:replayProtection=>o{s7:chainId=>s1:1,s8:gasLimit=>b21000,s13:maxFeePerUnit=>b20000000000,s21:maxPriorityFeePerUnit=>b1000000000,s5:nonce=>b7,s6:scheme=>s16:account_sequence},s8:selector=>s10:0xa9059cbb,s5:value=>b0,s8:walletId=>s40:wal_0194a2b3-c4d5-7e6f-8a9b-0c1d2e3f4a5b}",
+      "digest": "canon/v1:7a534815f62ca0f796ad6ebfd0697bacc7b57c36ee0a7d9b16995439ee37392a"
     },
     {
       "name": "unknown-chain-sui",

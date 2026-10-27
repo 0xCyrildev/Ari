@@ -103,8 +103,9 @@ export function candidate(overrides: Record<string, unknown> = {}): Candidate {
       scheme: 'account_sequence',
       nonce: '12',
       chainId: '1',
-      gasLimit: null,
-      maxFeePerUnit: null,
+      gasLimit: '21000',
+      maxFeePerUnit: '20000000000',
+      maxPriorityFeePerUnit: '1000000000',
     },
     ...overrides,
   });
@@ -130,8 +131,9 @@ export function contractCand(overrides: Record<string, unknown> = {}): Candidate
       scheme: 'account_sequence',
       nonce: '3',
       chainId: '1',
-      gasLimit: null,
-      maxFeePerUnit: null,
+      gasLimit: '21000',
+      maxFeePerUnit: '20000000000',
+      maxPriorityFeePerUnit: '1000000000',
     },
     ...overrides,
   });

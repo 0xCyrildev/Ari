@@ -1,0 +1,17 @@
+{
+  "name": "@ari/chain-sui",
+  "version": "0.0.0",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@ari/chain-core": "workspace:*",
+    "@ari/schemas": "workspace:*",
+    "@noble/hashes": "1.8.0",
+    "zod": "4.6.5"
+  }
+}

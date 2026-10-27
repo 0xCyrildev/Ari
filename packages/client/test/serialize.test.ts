@@ -18,7 +18,7 @@ function wireInput(amount: string) {
     asset: { kind: 'erc20', chain: 'ethereum', contract: USDC, symbol: 'USDC', decimals: 6 },
     amount: { raw: amount, unit: 'usdc-6dp' },
     recipient: { chain: 'ethereum', address: RECIPIENT },
-    replayProtection: { scheme: 'account_sequence', nonce: '1', chainId: '1', gasLimit: null, maxFeePerUnit: null },
+    replayProtection: { scheme: 'account_sequence', nonce: '1', chainId: '1', gasLimit: '21000', maxFeePerUnit: '20000000000', maxPriorityFeePerUnit: '1000000000' },
   };
 }
 

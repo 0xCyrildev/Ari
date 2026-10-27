@@ -274,7 +274,7 @@ function candidateFor(world: World, amount: bigint, overrides: Record<string, un
     asset: { kind: 'erc20', chain: 'ethereum', contract: token, symbol: 'mUSD', decimals: 6n },
     amount: { raw: amount, unit: UNIT },
     recipient: { chain: 'ethereum', address: SOMEONE_ELSE },
-    replayProtection: { scheme: 'account_sequence', nonce: 1n, chainId: CHAIN_ID, gasLimit: null, maxFeePerUnit: null },
+    replayProtection: { scheme: 'account_sequence', nonce: 1n, chainId: CHAIN_ID, gasLimit: 21_000n, maxFeePerUnit: 20_000_000_000n, maxPriorityFeePerUnit: 1_000_000_000n },
     ...overrides,
   });
 }
@@ -354,7 +354,7 @@ describe('the provider against a node that is really there', () => {
 
     // And the candidate that disagrees with its own node: the guard runs in both directions.
     const wrongCandidateChain = new EvmForkProvider({ url: RPC, chainId: CHAIN_ID });
-    const offChain = { ...subject, candidate: candidateFor(world_, 1_000_000n, { replayProtection: { scheme: 'account_sequence', nonce: 1n, chainId: '1', gasLimit: null, maxFeePerUnit: null } }) };
+    const offChain = { ...subject, candidate: candidateFor(world_, 1_000_000n, { replayProtection: { scheme: 'account_sequence', nonce: 1n, chainId: '1', gasLimit: 21_000n, maxFeePerUnit: 20_000_000_000n, maxPriorityFeePerUnit: 1_000_000_000n } }) };
     expect((await wrongCandidateChain.simulate(offChain)).reason).toBe('CHAIN_ID_MISMATCH');
   }, 30_000);
 

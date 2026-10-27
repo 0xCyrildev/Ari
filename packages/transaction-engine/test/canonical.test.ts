@@ -137,8 +137,9 @@ describe('computeDigest — every substitution-critical field participates', () 
           scheme: 'account_sequence',
           nonce: '13',
           chainId: '1',
-          gasLimit: null,
-          maxFeePerUnit: null,
+          gasLimit: '21000',
+          maxFeePerUnit: '20000000000',
+          maxPriorityFeePerUnit: '1000000000',
         },
       }),
     chainId: () =>
@@ -147,8 +148,9 @@ describe('computeDigest — every substitution-critical field participates', () 
           scheme: 'account_sequence',
           nonce: '12',
           chainId: '11155111',
-          gasLimit: null,
-          maxFeePerUnit: null,
+          gasLimit: '21000',
+          maxFeePerUnit: '20000000000',
+          maxPriorityFeePerUnit: '1000000000',
         },
       }),
   };

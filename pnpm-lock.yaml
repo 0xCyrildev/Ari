@@ -249,6 +249,45 @@ importers:
         specifier: 5.0.1
         version: 5.0.1(@types/node@24.10.1)(@vitest/coverage-v8@5.0.1)(vite@8.3.1(@types/node@24.10.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
 
+  packages/chain-core:
+    dependencies:
+      '@ari/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+      zod:
+        specifier: 4.6.5
+        version: 4.6.5
+
+  packages/chain-evm:
+    dependencies:
+      '@ari/chain-core':
+        specifier: workspace:*
+        version: link:../chain-core
+      '@ari/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+      '@noble/hashes':
+        specifier: 1.8.0
+        version: 1.8.0
+      zod:
+        specifier: 4.6.5
+        version: 4.6.5
+
+  packages/chain-sui:
+    dependencies:
+      '@ari/chain-core':
+        specifier: workspace:*
+        version: link:../chain-core
+      '@ari/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+      '@noble/hashes':
+        specifier: 1.8.0
+        version: 1.8.0
+      zod:
+        specifier: 4.6.5
+        version: 4.6.5
+
   packages/client:
     dependencies:
       '@ari/schemas':
@@ -706,6 +745,10 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@noble/hashes@1.8.0':
+    resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
+    engines: {node: ^14.21.3 || >=16}
 
   '@node-rs/argon2-android-arm-eabi@2.2.1':
     resolution: {integrity: sha512-tvHjNf7XkLsuDKb6VhNZekA/Wq2Qf0yxygxQYWYcUUCawgg3QRDeXMBYa6QVQPHp1fpDXk42euRjVpHmQ5CwFQ==}
@@ -1573,6 +1616,8 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
+
+  '@noble/hashes@1.8.0': {}
 
   '@node-rs/argon2-android-arm-eabi@2.2.1':
     optional: true

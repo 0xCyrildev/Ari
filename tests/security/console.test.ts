@@ -96,7 +96,7 @@ function candidate(walletId: string, agentId: string, address: string, amount: b
     asset: { kind: 'erc20', chain: 'ethereum', contract: USDC, symbol: 'USDC', decimals: 6 },
     amount: { raw: amount.toString(), unit: UNIT },
     recipient: { chain: 'ethereum', address },
-    replayProtection: { scheme: 'account_sequence', nonce: '1', chainId: '1', gasLimit: null, maxFeePerUnit: null },
+    replayProtection: { scheme: 'account_sequence', nonce: '1', chainId: '1', gasLimit: '21000', maxFeePerUnit: '20000000000', maxPriorityFeePerUnit: '1000000000' },
   };
   const parsed = CandidateTransaction.safeParse(body);
   if (!parsed.success) throw new Error(`candidate fixture rejected: ${parsed.error.message}`);

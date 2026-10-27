@@ -1,0 +1,111 @@
+{
+ "provenance": "Produced on this box on 2026-10-25 by anvil 1.8.1 (dev chain, chainId 31337) and read back with cast 1.8.1. The bytes are signed by anvil account #0 (0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266) with the well-known public dev private key. They were NOT produced by @ari/chain-evm.",
+ "signer": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+ "chainId": "31337",
+ "vectors": [
+  {
+   "name": "legacy-native-transfer",
+   "hash": "0x522da0d2df1b74545405b27ada0f2c9c1b23c2ac57dec2025138cc8c5381c8da",
+   "raw": "0xf86d808477359400825208943535353535353535353535353535353535353535880de0b6b3a76400008082f4f6a0392d61f73a78cbd8b2f6b98d296a0d140f54fc0cbfaeaf712cc55eb646bf0343a021dfef100ff5caebcdeb7f96bbf492d5a2b4c2f61c390ddc3086293e4ed48eb8",
+   "node": {
+    "type": "0x0",
+    "chainId": "0x7a69",
+    "nonce": "0x0",
+    "gasPrice": "0x77359400",
+    "gas": "0x5208",
+    "to": "0x3535353535353535353535353535353535353535",
+    "value": "0xde0b6b3a7640000",
+    "input": "0x",
+    "r": "0x392d61f73a78cbd8b2f6b98d296a0d140f54fc0cbfaeaf712cc55eb646bf0343",
+    "s": "0x21dfef100ff5caebcdeb7f96bbf492d5a2b4c2f61c390ddc3086293e4ed48eb8",
+    "v": "0xf4f6",
+    "hash": "0x522da0d2df1b74545405b27ada0f2c9c1b23c2ac57dec2025138cc8c5381c8da",
+    "blockHash": "0x232b1bbcdcca1f481624c292ce0156959e51b42d1a653e950547ad32ddc49700",
+    "blockNumber": "0x1",
+    "transactionIndex": "0x0",
+    "from": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    "blockTimestamp": "0x6addc20b"
+   }
+  },
+  {
+   "name": "legacy-native-transfer-second",
+   "hash": "0xd00d72351264a05d111f28848294869761fd3170cf8155906737877a6bd9d166",
+   "raw": "0xf86c02843b9aca008252089470997970d5b8dcb5a90e0a6c8ba64e2a4a41e2a28806f05b59d3b200008082f4f5a02be82a154597192b13cc14756e2248f9bbfc6d7378effca1c8292bb2790304909faa002b271be398ea39c0d75d943ff241058995e95c315d3a8f2add2a437510",
+   "node": {
+    "type": "0x0",
+    "chainId": "0x7a69",
+    "nonce": "0x2",
+    "gasPrice": "0x3b9aca00",
+    "gas": "0x5208",
+    "to": "0x70997970d5b8dcb5a90e0a6c8ba64e2a4a41e2a2",
+    "value": "0x6f05b59d3b20000",
+    "input": "0x",
+    "r": "0x2be82a154597192b13cc14756e2248f9bbfc6d7378effca1c8292bb279030490",
+    "s": "0xaa002b271be398ea39c0d75d943ff241058995e95c315d3a8f2add2a437510",
+    "v": "0xf4f5",
+    "hash": "0xd00d72351264a05d111f28848294869761fd3170cf8155906737877a6bd9d166",
+    "blockHash": "0xb68094a9cb42d191c5d1f2fa8213fb495c775f3c0a6f5e5a1f55c77e5762e55c",
+    "blockNumber": "0x3",
+    "transactionIndex": "0x0",
+    "from": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    "blockTimestamp": "0x6addc254"
+   }
+  },
+  {
+   "name": "eip1559-native-transfer",
+   "hash": "0xaaf0ce71ce68c91bfe6fd8de357e0b55263ccf658207f00e0d373f6847ac3086",
+   "raw": "0x02f86c827a69038405f5e10084b2d05e008275309411111111111111111111111111111111111111110780c080a0f91d987782bb0cb369d15b189d572ff50d88013baa0d40155a451de5a6497e4aa036a19bc28654b6a15157925ea2579d3018a83f847b874aead61c10dae7584ac4",
+   "node": {
+    "type": "0x2",
+    "chainId": "0x7a69",
+    "nonce": "0x3",
+    "gas": "0x7530",
+    "maxFeePerGas": "0xb2d05e00",
+    "maxPriorityFeePerGas": "0x5f5e100",
+    "to": "0x1111111111111111111111111111111111111111",
+    "value": "0x7",
+    "accessList": [],
+    "input": "0x",
+    "r": "0xf91d987782bb0cb369d15b189d572ff50d88013baa0d40155a451de5a6497e4a",
+    "s": "0x36a19bc28654b6a15157925ea2579d3018a83f847b874aead61c10dae7584ac4",
+    "yParity": "0x0",
+    "v": "0x0",
+    "hash": "0xaaf0ce71ce68c91bfe6fd8de357e0b55263ccf658207f00e0d373f6847ac3086",
+    "blockHash": "0xc0b9992f13f11d4455b0f6102146105da168e47f25000e24c90abaf52c53bc14",
+    "blockNumber": "0x4",
+    "transactionIndex": "0x0",
+    "from": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    "gasPrice": "0x2dea35c5",
+    "blockTimestamp": "0x6addc28b"
+   }
+  },
+  {
+   "name": "eip1559-erc20-transfer-calldata",
+   "hash": "0x223c2008713f4b91fb988982407ac7c2cfd2c6174fbb6901778a6dc1f2b5e0af",
+   "raw": "0x02f8b1827a6904840ab2244b847735940082ea6094222222222222222222222222222222222222222280b844a9059cbb000000000000000000000000353535353535353535353535353535353535353500000000000000000000000000000000000000000000000000000000000f4240c080a08ff807735d68c85a50266056ad10bcf4d8211d3da1eef78e4d6d9c0c308ed5cfa00b42e8a8b8c06967a568f3d164454534d280bbdeb597099b999a4340e8d32a2f",
+   "node": {
+    "type": "0x2",
+    "chainId": "0x7a69",
+    "nonce": "0x4",
+    "gas": "0xea60",
+    "maxFeePerGas": "0x77359400",
+    "maxPriorityFeePerGas": "0xab2244b",
+    "to": "0x2222222222222222222222222222222222222222",
+    "value": "0x0",
+    "accessList": [],
+    "input": "0xa9059cbb000000000000000000000000353535353535353535353535353535353535353500000000000000000000000000000000000000000000000000000000000f4240",
+    "r": "0x8ff807735d68c85a50266056ad10bcf4d8211d3da1eef78e4d6d9c0c308ed5cf",
+    "s": "0xb42e8a8b8c06967a568f3d164454534d280bbdeb597099b999a4340e8d32a2f",
+    "yParity": "0x0",
+    "v": "0x0",
+    "hash": "0x223c2008713f4b91fb988982407ac7c2cfd2c6174fbb6901778a6dc1f2b5e0af",
+    "blockHash": "0x5c99deb1e8a4f04f95878458f1614371385dadeda7112714e75fa26eedc4d26e",
+    "blockNumber": "0x5",
+    "transactionIndex": "0x0",
+    "from": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    "gasPrice": "0x2da9b8b3",
+    "blockTimestamp": "0x6addc28b"
+   }
+  }
+ ]
+}
